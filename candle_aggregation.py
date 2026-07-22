@@ -9,11 +9,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from tick_event import IST
 
 # NSE cash session minutes (inclusive), minutes since midnight IST.
 SESSION_MINUTE_START = 9 * 60 + 15  # 09:15 → 555
 SESSION_MINUTE_END = 15 * 60 + 29  # 15:29 → 929
 BUCKET_SIZE = 5
+
+_IST = ZoneInfo(IST)
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,49 @@ class FiveMinuteCandle:
     low: float
     close: float
     volume: int
+
+
+@dataclass(frozen=True)
+class CompletedOneMinuteCandle:
+    instrument_token: int
+    candle_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    tick_count: int
+    volume_reliable: bool
+
+    def to_one_minute_candle(self) -> OneMinuteCandle:
+        """Convert candle_time to ISO text only at the persistence boundary."""
+        return OneMinuteCandle(
+            candle_time=self.candle_time.isoformat(timespec="seconds"),
+            open=self.open,
+            high=self.high,
+            low=self.low,
+            close=self.close,
+            volume=self.volume,
+        )
+
+
+def ensure_ist(dt: datetime) -> datetime:
+    """Normalize naive or aware datetimes to Asia/Kolkata."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_IST)
+    return dt.astimezone(_IST)
+
+
+def minute_of_day_from_datetime(dt: datetime) -> int:
+    """Return IST wall-clock minutes since midnight."""
+    ist_dt = ensure_ist(dt)
+    return ist_dt.hour * 60 + ist_dt.minute
+
+
+def minute_start_from_exchange_timestamp(dt: datetime) -> datetime:
+    """Floor exchange_timestamp to IST minute start as timezone-aware datetime."""
+    ist_dt = ensure_ist(dt)
+    return ist_dt.replace(second=0, microsecond=0)
 
 
 def minute_of_day_from_candle_time(candle_time: str) -> int:
