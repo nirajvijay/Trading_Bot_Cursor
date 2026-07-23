@@ -604,5 +604,178 @@ class InvalidPriceTests(BuilderTestCase):
         self.assertEqual(len(self.emitted), 0)
 
 
+class FeedContinuityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.emitted: List[CompletedOneMinuteCandle] = []
+
+    def _builder(self, feed_ready_at: Optional[datetime] = None) -> OneMinuteCandleBuilder:
+        return OneMinuteCandleBuilder(
+            on_candle=self.emitted.append,
+            feed_ready_at=feed_ready_at,
+        )
+
+    def test_construction_without_feed_ready_has_no_coverage(self) -> None:
+        builder = self._builder()
+        self.assertIsNone(builder._feed.feed_healthy_since)
+
+    def test_feed_ready_at_constructor_sets_coverage(self) -> None:
+        ready = _ist(2026, 7, 22, 10, 0, 0)
+        builder = self._builder(feed_ready_at=ready)
+        self.assertEqual(builder._feed.feed_healthy_since, ready)
+
+    def test_feed_ready_after_minute_start_makes_that_minute_partial(self) -> None:
+        builder = self._builder()
+        builder.mark_feed_restored(_ist(2026, 7, 22, 10, 30, 45))
+        builder.on_tick(
+            _make_tick(
+                sequence=1,
+                price=100.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 30, 46),
+                volume_traded=100,
+            )
+        )
+        builder.on_tick(
+            _make_tick(
+                sequence=2,
+                price=101.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 31, 1),
+                volume_traded=150,
+            )
+        )
+        self.assertEqual(len(self.emitted), 1)
+        self.assertEqual(self.emitted[0].candle_time, _ist(2026, 7, 22, 10, 30, 0))
+        self.assertFalse(self.emitted[0].has_full_minute_coverage)
+        self.assertTrue(self.emitted[0].is_partial)
+
+    def test_next_minute_complete_after_uninterrupted_restore(self) -> None:
+        builder = self._builder()
+        builder.mark_feed_restored(_ist(2026, 7, 22, 10, 30, 45))
+        builder.on_tick(
+            _make_tick(
+                sequence=1,
+                price=100.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 30, 46),
+                volume_traded=100,
+            )
+        )
+        builder.on_tick(
+            _make_tick(
+                sequence=2,
+                price=101.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 31, 1),
+                volume_traded=150,
+            )
+        )
+        builder.on_tick(
+            _make_tick(
+                sequence=3,
+                price=102.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 31, 5),
+                volume_traded=200,
+            )
+        )
+        builder.on_tick(
+            _make_tick(
+                sequence=4,
+                price=103.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 32, 1),
+                volume_traded=250,
+            )
+        )
+        self.assertEqual(len(self.emitted), 2)
+        self.assertTrue(self.emitted[1].has_full_minute_coverage)
+        self.assertFalse(self.emitted[1].is_partial)
+
+    def test_late_first_tick_still_complete_when_feed_healthy_before_minute(self) -> None:
+        builder = self._builder()
+        builder.mark_feed_restored(_ist(2026, 7, 22, 10, 29, 50))
+        builder.on_tick(
+            _make_tick(
+                sequence=1,
+                price=100.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 30, 5),
+                volume_traded=100,
+            )
+        )
+        builder.on_tick(
+            _make_tick(
+                sequence=2,
+                price=101.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 31, 1),
+                volume_traded=150,
+            )
+        )
+        self.assertFalse(self.emitted[0].is_partial)
+        self.assertTrue(self.emitted[0].has_full_minute_coverage)
+
+    def test_disconnect_marks_active_candle_partial(self) -> None:
+        builder = self._builder(feed_ready_at=_ist(2026, 7, 22, 10, 30, 0))
+        builder.on_tick(
+            _make_tick(
+                sequence=1,
+                price=100.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 30, 10),
+                volume_traded=100,
+            )
+        )
+        builder.mark_feed_interrupted(_ist(2026, 7, 22, 10, 30, 20))
+        self.assertFalse(builder._active[_TOKEN].has_full_minute_coverage)
+
+    def test_reconnect_starts_new_coverage_interval(self) -> None:
+        builder = self._builder(feed_ready_at=_ist(2026, 7, 22, 11, 0, 0))
+        builder.mark_feed_interrupted(_ist(2026, 7, 22, 11, 15, 10))
+        builder.mark_feed_restored(_ist(2026, 7, 22, 11, 15, 20))
+        builder.on_tick(
+            _make_tick(
+                sequence=1,
+                price=100.0,
+                exchange_timestamp=_ist(2026, 7, 22, 11, 15, 25),
+                volume_traded=100,
+            )
+        )
+        builder.on_tick(
+            _make_tick(
+                sequence=2,
+                price=101.0,
+                exchange_timestamp=_ist(2026, 7, 22, 11, 16, 1),
+                volume_traded=150,
+            )
+        )
+        self.assertTrue(self.emitted[0].is_partial)
+        builder.on_tick(
+            _make_tick(
+                sequence=3,
+                price=102.0,
+                exchange_timestamp=_ist(2026, 7, 22, 11, 16, 5),
+                volume_traded=200,
+            )
+        )
+        builder.on_tick(
+            _make_tick(
+                sequence=4,
+                price=103.0,
+                exchange_timestamp=_ist(2026, 7, 22, 11, 17, 1),
+                volume_traded=250,
+            )
+        )
+        self.assertEqual(len(self.emitted), 2)
+        self.assertFalse(self.emitted[1].is_partial)
+
+    def test_post_minute_flush_of_startup_partial_stays_partial(self) -> None:
+        builder = self._builder()
+        builder.mark_feed_restored(_ist(2026, 7, 22, 10, 30, 45))
+        builder.on_tick(
+            _make_tick(
+                sequence=1,
+                price=100.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 30, 46),
+                volume_traded=100,
+            )
+        )
+        builder.flush(now=_ist(2026, 7, 22, 10, 31, 5))
+        self.assertEqual(self.emitted[0].completion_reason, "shutdown_flush")
+        self.assertTrue(self.emitted[0].is_partial)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,21 +8,26 @@ via callback. No database, strategy, or receiver wiring.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Dict, Optional, Set, Tuple
+from zoneinfo import ZoneInfo
 
 from candle_aggregation import (
+    SESSION_MINUTE_END,
     SESSION_MINUTE_START,
+    CompletionReason,
     CompletedOneMinuteCandle,
     ensure_ist,
     is_in_session,
     minute_of_day_from_datetime,
     minute_start_from_exchange_timestamp,
 )
-from tick_event import TickEvent
+from tick_event import IST, TickEvent
 
 EventKey = Tuple[datetime, int]
 CandleCallback = Callable[[CompletedOneMinuteCandle], None]
+
+_IST = ZoneInfo(IST)
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,11 @@ class BuilderMetrics:
     invalid_price_ticks: int
     cumulative_volume_decreases: int
     candles_emitted: int
+
+
+@dataclass
+class _FeedContinuityState:
+    feed_healthy_since: Optional[datetime] = None
 
 
 @dataclass
@@ -51,6 +61,7 @@ class _ActiveCandleState:
     high: float
     low: float
     close: float
+    has_full_minute_coverage: bool
     open_key: Optional[EventKey] = None
     close_key: Optional[EventKey] = None
     completed_volume_segments: int = 0
@@ -61,9 +72,23 @@ class _ActiveCandleState:
     volume_reliable: bool = True
 
 
+def _is_minute_complete(candle_time: datetime, now: datetime) -> bool:
+    """True when wall-clock IST has reached the start of the next minute."""
+    candle_start = ensure_ist(candle_time)
+    now_ist = ensure_ist(now)
+    return now_ist >= candle_start + timedelta(minutes=1)
+
+
 class OneMinuteCandleBuilder:
-    def __init__(self, on_candle: CandleCallback) -> None:
+    def __init__(
+        self,
+        on_candle: CandleCallback,
+        feed_ready_at: Optional[datetime] = None,
+    ) -> None:
         self._on_candle = on_candle
+        self._feed = _FeedContinuityState(
+            feed_healthy_since=ensure_ist(feed_ready_at) if feed_ready_at is not None else None,
+        )
         self._active: Dict[int, _ActiveCandleState] = {}
         self._volume_state: Dict[int, _InstrumentVolumeState] = {}
         self._last_emitted_candle_time: Dict[int, datetime] = {}
@@ -84,6 +109,17 @@ class OneMinuteCandleBuilder:
             cumulative_volume_decreases=self._cumulative_volume_decreases,
             candles_emitted=self._candles_emitted,
         )
+
+    def mark_feed_interrupted(self, interrupted_at: datetime) -> None:
+        """Clear feed continuity and mark active candles as lacking full coverage."""
+        del interrupted_at  # timestamp reserved for future audit/logging
+        self._feed.feed_healthy_since = None
+        for active in self._active.values():
+            active.has_full_minute_coverage = False
+
+    def mark_feed_restored(self, restored_at: datetime) -> None:
+        """Record when continuous healthy feed coverage began."""
+        self._feed.feed_healthy_since = ensure_ist(restored_at)
 
     def on_tick(self, tick: TickEvent) -> None:
         exchange_ts = ensure_ist(tick.exchange_timestamp)
@@ -110,14 +146,14 @@ class OneMinuteCandleBuilder:
         if active is not None:
             active_session = self._volume_state[token].session_date
             if active_session != session_date:
-                self._finalize(token)
+                self._finalize(token, "day_rollover", now=exchange_ts)
                 self._volume_state.pop(token, None)
                 active = None
             elif tick_minute_start < active.candle_time:
                 self._late_ticks_dropped += 1
                 return
             elif tick_minute_start > active.candle_time:
-                self._finalize(token)
+                self._finalize(token, "minute_transition", now=exchange_ts)
                 active = None
 
         if active is None:
@@ -132,13 +168,32 @@ class OneMinuteCandleBuilder:
 
         self._apply_tick(active, tick, exchange_ts)
 
-    def flush(self, instrument_token: Optional[int] = None) -> None:
+    def flush(
+        self,
+        instrument_token: Optional[int] = None,
+        now: Optional[datetime] = None,
+    ) -> None:
+        now_ist = ensure_ist(now or datetime.now(_IST))
         if instrument_token is None:
             tokens = list(self._active.keys())
         else:
             tokens = [instrument_token]
         for token in tokens:
-            self._finalize(token)
+            active = self._active.get(token)
+            if active is None:
+                continue
+            minute = minute_of_day_from_datetime(active.candle_time)
+            if _is_minute_complete(active.candle_time, now_ist) and minute == SESSION_MINUTE_END:
+                reason: CompletionReason = "session_end"
+            else:
+                reason = "shutdown_flush"
+            self._finalize(token, reason, now=now_ist)
+
+    def _has_full_minute_coverage_at(self, candle_time: datetime) -> bool:
+        since = self._feed.feed_healthy_since
+        if since is None:
+            return False
+        return ensure_ist(since) <= ensure_ist(candle_time)
 
     def _ensure_volume_state(
         self,
@@ -178,6 +233,7 @@ class OneMinuteCandleBuilder:
             high=0.0,
             low=0.0,
             close=0.0,
+            has_full_minute_coverage=self._has_full_minute_coverage_at(tick_minute_start),
             completed_volume_segments=0,
             segment_baseline=vol_state.minute_open_baseline,
             segment_max_cumulative=vol_state.minute_open_baseline,
@@ -266,12 +322,24 @@ class OneMinuteCandleBuilder:
         )
         return max(0, volume)
 
-    def _finalize(self, token: int) -> None:
+    def _finalize(
+        self,
+        token: int,
+        completion_reason: CompletionReason,
+        now: Optional[datetime] = None,
+    ) -> None:
         active = self._active.get(token)
         if active is None or active.tick_count == 0:
             if active is not None:
                 del self._active[token]
             return
+
+        if completion_reason == "day_rollover":
+            active.has_full_minute_coverage = False
+
+        now_ist = ensure_ist(now or datetime.now(_IST))
+        minute_complete = _is_minute_complete(active.candle_time, now_ist)
+        is_partial = (not minute_complete) or (not active.has_full_minute_coverage)
 
         completed = CompletedOneMinuteCandle(
             instrument_token=token,
@@ -283,6 +351,9 @@ class OneMinuteCandleBuilder:
             volume=self._compute_volume(active),
             tick_count=active.tick_count,
             volume_reliable=active.volume_reliable,
+            completion_reason=completion_reason,
+            has_full_minute_coverage=active.has_full_minute_coverage,
+            is_partial=is_partial,
         )
 
         self._on_candle(completed)

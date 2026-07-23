@@ -55,6 +55,9 @@ class CompletedOneMinuteCandleTests(unittest.TestCase):
             volume=500,
             tick_count=10,
             volume_reliable=True,
+            completion_reason="minute_transition",
+            has_full_minute_coverage=True,
+            is_partial=False,
         )
         bar = completed.to_one_minute_candle()
         self.assertEqual(bar.candle_time, candle_time.isoformat(timespec="seconds"))

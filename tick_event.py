@@ -35,3 +35,4 @@ class TickEvent:
 
 
 TickCallback = Callable[[TickEvent], None]
+FeedLifecycleCallback = Callable[[datetime], None]

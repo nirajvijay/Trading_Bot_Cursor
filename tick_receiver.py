@@ -17,6 +17,7 @@ import signal
 import threading
 import time
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -26,7 +27,7 @@ from kiteconnect import KiteTicker
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
 from kite_tick_normalizer import normalize_kite_tick, to_tick_event
 from login import _get_kite, _require_env, check_access_token
-from tick_event import IST, TickCallback, TickEvent
+from tick_event import IST, FeedLifecycleCallback, TickCallback, TickEvent
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,21 @@ class QueueOverloadError(RuntimeError):
     """Raised when the tick queue is full and the market-data stream is invalid."""
 
 
+class FeedContinuityState(Enum):
+    STARTING = "starting"
+    HEALTHY = "healthy"
+    STALE = "stale"
+    RESTORING = "restoring"
+    STOPPED = "stopped"
+
+
 class TickReceiver:
     def __init__(
         self,
         on_tick: TickCallback,
         *,
+        on_feed_ready: Optional[FeedLifecycleCallback] = None,
+        on_feed_interrupted: Optional[FeedLifecycleCallback] = None,
         instruments_db: Path = DEFAULT_INSTRUMENTS_DB_PATH,
         queue_maxsize: int = DEFAULT_QUEUE_MAXSIZE,
         stale_seconds: float = DEFAULT_STALE_SECONDS,
@@ -60,6 +71,8 @@ class TickReceiver:
         ticker_factory: Any = None,
     ) -> None:
         self._on_tick = on_tick
+        self._on_feed_ready = on_feed_ready
+        self._on_feed_interrupted = on_feed_interrupted
         self._instruments_db = instruments_db
         self._queue_maxsize = queue_maxsize
         self._stale_seconds = stale_seconds
@@ -112,6 +125,9 @@ class TickReceiver:
         self._worker_thread: Optional[threading.Thread] = None
         self._health_thread: Optional[threading.Thread] = None
         self._state_lock = threading.Lock()
+        self._state_cond = threading.Condition(self._state_lock)
+        self._continuity_state = FeedContinuityState.STARTING
+        self._restoring_from: Optional[FeedContinuityState] = None
 
     @property
     def fatal_error(self) -> Optional[BaseException]:
@@ -163,6 +179,7 @@ class TickReceiver:
 
     def stop(self) -> None:
         self._accepting_ticks = False
+        self._transition_to_stopped()
         self._stop_event.set()
         self._close_ticker_safe()
         self._try_enqueue_sentinel()
@@ -188,10 +205,12 @@ class TickReceiver:
     def _on_close(self, ws: Any, code: int, reason: str) -> None:
         self._connected = False
         logger.warning("KiteTicker closed (code=%s reason=%s).", code, reason)
+        self._transition_to_stale(datetime.now(_IST))
 
     def _on_error(self, ws: Any, code: int, reason: str) -> None:
         self._connected = False
         logger.error("KiteTicker error (code=%s reason=%s).", code, reason)
+        self._transition_to_stale(datetime.now(_IST))
 
     def _on_noreconnect(self, ws: Any) -> None:
         logger.critical("KiteTicker exceeded reconnect attempts; stopping receiver.")
@@ -219,16 +238,7 @@ class TickReceiver:
                 sequence = self._next_sequence
                 self._next_sequence += 1
                 event = to_tick_event(normalized, sequence)
-
-                try:
-                    self._queue.put_nowait(event)
-                except queue.Full:
-                    self._handle_queue_overload(event)
-                    return
-
-                self._ticks_enqueued += 1
-                self._last_tick_monotonic = time.monotonic()
-                self._latest_by_token[event.instrument_token] = event
+                self._enqueue_tick_with_restoration(event, datetime.now(_IST))
 
             except Exception:
                 self._ticks_invalid += 1
@@ -269,7 +279,93 @@ class TickReceiver:
                 self._fatal_error = error
             self._accepting_ticks = accepting
             self._feed_stale = True
+        self._transition_to_stopped()
         self._stop_event.set()
+
+    def _enqueue_tick_with_restoration(
+        self,
+        event: TickEvent,
+        restored_at: datetime,
+    ) -> None:
+        ready_callback: Optional[FeedLifecycleCallback] = None
+        overload_event: Optional[TickEvent] = None
+
+        with self._state_cond:
+            while self._continuity_state == FeedContinuityState.RESTORING:
+                self._state_cond.wait()
+            if self._continuity_state == FeedContinuityState.STOPPED:
+                return
+            if self._queue.full():
+                overload_event = event
+            elif self._continuity_state in (
+                FeedContinuityState.STARTING,
+                FeedContinuityState.STALE,
+            ):
+                self._restoring_from = self._continuity_state
+                self._continuity_state = FeedContinuityState.RESTORING
+                ready_callback = self._on_feed_ready
+
+        if overload_event is not None:
+            self._handle_queue_overload(overload_event)
+            return
+
+        if ready_callback is not None:
+            try:
+                ready_callback(restored_at)
+            except Exception:
+                logger.exception("on_feed_ready callback failed")
+                self._abort_restoration()
+                return
+
+        self._queue.put_nowait(event)
+
+        with self._state_cond:
+            self._ticks_enqueued += 1
+            self._last_tick_monotonic = time.monotonic()
+            if self._continuity_state == FeedContinuityState.RESTORING:
+                self._continuity_state = FeedContinuityState.HEALTHY
+                self._restoring_from = None
+            self._state_cond.notify_all()
+
+        self._latest_by_token[event.instrument_token] = event
+
+    def _abort_restoration(self) -> None:
+        with self._state_cond:
+            if self._continuity_state != FeedContinuityState.RESTORING:
+                return
+            self._continuity_state = self._restoring_from or FeedContinuityState.STARTING
+            self._restoring_from = None
+            self._state_cond.notify_all()
+
+    def _transition_to_stale(self, interrupted_at: datetime) -> None:
+        interrupted_callback: Optional[FeedLifecycleCallback] = None
+        with self._state_cond:
+            if self._continuity_state != FeedContinuityState.HEALTHY:
+                return
+            self._continuity_state = FeedContinuityState.STALE
+            interrupted_callback = self._on_feed_interrupted
+
+        if interrupted_callback is not None:
+            try:
+                interrupted_callback(interrupted_at)
+            except Exception:
+                logger.exception("on_feed_interrupted callback failed")
+
+    def _transition_to_stopped(self) -> None:
+        interrupted_callback: Optional[FeedLifecycleCallback] = None
+        with self._state_cond:
+            if self._continuity_state == FeedContinuityState.STOPPED:
+                return
+            if self._continuity_state == FeedContinuityState.HEALTHY:
+                interrupted_callback = self._on_feed_interrupted
+            self._continuity_state = FeedContinuityState.STOPPED
+            self._state_cond.notify_all()
+
+        if interrupted_callback is not None:
+            try:
+                interrupted_callback(datetime.now(_IST))
+            except Exception:
+                logger.exception("on_feed_interrupted callback failed")
 
     def _close_ticker_safe(self) -> None:
         ticker = self._ticker
@@ -313,38 +409,48 @@ class TickReceiver:
             if self._stop_event.is_set() and self._queue.empty():
                 break
 
-    def _health_loop(self) -> None:
-        while not self._stop_event.wait(self._health_interval):
-            stale = self.is_feed_stale()
-            self._feed_stale = stale
+    def _run_health_check(self) -> None:
+        stale = self.is_feed_stale()
+        self._feed_stale = stale
 
-            seconds_since_last = None
-            if self._last_tick_monotonic is not None:
-                seconds_since_last = time.monotonic() - self._last_tick_monotonic
+        seconds_since_last = None
+        if self._last_tick_monotonic is not None:
+            seconds_since_last = time.monotonic() - self._last_tick_monotonic
 
-            logger.info(
-                "health connected=%s accepting=%s enqueued=%d invalid=%d queue=%d/%d "
-                "seconds_since_last_tick=%s feed_stale=%s fatal=%s",
-                self._connected,
-                self._accepting_ticks,
-                self._ticks_enqueued,
-                self._ticks_invalid,
-                self._queue.qsize(),
-                self._queue_maxsize,
-                (
-                    "%.1f" % seconds_since_last
-                    if seconds_since_last is not None
-                    else "n/a"
-                ),
-                stale,
-                self._fatal_error is not None,
+        logger.info(
+            "health connected=%s accepting=%s enqueued=%d invalid=%d queue=%d/%d "
+            "seconds_since_last_tick=%s feed_stale=%s fatal=%s continuity=%s",
+            self._connected,
+            self._accepting_ticks,
+            self._ticks_enqueued,
+            self._ticks_invalid,
+            self._queue.qsize(),
+            self._queue_maxsize,
+            (
+                "%.1f" % seconds_since_last
+                if seconds_since_last is not None
+                else "n/a"
+            ),
+            stale,
+            self._fatal_error is not None,
+            self._continuity_state.value,
+        )
+
+        if stale and self._accepting_ticks and self._fatal_error is None:
+            logger.warning(
+                "Feed stale: no tick enqueued in the last %.1f seconds.",
+                self._stale_seconds,
             )
 
-            if stale and self._accepting_ticks and self._fatal_error is None:
-                logger.warning(
-                    "Feed stale: no tick enqueued in the last %.1f seconds.",
-                    self._stale_seconds,
-                )
+        with self._state_cond:
+            if self._continuity_state != FeedContinuityState.HEALTHY:
+                return
+        if stale:
+            self._transition_to_stale(datetime.now(_IST))
+
+    def _health_loop(self) -> None:
+        while not self._stop_event.wait(self._health_interval):
+            self._run_health_check()
 
     def _cleanup(self) -> None:
         self._close_ticker_safe()

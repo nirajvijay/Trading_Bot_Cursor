@@ -9,9 +9,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from tick_event import IST
+
+CompletionReason = Literal[
+    "minute_transition",
+    "session_end",
+    "shutdown_flush",
+    "day_rollover",
+]
 
 # NSE cash session minutes (inclusive), minutes since midnight IST.
 SESSION_MINUTE_START = 9 * 60 + 15  # 09:15 → 555
@@ -52,6 +60,9 @@ class CompletedOneMinuteCandle:
     volume: int
     tick_count: int
     volume_reliable: bool
+    completion_reason: CompletionReason
+    has_full_minute_coverage: bool
+    is_partial: bool
 
     def to_one_minute_candle(self) -> OneMinuteCandle:
         """Convert candle_time to ISO text only at the persistence boundary."""
