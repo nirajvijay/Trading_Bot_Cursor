@@ -9,7 +9,10 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from historical_collector import StockToken
+from live_candle_pipeline import LiveCandlePipeline
+from live_one_minute_candle_writer import CandleConflictError, LiveOneMinuteCandleWriter
 from one_minute_candle_builder import OneMinuteCandleBuilder
+from candle_emission import CandleEmissionError
 from tick_event import IST, Ohlc, TickEvent
 from tick_receiver import FeedContinuityState, QueueOverloadError, TickReceiver
 
@@ -778,6 +781,87 @@ class FeedContinuityBuilderIntegrationTests(ReceiverTestMixin, unittest.TestCase
         self.assertTrue(by_time[_ist(2026, 7, 22, 10, 32, 0)].is_partial)
         self.assertFalse(by_time[_ist(2026, 7, 22, 10, 33, 0)].is_partial)
         self.assertTrue(by_time[_ist(2026, 7, 22, 10, 33, 0)].has_full_minute_coverage)
+
+
+class PersistenceFailureIntegrationTests(ReceiverTestMixin, unittest.TestCase):
+    def test_conflict_sets_receiver_fatal_and_stops_acceptance(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from candle_aggregation import CompletedOneMinuteCandle
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        token = _SAMPLE_STOCKS[0].instrument_token
+        token_to_symbol = {stock.instrument_token: stock.tradingsymbol for stock in _SAMPLE_STOCKS}
+        writer = LiveOneMinuteCandleWriter(
+            db_path=Path(tmpdir.name) / "fatal.db",
+            token_to_symbol=token_to_symbol,
+        )
+        self.addCleanup(writer.close)
+
+        candle_time = _ist(2026, 7, 22, 10, 30, 0)
+        writer.on_candle(
+            CompletedOneMinuteCandle(
+                instrument_token=token,
+                candle_time=candle_time,
+                open=100.0,
+                high=105.0,
+                low=99.0,
+                close=100.0,
+                volume=500,
+                tick_count=10,
+                volume_reliable=True,
+                completion_reason="minute_transition",
+                has_full_minute_coverage=True,
+                is_partial=False,
+            )
+        )
+
+        pipeline = LiveCandlePipeline(writer=writer)
+        receiver = self._make_receiver(pipeline.builder.on_tick, queue_maxsize=10)
+        pipeline.attach_receiver(receiver)
+
+        persist_calls = 0
+        original_persist = pipeline._persist_candle
+
+        def tracked_persist(candle: CompletedOneMinuteCandle) -> None:
+            nonlocal persist_calls
+            persist_calls += 1
+            original_persist(candle)
+
+        pipeline.builder._on_candle = tracked_persist
+
+        receiver._worker_thread = threading.Thread(
+            target=receiver._worker_loop,
+            name="test-worker",
+            daemon=True,
+        )
+        receiver._worker_thread.start()
+
+        receiver._on_ticks(
+            None,
+            [
+                _raw_tick_with_exchange_ts(token, 101.0, _ist(2026, 7, 22, 10, 30, 5)),
+                _raw_tick_with_exchange_ts(token, 102.0, _ist(2026, 7, 22, 10, 31, 5)),
+            ],
+        )
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if receiver.fatal_error is not None:
+                break
+            time.sleep(0.02)
+
+        receiver._worker_thread.join(timeout=2.0)
+
+        self.assertIsInstance(receiver.fatal_error, CandleEmissionError)
+        assert isinstance(receiver.fatal_error, CandleEmissionError)
+        self.assertIsInstance(receiver.fatal_error.cause, CandleConflictError)
+        self.assertFalse(receiver.is_accepting_ticks())
+        self.assertEqual(persist_calls, 1)
+        self.assertEqual(writer.metrics.conflicting_duplicates, 1)
+        self.assertIsNotNone(pipeline.builder.failed_emission)
 
 
 if __name__ == "__main__":

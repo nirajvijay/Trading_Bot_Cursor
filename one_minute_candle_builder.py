@@ -22,6 +22,7 @@ from candle_aggregation import (
     minute_of_day_from_datetime,
     minute_start_from_exchange_timestamp,
 )
+from candle_emission import CandleEmissionError, FailedEmission
 from tick_event import IST, TickEvent
 
 EventKey = Tuple[datetime, int]
@@ -98,6 +99,20 @@ class OneMinuteCandleBuilder:
         self._invalid_price_ticks = 0
         self._cumulative_volume_decreases = 0
         self._candles_emitted = 0
+        self._fatal_error: Optional[CandleEmissionError] = None
+        self._failed_emission: Optional[FailedEmission] = None
+
+    @property
+    def fatal_error(self) -> Optional[CandleEmissionError]:
+        return self._fatal_error
+
+    @property
+    def failed_emission(self) -> Optional[FailedEmission]:
+        return self._failed_emission
+
+    @property
+    def is_fatal(self) -> bool:
+        return self._fatal_error is not None
 
     @property
     def metrics(self) -> BuilderMetrics:
@@ -122,6 +137,9 @@ class OneMinuteCandleBuilder:
         self._feed.feed_healthy_since = ensure_ist(restored_at)
 
     def on_tick(self, tick: TickEvent) -> None:
+        if self._fatal_error is not None:
+            return
+
         exchange_ts = ensure_ist(tick.exchange_timestamp)
         minute_of_day = minute_of_day_from_datetime(exchange_ts)
         session_date = ensure_ist(exchange_ts).date().isoformat()
@@ -173,6 +191,9 @@ class OneMinuteCandleBuilder:
         instrument_token: Optional[int] = None,
         now: Optional[datetime] = None,
     ) -> None:
+        if self._fatal_error is not None:
+            raise self._fatal_error
+
         now_ist = ensure_ist(now or datetime.now(_IST))
         if instrument_token is None:
             tokens = list(self._active.keys())
@@ -356,7 +377,13 @@ class OneMinuteCandleBuilder:
             is_partial=is_partial,
         )
 
-        self._on_candle(completed)
+        try:
+            self._on_candle(completed)
+        except CandleEmissionError as exc:
+            self._failed_emission = FailedEmission(exc.candle, exc.cause)
+            self._fatal_error = exc
+            del self._active[token]
+            raise
 
         self._last_emitted_candle_time[token] = completed.candle_time
         self._candles_emitted += 1

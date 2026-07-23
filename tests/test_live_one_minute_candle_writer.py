@@ -13,6 +13,8 @@ from live_one_minute_candle_writer import (
     CandleConflictError,
     LiveOneMinuteCandleWriter,
     init_db,
+    is_retryable_sqlite_error,
+    is_unrecoverable_persistence_error,
 )
 from tick_event import IST
 
@@ -405,6 +407,26 @@ class ConcurrentWriterTests(unittest.TestCase):
             self.assertEqual(writer.metrics.duplicates_ignored, 0)
             self.assertEqual(writer.metrics.conflicting_duplicates, 0)
             self.assertEqual(writer.metrics.write_failures, 0)
+
+
+class PersistenceErrorClassificationTests(unittest.TestCase):
+    def test_conflict_is_unrecoverable(self) -> None:
+        self.assertTrue(is_unrecoverable_persistence_error(CandleConflictError("conflict")))
+
+    def test_validation_error_is_unrecoverable(self) -> None:
+        self.assertTrue(is_unrecoverable_persistence_error(ValueError("invalid")))
+
+    def test_writer_closed_runtime_error_is_unrecoverable(self) -> None:
+        self.assertTrue(is_unrecoverable_persistence_error(RuntimeError("writer is closed")))
+
+    def test_generic_runtime_error_is_not_unrecoverable(self) -> None:
+        self.assertFalse(is_unrecoverable_persistence_error(RuntimeError("callback failed")))
+
+    def test_busy_sqlite_error_is_retryable(self) -> None:
+        exc = sqlite3.OperationalError("database is locked")
+        exc.sqlite_errorcode = 5
+        self.assertTrue(is_retryable_sqlite_error(exc))
+        self.assertTrue(is_unrecoverable_persistence_error(exc))
 
 
 if __name__ == "__main__":

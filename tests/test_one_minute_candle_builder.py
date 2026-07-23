@@ -6,6 +6,7 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from candle_aggregation import CompletedOneMinuteCandle
+from candle_emission import CandleEmissionError
 from one_minute_candle_builder import OneMinuteCandleBuilder
 from tick_event import IST, Ohlc, TickEvent
 
@@ -339,6 +340,73 @@ class CallbackFailureTests(unittest.TestCase):
         builder.flush()
         self.assertEqual(len(emitted), 1)
         self.assertEqual(builder.metrics.candles_emitted, 1)
+
+
+class FatalEmissionTests(unittest.TestCase):
+    def _tick(self) -> TickEvent:
+        return _make_tick(
+            sequence=1,
+            price=100.0,
+            exchange_timestamp=_ist(2026, 7, 22, 10, 0, 0),
+            volume_traded=100,
+        )
+
+    def test_fatal_emission_error_parks_candle_and_sets_fatal(self) -> None:
+        cause = RuntimeError("persist failed")
+
+        def callback(candle: CompletedOneMinuteCandle) -> None:
+            raise CandleEmissionError(candle, cause)
+
+        builder = OneMinuteCandleBuilder(on_candle=callback)
+        builder.on_tick(self._tick())
+        with self.assertRaises(CandleEmissionError) as ctx:
+            builder.flush()
+        self.assertIs(ctx.exception.cause, cause)
+        self.assertNotIn(_TOKEN, builder._active)
+        self.assertIsNotNone(builder.failed_emission)
+        self.assertEqual(builder.failed_emission.cause, cause)
+        self.assertEqual(builder.metrics.candles_emitted, 0)
+        self.assertTrue(builder.is_fatal)
+
+    def test_flush_after_fatal_reraises_stored_error(self) -> None:
+        calls = 0
+
+        def callback(candle: CompletedOneMinuteCandle) -> None:
+            nonlocal calls
+            calls += 1
+            raise CandleEmissionError(candle, RuntimeError("persist failed"))
+
+        builder = OneMinuteCandleBuilder(on_candle=callback)
+        builder.on_tick(self._tick())
+        with self.assertRaises(CandleEmissionError):
+            builder.flush()
+        with self.assertRaises(CandleEmissionError):
+            builder.flush()
+        self.assertEqual(calls, 1)
+
+    def test_on_tick_after_fatal_is_noop(self) -> None:
+        calls = 0
+
+        def callback(candle: CompletedOneMinuteCandle) -> None:
+            nonlocal calls
+            calls += 1
+            raise CandleEmissionError(candle, RuntimeError("persist failed"))
+
+        builder = OneMinuteCandleBuilder(on_candle=callback)
+        builder.on_tick(self._tick())
+        with self.assertRaises(CandleEmissionError):
+            builder.flush()
+        metrics_before = builder.metrics
+        builder.on_tick(
+            _make_tick(
+                sequence=2,
+                price=101.0,
+                exchange_timestamp=_ist(2026, 7, 22, 10, 1, 0),
+                volume_traded=150,
+            )
+        )
+        self.assertEqual(calls, 1)
+        self.assertEqual(builder.metrics, metrics_before)
 
 
 class LastEmittedMinuteTests(BuilderTestCase):

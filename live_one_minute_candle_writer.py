@@ -141,8 +141,26 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _is_lock_error(exc: sqlite3.OperationalError) -> bool:
+def is_retryable_sqlite_error(exc: sqlite3.OperationalError) -> bool:
     return exc.sqlite_errorcode in (SQLITE_BUSY, SQLITE_LOCKED)
+
+
+def is_unrecoverable_persistence_error(exc: BaseException) -> bool:
+    """True for errors that must halt the pipeline when escaping writer.on_candle()."""
+    if isinstance(exc, CandleConflictError):
+        return True
+    if isinstance(exc, ValueError):
+        return True
+    if isinstance(exc, sqlite3.OperationalError):
+        return True
+    if isinstance(exc, RuntimeError):
+        message = str(exc)
+        return "writer is closed" in message or "INSERT OR IGNORE" in message
+    return False
+
+
+def _is_lock_error(exc: sqlite3.OperationalError) -> bool:
+    return is_retryable_sqlite_error(exc)
 
 
 def _utc_now_iso() -> str:
@@ -319,6 +337,11 @@ class LiveOneMinuteCandleWriter:
             )
 
     def on_candle(self, candle: CompletedOneMinuteCandle) -> None:
+        """Persist one completed candle.
+
+        Lock contention (SQLITE_BUSY / SQLITE_LOCKED) is retried internally.
+        Only unrecoverable persistence errors propagate to callers.
+        """
         tradingsymbol = self._token_to_symbol.get(candle.instrument_token)
         if tradingsymbol is None:
             with self._lock:

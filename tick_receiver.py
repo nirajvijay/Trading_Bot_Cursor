@@ -27,6 +27,7 @@ from kiteconnect import KiteTicker
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
 from kite_tick_normalizer import normalize_kite_tick, to_tick_event
 from login import _get_kite, _require_env, check_access_token
+from candle_emission import CandleEmissionError
 from tick_event import IST, FeedLifecycleCallback, TickCallback, TickEvent
 
 logger = logging.getLogger(__name__)
@@ -395,8 +396,20 @@ class TickReceiver:
             if item is _SENTINEL:
                 continue
 
+            if self._fatal_error is not None:
+                self._queue.task_done()
+                continue
+
             try:
                 self._on_tick(item)
+            except CandleEmissionError as exc:
+                self._set_fatal(exc, accepting=False)
+                threading.Thread(
+                    target=self._close_ticker_safe,
+                    name="tick-receiver-close",
+                    daemon=True,
+                ).start()
+                break
             except Exception:
                 logger.exception(
                     "Downstream tick callback failed for seq=%s token=%s.",

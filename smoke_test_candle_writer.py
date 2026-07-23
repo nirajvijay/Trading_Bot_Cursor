@@ -16,20 +16,21 @@ import sys
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from candle_aggregation import CompletedOneMinuteCandle, ensure_ist
+from candle_emission import CandleEmissionError
 from historical_collector import (
     DEFAULT_INSTRUMENTS_DB_PATH,
     StockToken,
     load_nifty50_tokens,
 )
+from live_candle_pipeline import LiveCandlePipeline
 from live_one_minute_candle_writer import LiveOneMinuteCandleWriter
-from one_minute_candle_builder import BuilderMetrics, OneMinuteCandleBuilder
+from one_minute_candle_builder import BuilderMetrics
 from tick_event import IST
 from tick_receiver import TickReceiver
 
@@ -49,7 +50,7 @@ class SmokeState:
     stop_lock: threading.Lock = field(default_factory=threading.Lock)
     stop_requested: bool = False
     receiver: Optional[TickReceiver] = None
-    writer: Optional[LiveOneMinuteCandleWriter] = None
+    pipeline: Optional[LiveCandlePipeline] = None
 
     def all_targets_met(self) -> bool:
         return all(
@@ -92,14 +93,15 @@ def _load_smoke_symbols(
     return [by_symbol[symbol] for symbol in symbols]
 
 
-def _make_on_candle(state: SmokeState):
+def _wrap_on_candle(state: SmokeState, pipeline: LiveCandlePipeline):
+    original = pipeline._persist_candle
+
     def on_candle(candle: CompletedOneMinuteCandle) -> None:
         symbol = state.token_to_symbol.get(candle.instrument_token, "unknown")
         print(_format_candle(candle, symbol), flush=True)
         state.emitted.append(candle)
         state.candles_by_token[candle.instrument_token] += 1
-        if state.writer is not None:
-            state.writer.on_candle(candle)
+        original(candle)
         with state.stop_lock:
             if state.all_targets_met() and not state.stop_requested:
                 state.stop_requested = True
@@ -202,8 +204,9 @@ def main() -> int:
         db_path=db_path,
         token_to_symbol=token_to_symbol,
     )
-    state.writer = writer
-    builder = OneMinuteCandleBuilder(on_candle=_make_on_candle(state))
+    pipeline = LiveCandlePipeline(writer=writer)
+    pipeline.builder._on_candle = _wrap_on_candle(state, pipeline)
+    state.pipeline = pipeline
 
     smoke_symbols = symbols
 
@@ -212,14 +215,15 @@ def main() -> int:
 
     with patch("tick_receiver.load_nifty50_tokens", side_effect=patched_load):
         receiver = TickReceiver(
-            on_tick=builder.on_tick,
-            on_feed_ready=builder.mark_feed_restored,
-            on_feed_interrupted=builder.mark_feed_interrupted,
+            on_tick=pipeline.builder.on_tick,
+            on_feed_ready=pipeline.builder.mark_feed_restored,
+            on_feed_interrupted=pipeline.builder.mark_feed_interrupted,
             instruments_db=instruments_db,
             queue_maxsize=args.queue_maxsize,
             stale_seconds=args.stale_seconds,
             health_interval=args.health_interval,
         )
+        pipeline.attach_receiver(receiver)
         state.receiver = receiver
 
         def _handle_signal(signum: int, frame) -> None:  # type: ignore
@@ -242,28 +246,30 @@ def main() -> int:
 
         exit_code = 0
         try:
-            receiver.start()
+            pipeline.run()
         except KeyboardInterrupt:
             logger.info("Interrupted by user.")
-            receiver.stop()
+            exit_code = 1
+        except CandleEmissionError as exc:
+            logger.error(
+                "Persistence failure for token=%d time=%s: %s",
+                exc.candle.instrument_token,
+                exc.candle.candle_time,
+                exc.cause,
+            )
             exit_code = 1
         except Exception:
             logger.exception("Smoke test failed.")
             exit_code = 1
         finally:
-            print("\nFlushing in-progress candles...", flush=True)
+            print("\nShutting down pipeline...", flush=True)
             try:
-                builder.flush()
+                pipeline.shutdown()
             except Exception:
-                logger.exception("builder.flush() failed.")
-                exit_code = 1
-            try:
-                writer.close()
-            except Exception:
-                logger.exception("writer.close() failed.")
+                logger.exception("pipeline.shutdown() failed.")
                 exit_code = 1
 
-            _report_metrics(builder.metrics, writer)
+            _report_metrics(pipeline.builder.metrics, writer)
             verify_code = _verify_db(state)
             if verify_code != 0:
                 exit_code = verify_code
