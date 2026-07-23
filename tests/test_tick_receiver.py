@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from historical_collector import StockToken
 from live_candle_pipeline import LiveCandlePipeline
 from live_one_minute_candle_writer import CandleConflictError, LiveOneMinuteCandleWriter
+from market_data_coordinator import MarketDataCoordinator
 from one_minute_candle_builder import OneMinuteCandleBuilder
 from candle_emission import CandleEmissionError
 from tick_event import IST, Ohlc, TickEvent
@@ -818,12 +819,14 @@ class PersistenceFailureIntegrationTests(ReceiverTestMixin, unittest.TestCase):
             )
         )
 
-        pipeline = LiveCandlePipeline(writer=writer)
+        pipeline = LiveCandlePipeline(
+            coordinator=MarketDataCoordinator(candle_writer=writer)
+        )
         receiver = self._make_receiver(pipeline.builder.on_tick, queue_maxsize=10)
         pipeline.attach_receiver(receiver)
 
         persist_calls = 0
-        original_persist = pipeline._persist_candle
+        original_persist = pipeline.coordinator.on_completed_candle
 
         def tracked_persist(candle: CompletedOneMinuteCandle) -> None:
             nonlocal persist_calls

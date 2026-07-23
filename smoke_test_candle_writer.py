@@ -30,6 +30,7 @@ from historical_collector import (
 )
 from live_candle_pipeline import LiveCandlePipeline
 from live_one_minute_candle_writer import LiveOneMinuteCandleWriter
+from market_data_coordinator import MarketDataCoordinator
 from one_minute_candle_builder import BuilderMetrics
 from tick_event import IST
 from tick_receiver import TickReceiver
@@ -94,7 +95,7 @@ def _load_smoke_symbols(
 
 
 def _wrap_on_candle(state: SmokeState, pipeline: LiveCandlePipeline):
-    original = pipeline._persist_candle
+    original = pipeline.coordinator.on_completed_candle
 
     def on_candle(candle: CompletedOneMinuteCandle) -> None:
         symbol = state.token_to_symbol.get(candle.instrument_token, "unknown")
@@ -204,7 +205,8 @@ def main() -> int:
         db_path=db_path,
         token_to_symbol=token_to_symbol,
     )
-    pipeline = LiveCandlePipeline(writer=writer)
+    coordinator = MarketDataCoordinator(candle_writer=writer)
+    pipeline = LiveCandlePipeline(coordinator=coordinator)
     pipeline.builder._on_candle = _wrap_on_candle(state, pipeline)
     state.pipeline = pipeline
 

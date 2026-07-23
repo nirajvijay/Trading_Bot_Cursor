@@ -1,0 +1,31 @@
+# Check if current access token is valid
+python3 login.py --check-token
+
+# Fresh login (saves access token + refresh token if available)
+python3 login.py
+
+# Collect Nifty 50 instrument tokens (required before tick receiver)
+python3 instrument_collector.py
+
+# Generate per-minute baselines (run after historical is current; use next session)
+python3 baseline_generator.py
+
+# Start live Kite WebSocket tick receiver (Nifty 50, MODE_FULL)
+python3 tick_receiver.py
+
+# Tick receiver with custom options
+python3 tick_receiver.py --stale-seconds 30 --queue-maxsize 10000 --health-interval 10
+
+# Live candle writer smoke test
+python3 smoke_test_candle_writer.py --symbols RELIANCE,TCS,INFY --min-candles 2
+
+# Offline intraday spike E2E replay (market closed / no Kite required)
+python3 smoke_test_intraday_spike_replay.py
+
+# Run all unit/integration tests
+python3 -m unittest discover -s tests -v
+
+# Intraday spike ops checklist
+# See Reference/intraday_spike_ops_checklist.md
+# Strategy architecture principles
+# See Reference/strategy_architecture_principles.md

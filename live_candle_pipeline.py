@@ -1,32 +1,34 @@
 """
-Live candle pipeline: TickReceiver -> OneMinuteCandleBuilder -> LiveOneMinuteCandleWriter.
+Live candle pipeline: TickReceiver -> OneMinuteCandleBuilder -> coordinator.
 
-Owns wiring, persistence error classification at the callback boundary, and
-deterministic shutdown ordering.
+Owns tick/build lifecycle and fatal candle-emission surface.
+Post-candle fan-out (writer + strategy) belongs to MarketDataCoordinator.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from candle_aggregation import CompletedOneMinuteCandle
-from candle_emission import CandleEmissionError, FailedEmission
-from live_one_minute_candle_writer import (
-    LiveOneMinuteCandleWriter,
-    is_unrecoverable_persistence_error,
-)
+from candle_emission import FailedEmission
+from market_data_coordinator import MarketDataCoordinator
 from one_minute_candle_builder import OneMinuteCandleBuilder
 from tick_receiver import TickReceiver
 
 
 class LiveCandlePipeline:
-    def __init__(self, *, writer: LiveOneMinuteCandleWriter) -> None:
-        self._writer = writer
+    def __init__(self, *, coordinator: MarketDataCoordinator) -> None:
+        self._coordinator = coordinator
         self._receiver: Optional[TickReceiver] = None
-        self._builder = OneMinuteCandleBuilder(on_candle=self._persist_candle)
+        self._builder = OneMinuteCandleBuilder(
+            on_candle=self._coordinator.on_completed_candle
+        )
 
     def attach_receiver(self, receiver: TickReceiver) -> None:
         self._receiver = receiver
+
+    @property
+    def coordinator(self) -> MarketDataCoordinator:
+        return self._coordinator
 
     @property
     def receiver(self) -> TickReceiver:
@@ -39,8 +41,9 @@ class LiveCandlePipeline:
         return self._builder
 
     @property
-    def writer(self) -> LiveOneMinuteCandleWriter:
-        return self._writer
+    def writer(self):
+        """Backward-compatible access to the candle writer via the coordinator."""
+        return self._coordinator.candle_writer
 
     @property
     def fatal_error(self) -> Optional[BaseException]:
@@ -56,14 +59,6 @@ class LiveCandlePipeline:
     def is_fatal(self) -> bool:
         return self.fatal_error is not None
 
-    def _persist_candle(self, candle: CompletedOneMinuteCandle) -> None:
-        try:
-            self._writer.on_candle(candle)
-        except Exception as exc:
-            if is_unrecoverable_persistence_error(exc):
-                raise CandleEmissionError(candle, exc) from exc
-            raise
-
     def run(self) -> None:
         """Block until shutdown; re-raise fatal errors in the caller thread."""
         self.receiver.start()
@@ -73,4 +68,4 @@ class LiveCandlePipeline:
         should_flush = flush if flush is not None else not self.is_fatal
         if should_flush:
             self._builder.flush()
-        self._writer.close()
+        self._coordinator.close()
