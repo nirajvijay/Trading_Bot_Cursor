@@ -55,6 +55,15 @@ STRATEGY_MODULES = {
     "intraday_pullback_rules",
     "intraday_pullback_engine",
     "intraday_pullback_writer",
+    "continuation_types",
+    "continuation_features",
+    "continuation_metrics",
+    "continuation_state",
+    "continuation_tick_size",
+    "intraday_continuation_config",
+    "intraday_continuation_rules",
+    "intraday_continuation_engine",
+    "intraday_continuation_writer",
 }
 
 

@@ -55,6 +55,8 @@ _ALLOWED: Dict[SetupState, frozenset[SetupState]] = {
     "CONTINUATION_MONITORING": frozenset(
         {
             "CONTINUATION_MONITORING",
+            "CONTINUATION_TRIGGERED",
+            "CONTINUATION_REJECTED",
             "TRADED",
             "INVALIDATED",
             "EXPIRED",

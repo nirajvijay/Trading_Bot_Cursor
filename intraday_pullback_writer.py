@@ -10,13 +10,13 @@ import json
 import sqlite3
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, List, Mapping, Optional
 
 from live_one_minute_candle_writer import DEFAULT_DB_PATH, is_retryable_sqlite_error
-from pullback_types import GapAnalytics, PullbackSetup, SetupEventType, SetupState
+from pullback_types import PullbackSetup, SetupEventType, SetupState
 
 CREATE_SETUPS_SQL = """
 CREATE TABLE IF NOT EXISTS live_pullback_setups (

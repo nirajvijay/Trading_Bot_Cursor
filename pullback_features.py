@@ -105,6 +105,8 @@ def empty_sequence_after_impulse(
         ema20_value=None,
         ema20_interacted=False,
         volumes=(),
+        pullback_swing_high=None,
+        pullback_swing_low=None,
     )
 
 
@@ -165,6 +167,16 @@ def update_sequence(
         ema20=ema20,
     ) or previous.ema20_interacted
 
+    # Swing reference: post-impulse pullback candles only (never impulse).
+    if previous.pullback_swing_high is None:
+        swing_high: Optional[float] = candle.high
+    else:
+        swing_high = max(previous.pullback_swing_high, candle.high)
+    if previous.pullback_swing_low is None:
+        swing_low: Optional[float] = candle.low
+    else:
+        swing_low = min(previous.pullback_swing_low, candle.low)
+
     return PullbackSequenceState(
         highest_high_since_impulse=highest,
         lowest_low_since_impulse=lowest,
@@ -182,6 +194,8 @@ def update_sequence(
         ema20_value=ema20,
         ema20_interacted=interacted,
         volumes=volumes,
+        pullback_swing_high=swing_high,
+        pullback_swing_low=swing_low,
     )
 
 

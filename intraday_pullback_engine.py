@@ -36,6 +36,7 @@ from pullback_state import (
 )
 from pullback_types import (
     ACTIVE_SETUP_STATES,
+    ContinuationCloseOutcome,
     GapAnalytics,
     PullbackCandidateEvent,
     PullbackSetup,
@@ -51,6 +52,9 @@ OnLifecycleEvent = Callable[
 ]
 """(tradingsymbol, setup_id, event_type, resulting_state, evaluation_candle_time)."""
 
+OnSetupTerminal = Callable[[str, str], None]
+"""(setup_id, terminal_reason) — structural terminals only; for continuation disarm."""
+
 
 class IntradayPullbackEngine:
     def __init__(
@@ -63,6 +67,7 @@ class IntradayPullbackEngine:
         metrics: Optional[PullbackMetrics] = None,
         on_pullback_ready: Optional[OnPullbackReady] = None,
         on_lifecycle_event: Optional[OnLifecycleEvent] = None,
+        on_setup_terminal: Optional[OnSetupTerminal] = None,
     ) -> None:
         self._writer = writer
         self._config = config if config is not None else IntradayPullbackRuleConfig()
@@ -72,6 +77,7 @@ class IntradayPullbackEngine:
         self._metrics = metrics if metrics is not None else PullbackMetrics()
         self._on_pullback_ready = on_pullback_ready
         self._on_lifecycle_event = on_lifecycle_event
+        self._on_setup_terminal = on_setup_terminal
 
         self._active_by_token: Dict[int, PullbackSetupRuntime] = {}
         self._runtimes: Dict[str, PullbackSetupRuntime] = {}
@@ -408,6 +414,8 @@ class IntradayPullbackEngine:
                 "pullback_candle_count": runtime.sequence.pullback_candle_count,
                 "ema20_value": ema_value,
                 "ema20_interacted": runtime.sequence.ema20_interacted,
+                "pullback_swing_high": runtime.sequence.pullback_swing_high,
+                "pullback_swing_low": runtime.sequence.pullback_swing_low,
             }
             if not self._persist_transition(
                 runtime,
@@ -430,6 +438,8 @@ class IntradayPullbackEngine:
                 sequence=runtime.sequence,
                 decision=decision,
                 detected_at=datetime.now(timezone.utc),
+                pullback_swing_high=runtime.sequence.pullback_swing_high,
+                pullback_swing_low=runtime.sequence.pullback_swing_low,
             )
             if self._on_pullback_ready is not None:
                 try:
@@ -502,6 +512,9 @@ class IntradayPullbackEngine:
             ema20_value=ema_value,
             ema20_interacted=runtime.sequence.ema20_interacted,
             volumes=runtime.sequence.volumes,
+            # Swing frozen at READY — never trail during continuation.
+            pullback_swing_high=prev.pullback_swing_high,
+            pullback_swing_low=prev.pullback_swing_low,
         )
         runtime.last_eval_5m_candle_time = candle.candle_time
 
@@ -558,6 +571,99 @@ class IntradayPullbackEngine:
                 **(detail or {}),
             },
         )
+
+    def close_after_continuation_outcome(
+        self,
+        setup_id: str,
+        outcome: ContinuationCloseOutcome,
+        *,
+        detail: Optional[dict] = None,
+        evaluation_candle_time: Optional[datetime] = None,
+    ) -> bool:
+        """
+        Operational close after authoritative continuation TRIGGERED/REJECTED.
+
+        Clears the active registry so a later spike may create a new setup.
+        Derived audit only — does not reinterpret the continuation decision.
+        Idempotent if already terminal with the same outcome.
+        """
+        if outcome not in ("CONTINUATION_TRIGGERED", "CONTINUATION_REJECTED"):
+            raise ValueError("outcome must be CONTINUATION_TRIGGERED or CONTINUATION_REJECTED")
+        runtime = self._runtimes.get(setup_id)
+        if runtime is None:
+            return False
+
+        # Idempotent: already closed the same way.
+        if runtime.state == outcome:
+            token = runtime.setup.instrument_token
+            if self._active_by_token.get(token) is runtime:
+                del self._active_by_token[token]
+            return True
+
+        if runtime.is_terminal:
+            # Different terminal already — still ensure not active.
+            token = runtime.setup.instrument_token
+            if self._active_by_token.get(token) is runtime:
+                del self._active_by_token[token]
+            return False
+
+        if runtime.state != "CONTINUATION_MONITORING":
+            # Still clear active if this runtime holds the slot.
+            token = runtime.setup.instrument_token
+            if self._active_by_token.get(token) is runtime:
+                del self._active_by_token[token]
+            return False
+
+        # REQUIRED: clear active before / regardless of audit persist success.
+        token = runtime.setup.instrument_token
+        if self._active_by_token.get(token) is runtime:
+            del self._active_by_token[token]
+
+        runtime.state = outcome  # type: ignore[assignment]
+        runtime.events.append(outcome)
+
+        # Best-effort derived audit persist.
+        next_seq = runtime.sequence_number + 1
+        try:
+            self._writer.append_event(
+                setup_id=setup_id,
+                sequence_number=next_seq,
+                event_type=outcome,
+                resulting_state=outcome,
+                evaluation_candle_time=evaluation_candle_time,
+                payload=detail or {},
+            )
+            runtime.sequence_number = next_seq
+            self._emit_lifecycle(
+                runtime.setup.tradingsymbol,
+                setup_id,
+                outcome,
+                outcome,
+                evaluation_candle_time,
+            )
+        except (PullbackConflictError, RuntimeError) as exc:
+            # Active already cleared; continuation remains authoritative.
+            logger.error(
+                "pullback derived audit failed after continuation close setup=%s: %s",
+                setup_id,
+                exc,
+            )
+            self._metrics.writer_failure += 1
+        return True
+
+    def is_setup_active(self, setup_id: str) -> bool:
+        runtime = self._runtimes.get(setup_id)
+        if runtime is None:
+            return False
+        return runtime.is_active and self._active_by_token.get(
+            runtime.setup.instrument_token
+        ) is runtime
+
+    def active_setup_id_for_token(self, instrument_token: int) -> Optional[str]:
+        runtime = self._active_by_token.get(instrument_token)
+        if runtime is None or not runtime.is_active:
+            return None
+        return runtime.setup.setup_id
 
     def on_trade_executed(
         self,
@@ -712,3 +818,15 @@ class IntradayPullbackEngine:
         token = runtime.setup.instrument_token
         if self._active_by_token.get(token) is runtime:
             del self._active_by_token[token]
+        # Notify continuation to DISARM if it was still monitoring.
+        if self._on_setup_terminal is not None:
+            reason = str(
+                payload.get("invalidation_reason")
+                or payload.get("terminal_reason")
+                or payload.get("reason")
+                or new_state
+            )
+            try:
+                self._on_setup_terminal(runtime.setup.setup_id, reason)
+            except Exception:  # noqa: BLE001
+                logger.exception("on_setup_terminal callback failed")

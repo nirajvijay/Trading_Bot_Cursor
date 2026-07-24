@@ -1,5 +1,5 @@
 """
-Live observation runner: Kite ticks → 1m/5m candles → spike → pullback.
+Live observation runner: Kite ticks → 1m/5m candles → spike → pullback → continuation.
 
 Observation only. No orders, risk, or execution.
 Default run duration: 60 minutes.
@@ -23,7 +23,11 @@ from zoneinfo import ZoneInfo
 from baseline_store import BaselineStore, DEFAULT_BASELINES_DB_PATH
 from candle_aggregation import CompletedOneMinuteCandle
 from candle_emission import CandleEmissionError
+from continuation_tick_size import TickSizePreflightError, preflight_tick_sizes
+from continuation_types import ContinuationRejectedEvent, ContinuationTriggeredEvent
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
+from intraday_continuation_engine import IntradayContinuationEngine
+from intraday_continuation_writer import IntradayContinuationWriter
 from intraday_pullback_engine import IntradayPullbackEngine
 from intraday_pullback_writer import IntradayPullbackWriter
 from intraday_spike_detector import IntradaySpikeDetector
@@ -54,6 +58,8 @@ class ObservationState:
     tokens_with_5m: Set[int] = field(default_factory=set)
     spikes_accepted: int = 0
     spikes_to_pullback: int = 0
+    continuation_triggered: int = 0
+    continuation_rejected: int = 0
     lifecycle_rows: list = field(default_factory=list)
     one_m_logged: int = 0
     five_m_logged: int = 0
@@ -152,7 +158,15 @@ def _print_coverage(
 
 def _db_counts(db_path: Path, session_date: str) -> Dict[str, int]:
     if not db_path.exists():
-        return {"1m": 0, "5m": 0, "spikes": 0, "setups": 0, "events": 0}
+        return {
+            "1m": 0,
+            "5m": 0,
+            "spikes": 0,
+            "setups": 0,
+            "events": 0,
+            "cont_arms": 0,
+            "cont_decisions": 0,
+        }
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         def _count(sql: str, params: tuple = ()) -> int:
@@ -185,10 +199,33 @@ def _db_counts(db_path: Path, session_date: str) -> Dict[str, int]:
                 """,
                 (session_date,),
             ),
+            "cont_arms": _count(
+                "SELECT COUNT(*) FROM live_continuation_arms WHERE session_date = ?",
+                (session_date,),
+            ),
+            "cont_decisions": _count(
+                """
+                SELECT COUNT(*)
+                FROM live_continuation_decisions d
+                JOIN live_continuation_arms a
+                  ON a.setup_id = d.setup_id
+                 AND a.continuation_rule_version = d.continuation_rule_version
+                WHERE a.session_date = ?
+                """,
+                (session_date,),
+            ),
         }
     except sqlite3.OperationalError:
         # Tables may not exist yet on a brand-new DB before writers open.
-        return {"1m": 0, "5m": 0, "spikes": 0, "setups": 0, "events": 0}
+        return {
+            "1m": 0,
+            "5m": 0,
+            "spikes": 0,
+            "setups": 0,
+            "events": 0,
+            "cont_arms": 0,
+            "cont_decisions": 0,
+        }
     finally:
         conn.close()
 
@@ -254,7 +291,7 @@ def _verify_integrity(db_path: Path, session_date: str) -> list[str]:
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Live observation runner (1m/5m/spike/pullback). No orders."
+        description="Live observation runner (1m/5m/spike/pullback/continuation). No orders."
     )
     p.add_argument(
         "--duration-minutes",
@@ -386,6 +423,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         token_to_symbol=token_to_symbol,
     )
     pullback_writer = IntradayPullbackWriter(db_path=args.db)
+    continuation_writer = IntradayContinuationWriter(db_path=args.db)
+
+    try:
+        tick_sizes = preflight_tick_sizes(args.instruments_db, tokens)
+    except TickSizePreflightError as exc:
+        print("FATAL tick_size preflight failed: %s" % exc, flush=True)
+        return 1
+    print("tick_size preflight OK for %d tokens" % len(tokens), flush=True)
 
     def on_lifecycle(
         tradingsymbol: str,
@@ -409,11 +454,57 @@ def main(argv: Optional[list[str]] = None) -> int:
         state.lifecycle_rows.append(line)
         print("LIFECYCLE %s" % line, flush=True)
 
+    # Forwarders so pullback and continuation can cross-wire without circular ctor.
+    continuation_holder: Dict[str, IntradayContinuationEngine] = {}
+
+    def on_pullback_ready(candidate) -> None:
+        cont = continuation_holder.get("engine")
+        if cont is not None:
+            cont.on_pullback_ready(candidate)
+
+    def on_setup_terminal(setup_id: str, reason: str) -> None:
+        cont = continuation_holder.get("engine")
+        if cont is not None:
+            cont.on_setup_terminal(setup_id, reason)
+
+    def on_triggered(event: ContinuationTriggeredEvent) -> None:
+        state.continuation_triggered += 1
+        print(
+            "CONTINUATION_TRIGGERED %s setup=%s px=%.2f vol=%d avg3=%.1f"
+            % (
+                event.tradingsymbol,
+                event.setup_id,
+                event.last_price,
+                event.breakout_candle_volume,
+                event.avg_prior_3_1m_volume,
+            ),
+            flush=True,
+        )
+
+    def on_rejected(event: ContinuationRejectedEvent) -> None:
+        state.continuation_rejected += 1
+        print(
+            "CONTINUATION_REJECTED %s setup=%s reason=%s"
+            % (event.tradingsymbol, event.setup_id, event.reason),
+            flush=True,
+        )
+
     engine = IntradayPullbackEngine(
         writer=pullback_writer,
         ema_seeds=ema_seeds,
         on_lifecycle_event=on_lifecycle,
+        on_pullback_ready=on_pullback_ready,
+        on_setup_terminal=on_setup_terminal,
     )
+
+    continuation = IntradayContinuationEngine(
+        writer=continuation_writer,
+        tick_sizes=tick_sizes,
+        pullback_closer=engine,
+        on_triggered=on_triggered,
+        on_rejected=on_rejected,
+    )
+    continuation_holder["engine"] = continuation
 
     def on_spike(event: IntradaySpikeEvent) -> None:
         state.spikes_accepted += 1
@@ -456,6 +547,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 flush=True,
             )
         detector.on_candle(candle)
+        continuation.on_one_minute(candle)
 
     def track_5m(candle) -> None:
         state.tokens_with_5m.add(candle.instrument_token)
@@ -480,12 +572,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         five_minute_builder=five_builder,
         five_minute_writer=five_writer,
         five_minute_consumers=[track_5m],
-        closeables=[spike_writer, pullback_writer],
+        closeables=[spike_writer, pullback_writer, continuation_writer],
     )
-    pipeline = LiveCandlePipeline(coordinator=coordinator)
+    pipeline = LiveCandlePipeline(
+        coordinator=coordinator,
+        tick_consumers=[continuation.on_tick],
+    )
 
     receiver = TickReceiver(
-        on_tick=pipeline.builder.on_tick,
+        on_tick=pipeline.on_tick,
         on_feed_ready=pipeline.builder.mark_feed_restored,
         on_feed_interrupted=pipeline.builder.mark_feed_interrupted,
         instruments_db=args.instruments_db,
@@ -524,9 +619,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         while not metrics_stop.wait(max(args.health_interval, 5.0)):
             sm = detector.metrics.snapshot()
             pm = engine.metrics.snapshot()
+            cm = continuation.metrics.snapshot()
             print(
                 "METRICS 1m_tokens=%d 5m_tokens=%d spikes_acc=%d pb_recv=%d "
                 "setups=%d ready_ema=%d ready_shallow=%d inv=%d exp=%d "
+                "cont_trig=%d cont_rej=%d "
                 "writer_fail=%d strat_fail=%d degraded=%d 5m_incomplete=%d"
                 % (
                     len(state.tokens_with_1m),
@@ -538,9 +635,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                     pm.pullback_ready_shallow,
                     pm.invalidated,
                     pm.expired,
-                    pm.writer_failure + sm.writer_failures,
-                    pm.strategy_failure,
-                    pm.subsystem_degraded,
+                    cm.triggered,
+                    cm.rejected_volume
+                    + cm.rejected_insufficient_history
+                    + cm.rejected_unreliable_volume,
+                    pm.writer_failure + sm.writer_failures + cm.writer_failures,
+                    pm.strategy_failure + cm.strategy_failure,
+                    pm.subsystem_degraded + cm.degraded,
                     five_builder.buckets_incomplete,
                 ),
                 flush=True,
@@ -602,11 +703,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     counts = _db_counts(args.db, session_date)
     print("=== DB counts (session_date=%s) ===" % session_date, flush=True)
-    for key in ("1m", "5m", "spikes", "setups", "events"):
-        print("  %s: %d" % (key, counts[key]), flush=True)
+    for key in ("1m", "5m", "spikes", "setups", "events", "cont_arms", "cont_decisions"):
+        print("  %s: %d" % (key, counts.get(key, 0)), flush=True)
 
     sm = detector.metrics.snapshot()
     pm = engine.metrics.snapshot()
+    cm = continuation.metrics.snapshot()
     print("=== Spike metrics ===", flush=True)
     print(
         "  candles_seen=%d eligible=%d accepted=%d rejected=%d "
@@ -638,6 +740,22 @@ def main(argv: Optional[list[str]] = None) -> int:
             pm.strategy_failure,
             pm.subsystem_degraded,
             pm.warmup_unavailable,
+        ),
+        flush=True,
+    )
+    print("=== Continuation metrics ===", flush=True)
+    print(
+        "  arms=%d triggered=%d rejected_vol=%d rejected_hist=%d "
+        "rejected_unrel=%d disarmed=%d audit_sync_fail=%d degraded=%d"
+        % (
+            cm.arms_created,
+            cm.triggered,
+            cm.rejected_volume,
+            cm.rejected_insufficient_history,
+            cm.rejected_unreliable_volume,
+            cm.disarmed_pullback_structural,
+            cm.audit_sync_failures,
+            cm.degraded,
         ),
         flush=True,
     )

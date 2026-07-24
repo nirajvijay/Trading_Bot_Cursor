@@ -129,20 +129,6 @@ def is_in_session(minute_of_day: int) -> bool:
     return SESSION_MINUTE_START <= minute_of_day <= SESSION_MINUTE_END
 
 
-def five_minute_bucket_start(minute_of_day: int) -> int | None:
-    """Return aligned 5m bucket start minute, or None if outside session.
-
-    Only returns a value when minute_of_day is already bucket-aligned.
-    For floor-to-bucket mapping use floor_five_minute_bucket_start().
-    """
-    if not is_in_session(minute_of_day):
-        return None
-    offset = minute_of_day - SESSION_MINUTE_START
-    if offset % BUCKET_SIZE != 0:
-        return None
-    return minute_of_day
-
-
 def floor_five_minute_bucket_start(minute_of_day: int) -> int | None:
     """Return the session-grid 5m bucket start containing minute_of_day.
 

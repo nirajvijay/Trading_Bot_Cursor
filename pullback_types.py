@@ -21,6 +21,8 @@ SetupState = Literal[
     "PULLBACK_MONITORING",
     "PULLBACK_READY",
     "CONTINUATION_MONITORING",
+    "CONTINUATION_TRIGGERED",
+    "CONTINUATION_REJECTED",
     "TRADED",
     "EXPIRED",
     "INVALIDATED",
@@ -40,6 +42,8 @@ ACTIVE_SETUP_STATES: FrozenSet[str] = frozenset(
 
 TERMINAL_SETUP_STATES: FrozenSet[str] = frozenset(
     {
+        "CONTINUATION_TRIGGERED",
+        "CONTINUATION_REJECTED",
         "TRADED",
         "EXPIRED",
         "INVALIDATED",
@@ -68,12 +72,15 @@ SetupEventType = Literal[
     "PULLBACK_READY",
     "CONTINUATION_ATTEMPT",
     "CONTINUATION_TRIGGERED",
+    "CONTINUATION_REJECTED",
     "TRADE_EXECUTED",
     "INVALIDATED",
     "EXPIRED",
     "SESSION_CLOSED",
     "CANCELLED",
 ]
+
+ContinuationCloseOutcome = Literal["CONTINUATION_TRIGGERED", "CONTINUATION_REJECTED"]
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,9 @@ class PullbackSequenceState:
     ema20_value: Optional[float]
     ema20_interacted: bool
     volumes: tuple[int, ...]
+    # Post-impulse pullback candles only (excludes impulse). Frozen at READY.
+    pullback_swing_high: Optional[float] = None
+    pullback_swing_low: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +180,9 @@ class PullbackCandidateEvent:
     sequence: PullbackSequenceState
     decision: PullbackDecision
     detected_at: datetime
+    # Frozen at READY from pullback candles only (impulse excluded).
+    pullback_swing_high: Optional[float] = None
+    pullback_swing_low: Optional[float] = None
 
 
 @dataclass(frozen=True)
