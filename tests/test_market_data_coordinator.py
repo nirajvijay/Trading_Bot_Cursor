@@ -96,6 +96,49 @@ class CoordinatorSpikeWiringTests(unittest.TestCase):
         self.assertEqual(self.spike_writer.metrics.spikes_inserted, 1)
         self.assertEqual(self.coordinator.metrics.candles_dispatched, 1)
 
+    def test_one_minute_strategy_runs_before_five_minute_consumers(self) -> None:
+        order: list[str] = []
+
+        def on_1m(_candle: CompletedOneMinuteCandle) -> None:
+            order.append("1m_strategy")
+
+        def on_5m(_candle) -> None:  # type: ignore[no-untyped-def]
+            order.append("5m_strategy")
+
+        from live_five_minute_candle_builder import LiveFiveMinuteCandleBuilder
+
+        builder = LiveFiveMinuteCandleBuilder()
+        coord = MarketDataCoordinator(
+            candle_writer=self.candle_writer,
+            strategy_consumers=[on_1m],
+            five_minute_builder=builder,
+            five_minute_consumers=[on_5m],
+        )
+        start = 10 * 60 + 30
+        for offset in range(5):
+            hour, mins = divmod(start + offset, 60)
+            candle = CompletedOneMinuteCandle(
+                instrument_token=_TOKEN,
+                candle_time=datetime(2026, 7, 23, hour, mins, 0, tzinfo=_IST),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.5,
+                volume=100,
+                tick_count=5,
+                volume_reliable=True,
+                completion_reason="minute_transition",
+                has_full_minute_coverage=True,
+                is_partial=False,
+            )
+            coord.on_completed_candle(candle)
+        self.assertEqual(order.count("1m_strategy"), 5)
+        self.assertEqual(order.count("5m_strategy"), 1)
+        # Final 1m strategy must precede the 5m strategy consumer.
+        last_1m = max(i for i, x in enumerate(order) if x == "1m_strategy")
+        only_5m = order.index("5m_strategy")
+        self.assertLess(last_1m, only_5m)
+
 
 if __name__ == "__main__":
     unittest.main()

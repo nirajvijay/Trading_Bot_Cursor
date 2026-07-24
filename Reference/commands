@@ -19,13 +19,23 @@ python3 tick_receiver.py --stale-seconds 30 --queue-maxsize 10000 --health-inter
 # Live candle writer smoke test
 python3 smoke_test_candle_writer.py --symbols RELIANCE,TCS,INFY --min-candles 2
 
+# Live observation runner (1m + 5m + spike + pullback). Observation only — no orders.
+# Default: one hour. Uses explicit IST session_date. Mid-session start discards first incomplete 5m buckets.
+python3 live_observation_runner.py
+python3 live_observation_runner.py --duration-minutes 60
+
 # Offline intraday spike E2E replay (market closed / no Kite required)
 python3 smoke_test_intraday_spike_replay.py
+
+# Offline live-5m + pullback E2E replay (market closed / no Kite required)
+python3 smoke_test_intraday_pullback_replay.py
 
 # Run all unit/integration tests
 python3 -m unittest discover -s tests -v
 
 # Intraday spike ops checklist
 # See Reference/intraday_spike_ops_checklist.md
+# Intraday pullback ops checklist
+# See Reference/intraday_pullback_ops_checklist.md
 # Strategy architecture principles
 # See Reference/strategy_architecture_principles.md

@@ -50,6 +50,25 @@ class FiveMinuteCandle:
 
 
 @dataclass(frozen=True)
+class CompletedFiveMinuteCandle:
+    """Completed live 5-minute bar with constituent quality rollup."""
+
+    instrument_token: int
+    candle_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    session_date: str
+    constituent_count: int
+    all_volume_reliable: bool
+    any_partial: bool
+    all_full_coverage: bool
+    tick_count: int
+
+
+@dataclass(frozen=True)
 class CompletedOneMinuteCandle:
     instrument_token: int
     candle_time: datetime
@@ -111,13 +130,28 @@ def is_in_session(minute_of_day: int) -> bool:
 
 
 def five_minute_bucket_start(minute_of_day: int) -> int | None:
-    """Return aligned 5m bucket start minute, or None if outside session."""
+    """Return aligned 5m bucket start minute, or None if outside session.
+
+    Only returns a value when minute_of_day is already bucket-aligned.
+    For floor-to-bucket mapping use floor_five_minute_bucket_start().
+    """
     if not is_in_session(minute_of_day):
         return None
     offset = minute_of_day - SESSION_MINUTE_START
     if offset % BUCKET_SIZE != 0:
         return None
     return minute_of_day
+
+
+def floor_five_minute_bucket_start(minute_of_day: int) -> int | None:
+    """Return the session-grid 5m bucket start containing minute_of_day.
+
+    Example: 10:32 (632) → 10:30 (630). Returns None outside session.
+    """
+    if not is_in_session(minute_of_day):
+        return None
+    offset = minute_of_day - SESSION_MINUTE_START
+    return SESSION_MINUTE_START + (offset // BUCKET_SIZE) * BUCKET_SIZE
 
 
 def expected_bucket_starts() -> list[int]:

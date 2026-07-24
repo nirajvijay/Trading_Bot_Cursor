@@ -18,6 +18,8 @@ MARKET_DATA_MODULES = (
     "kite_tick_normalizer.py",
     "one_minute_candle_builder.py",
     "live_one_minute_candle_writer.py",
+    "live_five_minute_candle_builder.py",
+    "live_five_minute_candle_writer.py",
     "candle_aggregation.py",
     "candle_emission.py",
     "historical_collector.py",
@@ -42,6 +44,17 @@ STRATEGY_MODULES = {
     "intraday_spike_writer",
     "candle_quality_gate",
     "baseline_store",
+    "pullback_types",
+    "pullback_features",
+    "pullback_metrics",
+    "pullback_indicators",
+    "pullback_ema_seed",
+    "pullback_gap",
+    "pullback_state",
+    "intraday_pullback_config",
+    "intraday_pullback_rules",
+    "intraday_pullback_engine",
+    "intraday_pullback_writer",
 }
 
 
