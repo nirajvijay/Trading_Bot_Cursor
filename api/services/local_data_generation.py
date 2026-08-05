@@ -151,6 +151,12 @@ def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple
     if task not in TASK_NAMES:
         return False, f"Unknown generation task: {task}"
 
+    from api.services.generation_lock import (
+        GenerationLockBusy,
+        acquire_generation_lock,
+        release_generation_lock,
+    )
+
     try:
         command = _build_command(task, session_date=session_date)
     except ValueError as exc:
@@ -168,26 +174,34 @@ def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple
                 return False, f"Refusing to write outside local data dir: {resolved}"
 
     try:
-        result = subprocess.run(
-            command,
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=GENERATION_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"Generation timed out after {GENERATION_TIMEOUT_SECONDS}s"
-    except OSError as exc:
-        return False, f"Failed to start generation: {exc}"
+        lock_file = acquire_generation_lock(task, local_data_dir=LOCAL_DATA_DIR)
+    except GenerationLockBusy as exc:
+        return False, str(exc)
 
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "Unknown error").strip()
-        tail = "\n".join(detail.splitlines()[-8:])
-        return False, f"Generation failed (exit {result.returncode}):\n{tail}"
+    try:
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                timeout=GENERATION_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"Generation timed out after {GENERATION_TIMEOUT_SECONDS}s"
+        except OSError as exc:
+            return False, f"Failed to start generation: {exc}"
 
-    summary = (result.stdout or "").strip()
-    tail = "\n".join(summary.splitlines()[-5:]) if summary else "Completed successfully"
-    return True, tail
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "Unknown error").strip()
+            tail = "\n".join(detail.splitlines()[-8:])
+            return False, f"Generation failed (exit {result.returncode}):\n{tail}"
+
+        summary = (result.stdout or "").strip()
+        tail = "\n".join(summary.splitlines()[-5:]) if summary else "Completed successfully"
+        return True, tail
+    finally:
+        release_generation_lock(lock_file, local_data_dir=LOCAL_DATA_DIR)
 
 
 def generate_action_for_task(task: str, *, available: bool, reason: str = "") -> Dict[str, object]:
