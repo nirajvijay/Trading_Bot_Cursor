@@ -14,7 +14,7 @@ from typing import List, Mapping, Optional, Sequence
 from pullback_indicators import Ema20State
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_HISTORICAL_DB = ROOT / "data" / "nifty50_historical.db"
+DEFAULT_HISTORICAL_DB = ROOT / "data" / "local" / "nifty50_historical.db"
 
 
 @dataclass(frozen=True)

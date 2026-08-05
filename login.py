@@ -150,6 +150,59 @@ def _mask_token(token: str) -> str:
     return f"{token[:4]}...{token[-4:]}"
 
 
+def mask_token(token: str) -> str:
+    """Public alias for token masking in API responses."""
+    return _mask_token(token)
+
+
+def read_auth_status() -> dict:
+    """Read-only auth configuration status with masked token previews only."""
+    env = dotenv_values(ENV_PATH)
+    api_key = env.get("KITE_API_KEY") or ""
+    api_secret = env.get("KITE_API_SECRET") or ""
+    access_token = env.get("KITE_ACCESS_TOKEN") or ""
+    refresh_token = env.get("KITE_REFRESH_TOKEN") or ""
+
+    return {
+        "api_key_configured": bool(api_key),
+        "api_secret_configured": bool(api_secret),
+        "access_token_present": bool(access_token),
+        "refresh_token_present": bool(refresh_token),
+        "masked_api_key": mask_token(api_key) if api_key else None,
+        "masked_access_token": mask_token(access_token) if access_token else None,
+        "masked_refresh_token": mask_token(refresh_token) if refresh_token else None,
+    }
+
+
+def check_access_token_details(
+    access_token: str | None = None,
+) -> tuple[bool, str, str | None]:
+    """Check token validity and return (is_valid, message, user_id)."""
+    env = dotenv_values(ENV_PATH)
+    token = access_token or env.get("KITE_ACCESS_TOKEN")
+    if not token:
+        return False, "KITE_ACCESS_TOKEN is missing from .env", None
+
+    try:
+        _require_env("KITE_API_KEY")
+    except ValueError as exc:
+        return False, str(exc), None
+
+    try:
+        kite = _get_kite(access_token=token)
+        profile = kite.profile()
+        user_id = profile.get("user_id")
+        uid = str(user_id) if user_id is not None else None
+        message = f"Access token is valid (user: {uid or 'n/a'})"
+        return True, message, uid
+    except TokenException:
+        return (
+            False,
+            "Access token is invalid or expired. Run `python login.py` to get a new token.",
+            None,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kite Connect login and token utilities")
     parser.add_argument(

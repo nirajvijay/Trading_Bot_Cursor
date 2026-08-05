@@ -121,6 +121,7 @@ class TickReceiver:
         self._ticks_enqueued = 0
         self._ticks_invalid = 0
         self._last_tick_monotonic: Optional[float] = None
+        self._last_tick_at: Optional[datetime] = None
 
         self._ticker: Optional[KiteTicker] = None
         self._worker_thread: Optional[threading.Thread] = None
@@ -143,6 +144,10 @@ class TickReceiver:
         if last_tick is None:
             return True
         return (time.monotonic() - last_tick) > threshold
+
+    @property
+    def last_tick_at(self) -> Optional[datetime]:
+        return self._last_tick_at
 
     def start(self) -> None:
         """Block until shutdown, then re-raise fatal errors in the caller thread."""
@@ -323,6 +328,7 @@ class TickReceiver:
         with self._state_cond:
             self._ticks_enqueued += 1
             self._last_tick_monotonic = time.monotonic()
+            self._last_tick_at = event.exchange_timestamp
             if self._continuity_state == FeedContinuityState.RESTORING:
                 self._continuity_state = FeedContinuityState.HEALTHY
                 self._restoring_from = None

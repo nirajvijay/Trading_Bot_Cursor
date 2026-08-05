@@ -36,8 +36,9 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_HISTORICAL_DB_PATH = ROOT / "data" / "nifty50_historical.db"
-DEFAULT_BASELINES_DB_PATH = ROOT / "data" / "nifty50_baselines.db"
+LOCAL_DATA_DIR = ROOT / "data" / "local"
+DEFAULT_HISTORICAL_DB_PATH = LOCAL_DATA_DIR / "nifty50_historical.db"
+DEFAULT_BASELINES_DB_PATH = LOCAL_DATA_DIR / "nifty50_baselines.db"
 
 GENERATOR_VERSION = "1.0.0"
 LOOKBACK_SESSIONS = 21

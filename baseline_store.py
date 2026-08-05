@@ -16,7 +16,7 @@ from typing import Dict, Literal, Mapping, Optional, Tuple
 from spike_types import BaselineSnapshot
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_BASELINES_DB_PATH = ROOT / "data" / "nifty50_baselines.db"
+DEFAULT_BASELINES_DB_PATH = ROOT / "data" / "local" / "nifty50_baselines.db"
 
 BaselineLookupStatus = Literal["hit", "miss", "unreliable"]
 

@@ -27,8 +27,9 @@ from config.nifty50_symbols import NIFTY_50_SYMBOLS
 from login import _get_kite, check_access_token
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_DB_PATH = ROOT / "data" / "nifty50_historical.db"
-DEFAULT_INSTRUMENTS_DB_PATH = ROOT / "data" / "nifty50_instruments.db"
+LOCAL_DATA_DIR = ROOT / "data" / "local"
+DEFAULT_DB_PATH = LOCAL_DATA_DIR / "nifty50_historical.db"
+DEFAULT_INSTRUMENTS_DB_PATH = LOCAL_DATA_DIR / "nifty50_instruments.db"
 
 INTERVAL = "minute"
 CHUNK_DAYS = 29
