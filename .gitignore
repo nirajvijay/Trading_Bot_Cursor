@@ -8,3 +8,9 @@ data/
 logs/
 .cursor/
 Reference/pykiteconnect/
+
+# Frontend (Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
