@@ -1,0 +1,43 @@
+"""Observation runner control (localhost only)."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from api.routers.auth import require_localhost
+from api.schemas.observation import ObservationReadinessResponse, ObservationStartResponse
+from api.services.observation_runner import compute_readiness, start_observation_runner
+
+router = APIRouter(prefix="/observation", tags=["observation"])
+
+
+@router.get("/readiness", response_model=ObservationReadinessResponse)
+def observation_readiness(
+    session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),
+) -> ObservationReadinessResponse:
+    data = compute_readiness(session_date)
+    return ObservationReadinessResponse(**data)
+
+
+@router.post(
+    "/start",
+    response_model=ObservationStartResponse,
+    dependencies=[Depends(require_localhost)],
+)
+def observation_start(
+    session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),
+) -> ObservationStartResponse:
+    readiness = compute_readiness(session_date)
+    if readiness["runner_running"]:
+        raise HTTPException(status_code=409, detail=readiness["reason"])
+    if not readiness["checklist_ok"]:
+        raise HTTPException(status_code=400, detail=readiness["reason"])
+    if not readiness["market_open"]:
+        raise HTTPException(status_code=400, detail=readiness["reason"])
+
+    success, message, pid = start_observation_runner(session_date)
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    return ObservationStartResponse(success=True, message=message, pid=pid)
