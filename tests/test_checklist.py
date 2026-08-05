@@ -17,10 +17,11 @@ from api.queries.checklist import (
     _build_kite_auth,
     fetch_premarket_checklist,
 )
-from config.nifty50_symbols import NIFTY_50_SYMBOLS
+from config.nifty100_symbols import NIFTY_100_SYMBOLS
+from universe_manifest import write_universe_manifest_atomic
 
 
-def _init_instruments_db(path: Path, *, count: int = 50, with_tick: bool = True) -> None:
+def _init_instruments_db(path: Path, *, count: int = 100, with_tick: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute(
@@ -48,7 +49,7 @@ def _init_instruments_db(path: Path, *, count: int = 50, with_tick: bool = True)
         """
     )
     now = datetime.now(timezone.utc).isoformat()
-    for i, symbol in enumerate(NIFTY_50_SYMBOLS[:count]):
+    for i, symbol in enumerate(NIFTY_100_SYMBOLS[:count]):
         tick = {"tick_size": 0.05} if with_tick else {}
         conn.execute(
             """
@@ -60,7 +61,7 @@ def _init_instruments_db(path: Path, *, count: int = 50, with_tick: bool = True)
     conn.execute(
         """
         INSERT INTO collection_runs
-        VALUES (1, ?, 50, ?, 50, NULL)
+        VALUES (1, ?, 100, ?, 100, NULL)
         """,
         (now, count),
     )
@@ -68,7 +69,7 @@ def _init_instruments_db(path: Path, *, count: int = 50, with_tick: bool = True)
     conn.close()
 
 
-def _init_historical_db(path: Path, *, session_date: str = "2026-07-31", symbol_count: int = 50) -> None:
+def _init_historical_db(path: Path, *, session_date: str = "2026-07-31", symbol_count: int = 100) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute(
@@ -93,7 +94,7 @@ def _init_historical_db(path: Path, *, session_date: str = "2026-07-31", symbol_
         )
         """
     )
-    for i, symbol in enumerate(NIFTY_50_SYMBOLS[:symbol_count]):
+    for i, symbol in enumerate(NIFTY_100_SYMBOLS[:symbol_count]):
         token = 100000 + i
         conn.execute(
             """
@@ -146,7 +147,7 @@ def _init_baselines_db(path: Path, *, as_of: str = "2026-07-31") -> None:
         )
         """
     )
-    for i, symbol in enumerate(NIFTY_50_SYMBOLS):
+    for i, symbol in enumerate(NIFTY_100_SYMBOLS):
         conn.execute(
             """
             INSERT INTO baselines VALUES (?, ?, 630, 1, 1, 0.001, 21, 1, ?)
@@ -160,6 +161,13 @@ def _init_baselines_db(path: Path, *, as_of: str = "2026-07-31") -> None:
     conn.commit()
     conn.close()
 
+
+def _write_manifest(local_dir: Path) -> None:
+    local_dir.mkdir(parents=True, exist_ok=True)
+    write_universe_manifest_atomic(local_dir / "universe_manifest.json")
+
+
+_FAKE_COMPLETED = [f"2026-07-{d:02d}" for d in range(1, 22)]
 
 class ChecklistQueryTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -216,7 +224,7 @@ class ChecklistQueryTests(unittest.TestCase):
         _init_instruments_db(db)
         result = _build_instruments(db)
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["instruments_count"], 50)
+        self.assertEqual(result["instruments_count"], 100)
 
     def test_instruments_stale_message_formats_date(self) -> None:
         db = self.root / "instruments.db"
@@ -234,16 +242,20 @@ class ChecklistQueryTests(unittest.TestCase):
 
     def test_instruments_needs_update_when_missing(self) -> None:
         db = self.root / "instruments.db"
-        _init_instruments_db(db, count=48)
+        _init_instruments_db(db, count=98)
         result = _build_instruments(db)
         self.assertEqual(result["status"], "needs_update")
 
-    def test_historical_ok(self) -> None:
+    @patch(
+        "api.queries.checklist.discover_completed_sessions",
+        return_value=_FAKE_COMPLETED,
+    )
+    def test_historical_ok(self, _mock_sessions) -> None:
         db = self.root / "historical.db"
         _init_historical_db(db)
         result = _build_historical(db)
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["symbols_covered"], 50)
+        self.assertEqual(result["symbols_covered"], 100)
 
     def test_baselines_needs_update_when_behind_historical(self) -> None:
         db = self.root / "baselines.db"
@@ -256,15 +268,20 @@ class ChecklistQueryTests(unittest.TestCase):
         historical = self.root / "historical.db"
         baselines = self.root / "baselines.db"
         live = self.root / "live.db"
+        local = self.root / "local"
         _init_instruments_db(instruments)
         _init_historical_db(historical)
         _init_baselines_db(baselines, as_of="2026-07-31")
+        _write_manifest(local)
         live.parent.mkdir(parents=True, exist_ok=True)
         sqlite3.connect(live).close()
 
         with patch("api.queries.checklist.read_auth_status") as mock_auth, patch(
             "api.queries.checklist.token_valid_for_today", return_value=True
-        ), patch("api.queries.checklist.read_token_check") as mock_cache:
+        ), patch("api.queries.checklist.read_token_check") as mock_cache, patch(
+            "api.queries.checklist.discover_completed_sessions",
+            return_value=_FAKE_COMPLETED,
+        ), patch("api.queries.checklist.config.LOCAL_DATA_DIR", local):
             mock_auth.return_value = {
                 "api_key_configured": True,
                 "api_secret_configured": True,
@@ -285,10 +302,51 @@ class ChecklistQueryTests(unittest.TestCase):
                 session_date="2026-08-03",
             )
         self.assertIn("areas", result)
-        self.assertEqual(result["areas"]["offline_checks"]["radar_row_count"], 50)
+        self.assertEqual(result["areas"]["offline_checks"]["radar_row_count"], 100)
         self.assertEqual(result["areas"]["offline_checks"]["status"], "ok")
         self.assertEqual(result["overall_status"], "ok")
 
+    def test_missing_manifest_blocks_overall_ok(self) -> None:
+        instruments = self.root / "instruments.db"
+        historical = self.root / "historical.db"
+        baselines = self.root / "baselines.db"
+        live = self.root / "live.db"
+        local = self.root / "local"
+        local.mkdir(parents=True, exist_ok=True)
+        _init_instruments_db(instruments)
+        _init_historical_db(historical)
+        _init_baselines_db(baselines, as_of="2026-07-31")
+        sqlite3.connect(live).close()
+
+        with patch("api.queries.checklist.read_auth_status") as mock_auth, patch(
+            "api.queries.checklist.token_valid_for_today", return_value=True
+        ), patch("api.queries.checklist.read_token_check") as mock_cache, patch(
+            "api.queries.checklist.discover_completed_sessions",
+            return_value=_FAKE_COMPLETED,
+        ), patch("api.queries.checklist.config.LOCAL_DATA_DIR", local):
+            mock_auth.return_value = {
+                "api_key_configured": True,
+                "api_secret_configured": True,
+                "access_token_present": True,
+                "masked_access_token": "abcd...wxyz",
+            }
+            mock_cache.return_value = {
+                "valid": True,
+                "checked_at": "2026-08-03T09:00:00+05:30",
+                "session_date": "2026-08-03",
+                "user_id": "AB1234",
+            }
+            result = fetch_premarket_checklist(
+                live_db=live,
+                instruments_db=instruments,
+                historical_db=historical,
+                baselines_db=baselines,
+                session_date="2026-08-03",
+            )
+        self.assertNotEqual(result["overall_status"], "ok")
+        self.assertTrue(
+            any("manifest" in b.lower() or "not initialized" in b.lower() for b in result["blockers"])
+        )
 
     def test_offline_fails_when_historical_missing(self) -> None:
         from api.queries.checklist import _build_offline
@@ -311,6 +369,76 @@ class ChecklistQueryTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("historical", result["missing_databases"])
 
+    def test_offline_warns_when_only_live_missing(self) -> None:
+        from api.queries.checklist import _build_offline
+
+        live = self.root / "live.db"  # deliberately not created
+        instruments = self.root / "instruments.db"
+        historical = self.root / "historical.db"
+        baselines = self.root / "baselines.db"
+        _init_instruments_db(instruments)
+        _init_historical_db(historical)
+        _init_baselines_db(baselines, as_of="2026-07-31")
+
+        result = _build_offline(
+            live,
+            instruments,
+            historical,
+            baselines,
+            "2026-08-03",
+            {
+                "instruments": "ok",
+                "historical_candles": "ok",
+                "baselines": "ok",
+                "five_minute_candles": "ok",
+            },
+        )
+        self.assertEqual(result["status"], "warning")
+        self.assertEqual(result["missing_databases"], ["live"])
+        self.assertIn("Start Observation", result["message"])
+
+    def test_missing_live_does_not_block_overall_ok(self) -> None:
+        instruments = self.root / "instruments.db"
+        historical = self.root / "historical.db"
+        baselines = self.root / "baselines.db"
+        live = self.root / "live.db"  # missing on purpose
+        local = self.root / "local"
+        local.mkdir(parents=True, exist_ok=True)
+        _init_instruments_db(instruments)
+        _init_historical_db(historical)
+        _init_baselines_db(baselines, as_of="2026-07-31")
+        _write_manifest(local)
+
+        with patch("api.queries.checklist.read_auth_status") as mock_auth, patch(
+            "api.queries.checklist.token_valid_for_today", return_value=True
+        ), patch("api.queries.checklist.read_token_check") as mock_cache, patch(
+            "api.queries.checklist.discover_completed_sessions",
+            return_value=_FAKE_COMPLETED,
+        ), patch("api.queries.checklist.config.LOCAL_DATA_DIR", local):
+            mock_auth.return_value = {
+                "api_key_configured": True,
+                "api_secret_configured": True,
+                "access_token_present": True,
+                "masked_access_token": "abcd...wxyz",
+            }
+            mock_cache.return_value = {
+                "valid": True,
+                "checked_at": "2026-08-03T09:00:00+05:30",
+                "session_date": "2026-08-03",
+                "user_id": "AB1234",
+            }
+            result = fetch_premarket_checklist(
+                live_db=live,
+                instruments_db=instruments,
+                historical_db=historical,
+                baselines_db=baselines,
+                session_date="2026-08-03",
+            )
+        self.assertEqual(result["areas"]["offline_checks"]["status"], "warning")
+        self.assertEqual(result["overall_status"], "ok")
+        self.assertFalse(
+            any("live" in b.lower() for b in result["blockers"])
+        )
 
 class ChecklistApiTests(unittest.TestCase):
     def setUp(self) -> None:
