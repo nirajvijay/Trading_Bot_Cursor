@@ -51,5 +51,6 @@ def generate_local_data(
     date = session_date or _today_ist()
     success, message = run_local_generation(task, session_date=date)
     if not success:
-        raise HTTPException(status_code=400, detail=message)
+        status = 409 if "another generation task is running" in message else 400
+        raise HTTPException(status_code=status, detail=message)
     return GenerateResponse(success=True, message=message, task=task)

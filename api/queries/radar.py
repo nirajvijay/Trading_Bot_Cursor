@@ -1,4 +1,4 @@
-"""Compose the 50-row radar table from read-only SQLite queries."""
+"""Compose the 100-row radar table from read-only SQLite queries."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from config.nifty50_symbols import NIFTY_50_SYMBOLS
+from config.nifty100_symbols import NIFTY_100_SYMBOLS
 
 from api.db import open_readonly
 from api.lib.phase_mapper import format_last_event, map_to_ui_phase
@@ -68,7 +68,7 @@ def fetch_coverage(
     baselines_db: Path,
     session_date: str,
     *,
-    subscribed: int = 50,
+    subscribed: int = 100,
 ) -> dict:
     baseline_as_of: Optional[str] = None
     try:
@@ -225,7 +225,7 @@ def fetch_radar_rows(
             symbol=symbol,
             instrument_token=token_by_symbol.get(symbol),
         )
-        for symbol in NIFTY_50_SYMBOLS
+        for symbol in NIFTY_100_SYMBOLS
     }
 
     try:

@@ -132,7 +132,7 @@ export function PreMarketChecklistPage({
               Pre-Market Checklist
             </h1>
             <p className="text-xs text-on-surface-variant mt-1">
-              System validation for NIFTY 50 live observation pipeline.
+              System validation for NIFTY 100 live observation pipeline.
             </p>
           </div>
           <div className="flex items-center gap-2">

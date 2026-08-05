@@ -19,7 +19,7 @@ from api.schemas.radar import (
     SessionCoverage,
 )
 from api.schemas.symbol_timeline import SymbolTimelineResponse
-from config.nifty50_symbols import NIFTY_50_SYMBOLS
+from config.nifty100_symbols import NIFTY_100_SYMBOLS
 
 router = APIRouter()
 
@@ -92,8 +92,8 @@ def session_radar(session_date: str) -> RadarResponse:
     response_model=SymbolTimelineResponse,
 )
 def session_symbol_timeline(session_date: str, symbol: str) -> SymbolTimelineResponse:
-    if symbol not in NIFTY_50_SYMBOLS:
-        raise HTTPException(status_code=404, detail="Symbol not in NIFTY 50")
+    if symbol not in NIFTY_100_SYMBOLS:
+        raise HTTPException(status_code=404, detail="Symbol not in NIFTY 100")
     return fetch_symbol_timeline(config.LIVE_DB_PATH, session_date, symbol)
 
 

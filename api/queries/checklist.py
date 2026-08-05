@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 from zoneinfo import ZoneInfo
 
-from config.nifty50_symbols import NIFTY_50_SYMBOLS
+from config.nifty100_symbols import NIFTY_100_SYMBOLS
+from session_quality import LOOKBACK_COMPLETED_SESSIONS, discover_completed_sessions
+from universe_manifest import default_manifest_path, validate_universe_manifest
 
 from api import config
 from api.db import open_readonly
@@ -22,7 +24,7 @@ from api.services.local_data_generation import (
 from api.services.token_check_cache import read_token_check, token_valid_for_today
 from login import read_auth_status
 
-EXPECTED_COUNT = len(NIFTY_50_SYMBOLS)
+EXPECTED_COUNT = len(NIFTY_100_SYMBOLS)
 EMA_PERIOD = 20
 INSTRUMENTS_STALE_DAYS = 7
 
@@ -138,7 +140,7 @@ def _symbols_missing_on_date(
         present = {str(r[0]) for r in rows}
     except sqlite3.OperationalError:
         present = set()
-    missing = [s for s in NIFTY_50_SYMBOLS if s not in present]
+    missing = [s for s in NIFTY_100_SYMBOLS if s not in present]
     return len(missing), missing[:limit]
 
 
@@ -250,6 +252,10 @@ def _load_instrument_tokens(instruments_db: Path) -> Dict[str, int]:
         conn.close()
 
 
+# Live DB is created by Start Observation — missing pre-start is a soft warning only.
+_OPTIONAL_PRESTART_DATABASES = frozenset({"live"})
+
+
 def _audit_databases(
     *,
     live_db: Path,
@@ -257,7 +263,11 @@ def _audit_databases(
     historical_db: Path,
     baselines_db: Path,
 ) -> Tuple[List[dict], List[str], bool]:
-    """Return (database statuses, missing names, all_required_ok)."""
+    """Return (database statuses, missing names, all_required_ok).
+
+    Missing ``live`` is reported in ``missing`` but does not set
+    ``all_required_ok`` to False (live is created by the observation runner).
+    """
     entries = [
         ("live", live_db),
         ("instruments", instruments_db),
@@ -279,10 +289,12 @@ def _audit_databases(
                 readable = True
             except (FileNotFoundError, sqlite3.Error):
                 readable = False
-                all_ok = False
+                if name not in _OPTIONAL_PRESTART_DATABASES:
+                    all_ok = False
         else:
             missing.append(name)
-            all_ok = False
+            if name not in _OPTIONAL_PRESTART_DATABASES:
+                all_ok = False
 
         statuses.append(
             {
@@ -351,7 +363,7 @@ def _build_instruments(instruments_db: Path) -> dict:
             "expected_count": EXPECTED_COUNT,
             "tick_size_count": 0,
             "last_updated": None,
-            "missing_symbols": list(NIFTY_50_SYMBOLS[:5]),
+            "missing_symbols": list(NIFTY_100_SYMBOLS[:5]),
             "copy_command": copy_command,
             "generate_action": generate,
         }
@@ -411,7 +423,7 @@ def _build_instruments(instruments_db: Path) -> dict:
             last_updated = run_at
 
     instruments_count = len(present_symbols)
-    missing = [s for s in NIFTY_50_SYMBOLS if s not in present_symbols]
+    missing = [s for s in NIFTY_100_SYMBOLS if s not in present_symbols]
 
     if instruments_count == 0:
         status = "failed"
@@ -468,7 +480,7 @@ def _build_historical(historical_db: Path) -> dict:
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
             "missing_count": EXPECTED_COUNT,
-            "missing_symbols_sample": list(NIFTY_50_SYMBOLS[:5]),
+            "missing_symbols_sample": list(NIFTY_100_SYMBOLS[:5]),
             "copy_command": copy_command,
             "db_path": db_path,
             "generate_action": generate,
@@ -500,7 +512,7 @@ def _build_historical(historical_db: Path) -> dict:
                 "symbols_covered": 0,
                 "expected_count": EXPECTED_COUNT,
                 "missing_count": EXPECTED_COUNT,
-                "missing_symbols_sample": list(NIFTY_50_SYMBOLS[:5]),
+                "missing_symbols_sample": list(NIFTY_100_SYMBOLS[:5]),
                 "copy_command": copy_command,
                 "db_path": db_path,
                 "generate_action": generate,
@@ -510,12 +522,49 @@ def _build_historical(historical_db: Path) -> dict:
         missing_count, missing_sample = _symbols_missing_on_date(
             conn, "candles", latest_date
         )
+
+        # Per-symbol completed-session quality (≥21 completed sessions required).
+        token_rows = conn.execute(
+            """
+            SELECT DISTINCT instrument_token, tradingsymbol
+            FROM candles
+            """
+        ).fetchall()
+        token_by_symbol = {str(r[1]): int(r[0]) for r in token_rows}
+        below_threshold: List[str] = []
+        for symbol in NIFTY_100_SYMBOLS:
+            token = token_by_symbol.get(symbol)
+            if token is None:
+                below_threshold.append(symbol)
+                continue
+            completed = len(
+                discover_completed_sessions(
+                    conn,
+                    token,
+                    lookback_sessions=LOOKBACK_COMPLETED_SESSIONS,
+                    as_of=latest_date,
+                )
+            )
+            if completed < LOOKBACK_COMPLETED_SESSIONS:
+                below_threshold.append(symbol)
     finally:
         conn.close()
 
-    if missing_count == 0 and symbols_covered >= EXPECTED_COUNT:
+    if below_threshold:
+        status = "needs_update"
+        sample = ", ".join(below_threshold[:8])
+        more = "" if len(below_threshold) <= 8 else f" (+{len(below_threshold) - 8} more)"
+        message = (
+            f"{len(below_threshold)}/{EXPECTED_COUNT} symbols below "
+            f"{LOOKBACK_COMPLETED_SESSIONS} completed sessions "
+            f"(incomplete dates excluded): {sample}{more}"
+        )
+    elif missing_count == 0 and symbols_covered >= EXPECTED_COUNT:
         status = "ok"
-        message = f"Latest session {latest_date} covers {symbols_covered}/{EXPECTED_COUNT} symbols"
+        message = (
+            f"Latest session {latest_date} covers {symbols_covered}/{EXPECTED_COUNT} "
+            f"symbols with ≥{LOOKBACK_COMPLETED_SESSIONS} completed sessions each"
+        )
     elif missing_count > 0:
         status = "needs_update" if missing_count > 2 else "warning"
         message = (
@@ -532,8 +581,10 @@ def _build_historical(historical_db: Path) -> dict:
         "latest_date": latest_date,
         "symbols_covered": symbols_covered,
         "expected_count": EXPECTED_COUNT,
-        "missing_count": missing_count,
-        "missing_symbols_sample": missing_sample,
+        "missing_count": missing_count if not below_threshold else len(below_threshold),
+        "missing_symbols_sample": (
+            below_threshold[:5] if below_threshold else missing_sample
+        ),
         "copy_command": copy_command,
         "db_path": db_path,
         "generate_action": generate,
@@ -769,12 +820,16 @@ def _build_offline(
         historical_db=historical_db,
         baselines_db=baselines_db,
     )
+    missing_required = [name for name in missing if name not in _OPTIONAL_PRESTART_DATABASES]
+    missing_live = "live" in missing
+
     radar_count = 0
-    try:
-        rows = fetch_radar_rows(live_db, instruments_db, session_date)
-        radar_count = len(rows)
-    except Exception:
-        radar_count = 0
+    if not missing_live:
+        try:
+            rows = fetch_radar_rows(live_db, instruments_db, session_date)
+            radar_count = len(rows)
+        except Exception:
+            radar_count = 0
 
     checklist_issues = [
         name
@@ -782,27 +837,32 @@ def _build_offline(
         if status in ("failed", "needs_update")
     ]
 
-    if missing:
+    if missing_required:
         status = "failed"
-        message = f"Missing databases: {', '.join(missing)}"
+        message = f"Missing databases: {', '.join(missing_required)}"
     elif checklist_issues:
         status = "failed"
         message = f"Checklist issues: {', '.join(checklist_issues)}"
-    elif radar_count != EXPECTED_COUNT:
+    elif not missing_live and radar_count != EXPECTED_COUNT:
         status = "failed"
         message = f"Radar returned {radar_count}/{EXPECTED_COUNT} rows"
     elif not all_local_ok:
         status = "warning"
-        message = "One or more local databases are unreadable"
+        message = "One or more required local databases are unreadable"
+    elif missing_live:
+        status = "warning"
+        message = (
+            "Live database not created yet — expected until Start Observation"
+        )
     else:
         status = "ok"
-        message = "API healthy, all local databases present, radar returns 50 rows"
+        message = "API healthy, all local databases present, radar returns 100 rows"
 
     return {
         "status": status,
         "message": message,
         "api_health": api_health,
-        "database_readable": all_local_ok and not missing,
+        "database_readable": all_local_ok and not missing_required,
         "databases": databases,
         "missing_databases": missing,
         "radar_row_count": radar_count,
@@ -880,6 +940,20 @@ def fetch_premarket_checklist(
         historical_db, instruments_db, session_date, historical_latest
     )
 
+    # Universe manifest is a hard blocker (not warning-only).
+    manifest = validate_universe_manifest(default_manifest_path(config.LOCAL_DATA_DIR))
+    if not manifest.ok:
+        # Force instruments area to hard-fail when manifest missing/mismatched,
+        # even if leftover instrument rows exist.
+        instruments = {
+            **instruments,
+            "status": "failed" if manifest.status == "failed" else "needs_update",
+            "message": manifest.message,
+        }
+        if instruments["status"] == "needs_update" and manifest.status == "not_initialized":
+            instruments["status"] = "needs_update"
+            instruments["message"] = manifest.message
+
     area_statuses = {
         "kite_auth": kite_auth["status"],
         "instruments": instruments["status"],
@@ -909,13 +983,22 @@ def fetch_premarket_checklist(
         critical_areas=critical,
     )
 
-    all_statuses = list(area_statuses.values()) + [
-        dashboard["status"],
-        kite_auth["status"],
-    ]
-    overall = _worst_status(*all_statuses)
+    # Soft offline warning (e.g. live DB not created yet) must not block
+    # overall_ok / Start Observation — live is an observation output.
+    statuses_for_overall: List[str] = []
+    for key, status in area_statuses.items():
+        if key == "offline_checks" and status == "warning":
+            continue
+        statuses_for_overall.append(status)
+    statuses_for_overall.append(dashboard["status"])
+    overall = _worst_status(*statuses_for_overall)
+    if not manifest.ok:
+        # Hard blocker: overall cannot be ok without a valid NIFTY_100 manifest.
+        overall = _worst_status(overall, "failed" if manifest.status == "failed" else "needs_update")
 
     blockers: List[str] = []
+    if not manifest.ok:
+        blockers.append(manifest.message)
     if kite_auth["status"] == "failed":
         blockers.append(kite_auth["message"])
     for name, area in (
@@ -930,6 +1013,8 @@ def fetch_premarket_checklist(
 
     if overall == "ok":
         next_step = "Start live observation runner during market hours"
+    elif not manifest.ok:
+        next_step = manifest.message
     elif kite_auth["status"] in ("warning", "failed"):
         next_step = "Validate Kite token via Check Token"
     elif blockers:

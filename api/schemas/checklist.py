@@ -65,7 +65,7 @@ class InstrumentsCheck(BaseModel):
     status: ChecklistStatus
     message: str
     instruments_count: int = 0
-    expected_count: int = 50
+    expected_count: int = 100
     tick_size_count: int = 0
     last_updated: Optional[str] = None
     missing_symbols: List[str] = Field(default_factory=list)
@@ -78,7 +78,7 @@ class HistoricalCandlesCheck(BaseModel):
     message: str
     latest_date: Optional[str] = None
     symbols_covered: int = 0
-    expected_count: int = 50
+    expected_count: int = 100
     missing_count: int = 0
     missing_symbols_sample: List[str] = Field(default_factory=list)
     copy_command: str = "python3 historical_collector.py"
@@ -92,7 +92,7 @@ class BaselinesCheck(BaseModel):
     baseline_as_of: Optional[str] = None
     expected_as_of: Optional[str] = None
     symbols_covered: int = 0
-    expected_count: int = 50
+    expected_count: int = 100
     reliable_count: int = 0
     last_generated_at: Optional[str] = None
     copy_command: str = "python3 baseline_generator.py"
@@ -105,7 +105,7 @@ class FiveMinuteCandlesCheck(BaseModel):
     message: str
     latest_date: Optional[str] = None
     symbols_covered: int = 0
-    expected_count: int = 50
+    expected_count: int = 100
     ema_seed_ready: int = 0
     ema_seed_missing: int = 0
     copy_command: str = "python3 five_minute_candle_generator.py"

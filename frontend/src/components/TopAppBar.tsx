@@ -25,13 +25,13 @@ export function TopAppBar({
   onSearchChange,
 }: Props) {
   const market = marketStatusNow()
-  const subscribed = status?.subscribed_tokens ?? coverage?.subscribed ?? 50
+  const subscribed = status?.subscribed_tokens ?? coverage?.subscribed ?? 100
 
   return (
     <header className="flex justify-between items-center h-10 px-4 w-full bg-white border-b border-outline-variant shrink-0">
       <div className="flex items-center gap-4 min-w-0">
         <span className="text-sm font-extrabold uppercase tracking-tight whitespace-nowrap">
-          NIFTY 50 live strategy table
+          NIFTY 100 live strategy table
         </span>
         <div className="h-4 w-px bg-outline-variant hidden sm:block" />
         <div className="hidden md:flex items-center gap-4 flex-wrap">
@@ -44,7 +44,7 @@ export function TopAppBar({
           </div>
           <div className="flex items-center gap-1.5">
             <span className="label-caps text-on-surface-variant">Subscribed:</span>
-            <span className="label-caps text-primary">{subscribed}/50</span>
+            <span className="label-caps text-primary">{subscribed}/100</span>
           </div>
         </div>
       </div>
