@@ -188,35 +188,17 @@ def discover_sessions_for_stock(
     """
     Return this stock's latest completed session dates (YYYY-MM-DD), newest last.
 
-    Only sessions on or before as_of are considered. When as_of is None, uses
-    all available completed sessions for the stock.
+    Incomplete calendar dates (failing session_quality) are excluded.
+    Only sessions on or before as_of are considered.
     """
-    if as_of is not None:
-        rows = historical_conn.execute(
-            """
-            SELECT DISTINCT substr(candle_time, 1, 10) AS session_date
-            FROM candles
-            WHERE instrument_token = ?
-              AND substr(candle_time, 1, 10) <= ?
-            ORDER BY session_date DESC
-            LIMIT ?
-            """,
-            (instrument_token, as_of, lookback_sessions),
-        ).fetchall()
-    else:
-        rows = historical_conn.execute(
-            """
-            SELECT DISTINCT substr(candle_time, 1, 10) AS session_date
-            FROM candles
-            WHERE instrument_token = ?
-            ORDER BY session_date DESC
-            LIMIT ?
-            """,
-            (instrument_token, lookback_sessions),
-        ).fetchall()
+    from session_quality import discover_completed_sessions
 
-    # Query returns newest-first; reverse to chronological order.
-    return [row[0] for row in reversed(rows)]
+    return discover_completed_sessions(
+        historical_conn,
+        instrument_token,
+        lookback_sessions=lookback_sessions,
+        as_of=as_of,
+    )
 
 
 def load_session_candles(

@@ -1,5 +1,5 @@
 """
-Live Kite WebSocket tick receiver for Nifty 50 instruments.
+Live Kite WebSocket tick receiver for Nifty 100 instruments.
 
 Connect -> Receive -> Normalize -> Assign sequence -> Enqueue
 
@@ -93,7 +93,7 @@ class TickReceiver:
         stocks = load_nifty50_tokens(self._instruments_db, kite=kite)
         if not stocks:
             raise RuntimeError(
-                "No Nifty 50 instrument tokens found in %s. Run instrument_collector.py first."
+                "No Nifty 100 instrument tokens found in %s. Run instrument_collector.py first."
                 % self._instruments_db
             )
 
@@ -102,11 +102,11 @@ class TickReceiver:
             stock.instrument_token: stock.tradingsymbol for stock in stocks
         }
 
-        if len(stocks) < 50:
+        if len(stocks) < 100:
             logger.warning(
-                "Loaded %d/50 Nifty 50 tokens (%d missing).",
+                "Loaded %d/100 Nifty 100 tokens (%d missing).",
                 len(stocks),
-                50 - len(stocks),
+                100 - len(stocks),
             )
 
         self._queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
@@ -491,7 +491,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Live Kite WebSocket tick receiver for Nifty 50")
+    parser = argparse.ArgumentParser(description="Live Kite WebSocket tick receiver for Nifty 100")
     parser.add_argument(
         "--instruments-db",
         default=str(DEFAULT_INSTRUMENTS_DB_PATH),

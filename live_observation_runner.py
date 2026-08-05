@@ -358,7 +358,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     session_date = _ist_today()
     stocks = load_nifty50_tokens(args.instruments_db)
     if not stocks:
-        print("No Nifty 50 tokens loaded from %s" % args.instruments_db, flush=True)
+        print("No Nifty 100 tokens loaded from %s" % args.instruments_db, flush=True)
         return 1
     token_to_symbol = {s.instrument_token: s.tradingsymbol for s in stocks}
     tokens = list(token_to_symbol.keys())

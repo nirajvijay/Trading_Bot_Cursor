@@ -1,5 +1,5 @@
 """
-Download historical 1-minute candles for Nifty 50 stocks via Kite Connect.
+Download historical 1-minute candles for Nifty 100 stocks via Kite Connect.
 
 Fetches data in 29-day chunks (Kite limits minute data to ~30 days per request)
 and stores all candles in a single SQLite database keyed by instrument_token.
@@ -23,7 +23,7 @@ from pathlib import Path
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import InputException, PermissionException, TokenException
 
-from config.nifty50_symbols import NIFTY_50_SYMBOLS
+from config.nifty100_symbols import NIFTY_100_SYMBOLS
 from login import _get_kite, check_access_token
 
 ROOT = Path(__file__).resolve().parent
@@ -92,7 +92,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 def load_nifty50_tokens(
     instruments_db: Path,
     kite: KiteConnect | None = None,
-    symbols: tuple[str, ...] = NIFTY_50_SYMBOLS,
+    symbols: tuple[str, ...] = NIFTY_100_SYMBOLS,
 ) -> list[StockToken]:
     """Load instrument tokens from instruments DB, with Kite API fallback."""
     tokens: list[StockToken] = []
@@ -247,11 +247,11 @@ def collect_historical(
         raise RuntimeError(message)
 
     kite = _get_kite()
-    symbols = (symbol.upper(),) if symbol else NIFTY_50_SYMBOLS
+    symbols = (symbol.upper(),) if symbol else NIFTY_100_SYMBOLS
     stocks = load_nifty50_tokens(instruments_db, kite=kite, symbols=symbols)
 
     if symbol and not stocks:
-        raise ValueError(f"Symbol not found in Nifty 50 list or instruments DB: {symbol}")
+        raise ValueError(f"Symbol not found in Nifty 100 list or instruments DB: {symbol}")
 
     chunks = build_date_chunks(months=months)
     collected_at = datetime.now().isoformat(timespec="seconds")
@@ -332,7 +332,7 @@ def collect_historical(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Download Nifty 50 historical 1-minute candles into SQLite"
+        description="Download Nifty 100 historical 1-minute candles into SQLite"
     )
     parser.add_argument(
         "--months",
@@ -352,7 +352,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--symbol",
-        help="Download a single Nifty 50 symbol only (e.g. RELIANCE)",
+        help="Download a single Nifty 100 symbol only (e.g. RELIANCE)",
     )
     args = parser.parse_args()
 
