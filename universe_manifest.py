@@ -53,6 +53,13 @@ def write_universe_manifest_atomic(path: Path, *, created_at: Optional[str] = No
                 tmp.unlink()
             except OSError:
                 pass
+    # Manifest identity is part of checklist cache validation; drop stale cache.
+    try:
+        from api.services.checklist_cache import invalidate_checklist_cache
+
+        invalidate_checklist_cache(local_data_dir=path.parent)
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)

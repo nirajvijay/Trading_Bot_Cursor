@@ -21,6 +21,7 @@ from api.schemas.auth import (
     SessionRequest,
     SessionResponse,
 )
+from api.services.checklist_cache import invalidate_checklist_cache
 from api.services.token_check_cache import write_token_check
 from login import (
     check_access_token_details,
@@ -87,6 +88,7 @@ def create_session(body: SessionRequest) -> SessionResponse:
 
     refresh = session.get("refresh_token")
     user_id = session.get("user_id")
+    invalidate_checklist_cache()
     return SessionResponse(
         success=True,
         user_id=str(user_id) if user_id is not None else None,
@@ -100,4 +102,5 @@ def create_session(body: SessionRequest) -> SessionResponse:
 def check_token() -> CheckTokenResponse:
     valid, message, user_id = check_access_token_details()
     write_token_check(valid=valid, user_id=user_id)
+    invalidate_checklist_cache()
     return CheckTokenResponse(valid=valid, message=message, user_id=user_id)

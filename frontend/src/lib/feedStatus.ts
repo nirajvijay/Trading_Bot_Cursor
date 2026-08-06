@@ -1,7 +1,16 @@
 import type { RunnerStatus } from '../api/types'
 import { formatTimeIst } from './format'
 
-export type FeedStatusCode = 'STABLE' | 'STALE' | 'DISCONNECTED' | 'UNKNOWN' | 'OFFLINE'
+export type FeedStatusCode =
+  | 'STABLE'
+  | 'STALE'
+  | 'DISCONNECTED'
+  | 'UNKNOWN'
+  | 'OFFLINE'
+  | 'UNAVAILABLE'
+
+/** Request-level + file-level presence for the observation runner. */
+export type RunnerPresence = 'running' | 'stopped' | 'unknown'
 
 export interface FeedStatusView {
   code: FeedStatusCode
@@ -13,9 +22,19 @@ export interface FeedStatusView {
 
 export function resolveFeedStatus(
   status: RunnerStatus | null,
-  runnerRunning: boolean,
+  presence: RunnerPresence,
 ): FeedStatusView {
-  if (!runnerRunning) {
+  if (presence === 'unknown') {
+    return {
+      code: 'UNAVAILABLE',
+      label: 'Status unavailable',
+      detail: 'Could not load runner status. Retrying…',
+      tone: 'neutral',
+      showAlert: false,
+    }
+  }
+
+  if (presence === 'stopped') {
     return {
       code: 'OFFLINE',
       label: 'Observation off',
@@ -43,7 +62,7 @@ export function resolveFeedStatus(
   if (feed === 'STALE') {
     return {
       code: 'STALE',
-      label: 'Tick feed stale',
+      label: 'Observation Running — Feed Stale',
       detail: lastTick
         ? `No fresh ticks since ${lastTick} IST. Stop and restart observation.`
         : 'No recent ticks. Stop and restart observation.',
@@ -64,9 +83,18 @@ export function resolveFeedStatus(
 
   return {
     code: 'UNKNOWN',
-    label: 'Feed status unknown',
-    detail: 'Waiting for runner status. If this persists, restart observation.',
+    label: 'Observation Running',
+    detail: 'Waiting for runner feed details. If this persists, restart observation.',
     tone: 'neutral',
     showAlert: true,
   }
+}
+
+export function resolveRunnerPresence(
+  status: RunnerStatus | null,
+  statusFetchOk: boolean,
+): RunnerPresence {
+  if (!statusFetchOk) return 'unknown'
+  if (status?.runner_state === 'running') return 'running'
+  return 'stopped'
 }

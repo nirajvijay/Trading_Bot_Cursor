@@ -1,4 +1,4 @@
-"""Tests for observation readiness and start endpoints."""
+"""Tests for observation readiness, start lease, and related endpoints."""
 
 from __future__ import annotations
 
@@ -55,12 +55,35 @@ class ObservationRunnerTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertTrue(is_runner_running(path))
+            with patch(
+                "api.services.observation_runner.reconcile_start_lock_with_heartbeat"
+            ), patch(
+                "api.services.observation_runner.is_start_lease_active",
+                return_value=False,
+            ):
+                self.assertTrue(is_runner_running(path, session_date="2026-08-03"))
 
     def test_is_runner_running_false_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "missing.json"
-            self.assertFalse(is_runner_running(path))
+            with patch(
+                "api.services.observation_runner.reconcile_start_lock_with_heartbeat"
+            ), patch(
+                "api.services.observation_runner.is_start_lease_active",
+                return_value=False,
+            ):
+                self.assertFalse(is_runner_running(path, session_date="2026-08-03"))
+
+    def test_is_runner_running_true_during_start_lease_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "missing.json"
+            with patch(
+                "api.services.observation_runner.reconcile_start_lock_with_heartbeat"
+            ), patch(
+                "api.services.observation_runner.is_start_lease_active",
+                return_value=True,
+            ):
+                self.assertTrue(is_runner_running(path, session_date="2026-08-03"))
 
     @patch("api.services.observation_runner.fetch_checklist_summary")
     @patch("api.services.observation_runner.is_runner_running", return_value=False)
@@ -71,6 +94,7 @@ class ObservationRunnerTests(unittest.TestCase):
         mock_checklist.return_value = {
             "overall_status": "ok",
             "session_date": "2026-08-03",
+            "reason_summary": "",
         }
         result = compute_readiness("2026-08-03")
         self.assertTrue(result["checklist_ok"])
@@ -87,11 +111,27 @@ class ObservationRunnerTests(unittest.TestCase):
         mock_checklist.return_value = {
             "overall_status": "warning",
             "session_date": "2026-08-03",
+            "reason_summary": "Historical candles: missing data",
         }
         result = compute_readiness("2026-08-03")
         self.assertFalse(result["checklist_ok"])
         self.assertFalse(result["can_start"])
-        self.assertIn("Pre-Market Checklist", result["reason"])
+        self.assertIn("Historical candles", result["reason"])
+
+    @patch("api.services.observation_runner.fetch_checklist_summary")
+    @patch("api.services.observation_runner.is_runner_running", return_value=False)
+    @patch("api.services.observation_runner.is_market_open", return_value=True)
+    def test_compute_readiness_cache_miss_reason(
+        self, _mock_market, _mock_runner, mock_checklist
+    ) -> None:
+        mock_checklist.return_value = {
+            "overall_status": "not_checked",
+            "session_date": "2026-08-03",
+            "reason_summary": "Run Pre-Market Checklist",
+        }
+        result = compute_readiness("2026-08-03")
+        self.assertFalse(result["can_start"])
+        self.assertEqual(result["reason"], "Run Pre-Market Checklist")
 
     @patch("api.services.observation_runner.fetch_checklist_summary")
     @patch("api.services.observation_runner.is_runner_running", return_value=False)
@@ -102,11 +142,31 @@ class ObservationRunnerTests(unittest.TestCase):
         mock_checklist.return_value = {
             "overall_status": "ok",
             "session_date": "2026-08-03",
+            "reason_summary": "",
         }
         result = compute_readiness("2026-08-03")
         self.assertTrue(result["can_start"])
         self.assertEqual(result["reason"], "")
         self.assertIsNotNone(result["expected_stop_at"])
+
+    def test_compute_readiness_does_not_call_full_checklist(self) -> None:
+        with patch(
+            "api.services.observation_runner.read_checklist_cache",
+            return_value={
+                "session_date": "2026-08-03",
+                "overall_status": "ok",
+                "reason_summary": "",
+            },
+        ), patch(
+            "api.services.observation_runner.is_runner_running", return_value=False
+        ), patch(
+            "api.services.observation_runner.is_market_open", return_value=True
+        ), patch(
+            "api.queries.checklist.fetch_premarket_checklist"
+        ) as mock_full:
+            result = compute_readiness("2026-08-03")
+            self.assertTrue(result["can_start"])
+            mock_full.assert_not_called()
 
 
 class SessionCloseScheduleTests(unittest.TestCase):
@@ -153,7 +213,6 @@ class SessionCloseEngineTests(unittest.TestCase):
         engine.on_session_closed.assert_called_once_with(session_date)
 
 
-
 class ObservationApiTests(unittest.TestCase):
     def setUp(self) -> None:
         from api.routers import auth as auth_router
@@ -183,53 +242,45 @@ class ObservationApiTests(unittest.TestCase):
         self.assertEqual(body["session_date"], "2026-08-03")
 
     def test_start_rejects_when_checklist_not_ok(self) -> None:
-        with patch("api.routers.observation.compute_readiness") as mock_ready:
-            mock_ready.return_value = {
-                "checklist_ok": False,
-                "checklist_status": "warning",
-                "market_open": True,
-                "runner_running": False,
-                "can_start": False,
-                "reason": "Complete Pre-Market Checklist first",
-                "session_date": "2026-08-03",
-            }
-            client = self.client
-            res = client.post("/api/v1/observation/start?session_date=2026-08-03")
+        with patch(
+            "api.routers.observation.start_observation_runner",
+            return_value=(False, "Complete Pre-Market Checklist first", None),
+        ):
+            res = self.client.post("/api/v1/observation/start?session_date=2026-08-03")
         self.assertEqual(res.status_code, 400)
         self.assertIn("Pre-Market Checklist", res.json()["detail"])
 
     def test_start_rejects_when_market_closed(self) -> None:
-        with patch("api.routers.observation.compute_readiness") as mock_ready:
-            mock_ready.return_value = {
-                "checklist_ok": True,
-                "checklist_status": "ok",
-                "market_open": False,
-                "runner_running": False,
-                "can_start": False,
-                "reason": "Market closed — available 09:15–15:30 IST on weekdays",
-                "session_date": "2026-08-03",
-            }
-            client = self.client
-            res = client.post("/api/v1/observation/start?session_date=2026-08-03")
+        with patch(
+            "api.routers.observation.start_observation_runner",
+            return_value=(
+                False,
+                "Market closed — available 09:15–15:30 IST on weekdays",
+                None,
+            ),
+        ):
+            res = self.client.post("/api/v1/observation/start?session_date=2026-08-03")
         self.assertEqual(res.status_code, 400)
         self.assertIn("Market closed", res.json()["detail"])
 
+    def test_start_conflict_when_already_starting(self) -> None:
+        with patch(
+            "api.routers.observation.start_observation_runner",
+            return_value=(
+                False,
+                "Observation runner is already starting (pid=99, session_date=2026-08-03, started_at=x)",
+                None,
+            ),
+        ):
+            res = self.client.post("/api/v1/observation/start?session_date=2026-08-03")
+        self.assertEqual(res.status_code, 409)
+
     def test_start_succeeds_when_gated_ok(self) -> None:
-        with patch("api.routers.observation.compute_readiness") as mock_ready, patch(
+        with patch(
             "api.routers.observation.start_observation_runner",
             return_value=(True, "Observation runner started (pid 12345)", 12345),
         ):
-            mock_ready.return_value = {
-                "checklist_ok": True,
-                "checklist_status": "ok",
-                "market_open": True,
-                "runner_running": False,
-                "can_start": True,
-                "reason": "",
-                "session_date": "2026-08-03",
-            }
-            client = self.client
-            res = client.post("/api/v1/observation/start?session_date=2026-08-03")
+            res = self.client.post("/api/v1/observation/start?session_date=2026-08-03")
         self.assertEqual(res.status_code, 200)
         body = res.json()
         self.assertTrue(body["success"])

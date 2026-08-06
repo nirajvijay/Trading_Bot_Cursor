@@ -1,11 +1,12 @@
 import type { ObservationReadiness, RunnerStatus, SessionCoverage } from '../api/types'
-import { resolveFeedStatus } from '../lib/feedStatus'
+import { resolveFeedStatus, type RunnerPresence } from '../lib/feedStatus'
 import { formatTimeIst } from '../lib/format'
 import { FeedStatusBadge } from './FeedStatusBadge'
 
 interface Props {
   coverage: SessionCoverage | null
   status: RunnerStatus | null
+  runnerPresence: RunnerPresence
   observationReadiness: ObservationReadiness | null
   startingObservation: boolean
   observationError: string | null
@@ -16,16 +17,17 @@ interface Props {
 export function StatusStrip({
   coverage,
   status,
+  runnerPresence,
   observationReadiness,
   startingObservation,
   observationError,
   onStartObservation,
   onExport,
 }: Props) {
-  const runnerRunning = observationReadiness?.runner_running ?? false
+  const runnerRunning = runnerPresence === 'running'
   const canStart = observationReadiness?.can_start ?? false
   const disabledReason = observationReadiness?.reason ?? 'Loading readiness…'
-  const feed = resolveFeedStatus(status, runnerRunning)
+  const feed = resolveFeedStatus(status, runnerPresence)
 
   return (
     <div className="bg-surface-container-low px-4 py-2 flex justify-between items-center border-b border-outline-variant shrink-0 gap-4 flex-wrap">
@@ -84,15 +86,21 @@ export function StatusStrip({
                 feed.tone === 'ok' ? 'bg-positive pulse-green' : feed.tone === 'warn' ? 'bg-amber-500' : feed.tone === 'error' ? 'bg-negative' : 'bg-on-surface-variant'
               }`}
             />
-            Observation Running
+            {feed.code === 'STALE' ? 'Observation Running — Feed Stale' : 'Observation Running'}
             <span className="font-normal text-[10px] opacity-80">· Until 15:30 IST</span>
           </span>
         ) : (
           <button
             type="button"
             className="bg-primary text-white px-3 py-1 rounded shadow-sm hover:opacity-90 label-caps flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={!canStart || startingObservation}
-            title={!canStart ? disabledReason : 'Start live observation until 15:30 IST'}
+            disabled={!canStart || startingObservation || runnerPresence === 'unknown'}
+            title={
+              runnerPresence === 'unknown'
+                ? 'Status unavailable — cannot confirm runner state'
+                : !canStart
+                  ? disabledReason
+                  : 'Start live observation until 15:30 IST'
+            }
             onClick={onStartObservation}
           >
             <span className="material-symbols-outlined text-[16px]">

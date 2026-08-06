@@ -92,6 +92,8 @@ export interface RunnerStatus {
   feed_status?: string | null
   last_tick_time?: string | null
   updated_at?: string | null
+  /** Server-derived from status file freshness; absent on older backends. */
+  runner_state?: 'running' | 'stopped' | null
 }
 
 export interface AuthStatusResponse {

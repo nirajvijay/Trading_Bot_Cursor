@@ -13,6 +13,7 @@ from api import config
 from api.queries.checklist import fetch_premarket_checklist
 from api.routers.auth import require_localhost
 from api.schemas.checklist import GenerateResponse, PreMarketChecklistResponse
+from api.services.checklist_cache import invalidate_checklist_cache, write_checklist_cache
 from api.services.local_data_generation import TASK_NAMES, run_local_generation
 
 router = APIRouter(tags=["checklist"])
@@ -34,6 +35,8 @@ def premarket_checklist(
         baselines_db=config.BASELINES_DB_PATH,
         session_date=date,
     )
+    # Cache every completed result (ok / warning / failed), not only green.
+    write_checklist_cache(data)
     return PreMarketChecklistResponse(**data)
 
 
@@ -53,4 +56,5 @@ def generate_local_data(
     if not success:
         status = 409 if "another generation task is running" in message else 400
         raise HTTPException(status_code=status, detail=message)
+    invalidate_checklist_cache()
     return GenerateResponse(success=True, message=message, task=task)

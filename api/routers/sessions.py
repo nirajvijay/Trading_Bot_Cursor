@@ -99,7 +99,7 @@ def session_symbol_timeline(session_date: str, symbol: str) -> SymbolTimelineRes
 
 @router.get("/sessions/{session_date}/status", response_model=RunnerStatus)
 def session_status(session_date: str) -> RunnerStatus:
-    status = read_runner_status(str(config.RUNNER_STATUS_FILE))
-    if status.session_date and status.session_date != session_date:
-        return RunnerStatus()
-    return status
+    return read_runner_status(
+        str(config.RUNNER_STATUS_FILE),
+        expected_session_date=session_date,
+    )

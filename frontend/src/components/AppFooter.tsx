@@ -1,17 +1,21 @@
 import { formatTimeIst } from '../lib/format'
-import { resolveFeedStatus } from '../lib/feedStatus'
+import { resolveFeedStatus, type RunnerPresence } from '../lib/feedStatus'
 import type { RunnerStatus } from '../api/types'
 import type { AppTab } from './TopAppBar'
 
 interface Props {
   activeTab: AppTab
   status?: RunnerStatus | null
-  runnerRunning?: boolean
+  runnerPresence?: RunnerPresence
 }
 
-export function AppFooter({ activeTab, status = null, runnerRunning = false }: Props) {
+export function AppFooter({
+  activeTab,
+  status = null,
+  runnerPresence = 'stopped',
+}: Props) {
   const now = formatTimeIst(new Date().toISOString())
-  const feed = resolveFeedStatus(status, runnerRunning)
+  const feed = resolveFeedStatus(status, runnerPresence)
 
   if (activeTab === 'auth') {
     return (

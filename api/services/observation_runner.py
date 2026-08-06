@@ -12,7 +12,15 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from api import config
-from api.queries.checklist import fetch_premarket_checklist
+from api.services.checklist_cache import read_checklist_cache
+from api.services.observation_start_lock import (
+    ObservationStartBusy,
+    acquire_start_lock,
+    is_start_lease_active,
+    reconcile_start_lock_with_heartbeat,
+    release_start_lock,
+    update_start_lock_pid,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 ROOT = config.ROOT
@@ -63,13 +71,21 @@ def is_market_open(now: Optional[datetime] = None) -> bool:
     return SESSION_OPEN_MINUTE <= minutes < SESSION_CLOSE_MINUTE
 
 
-def is_runner_running(status_file: Optional[Path] = None) -> bool:
-    """Runner is running if status file was updated recently."""
+def is_status_heartbeat_fresh(
+    status_file: Optional[Path] = None,
+    *,
+    expected_session_date: Optional[str] = None,
+) -> bool:
+    """True when runner_status.json was updated recently for the expected session."""
     path = status_file or _status_file()
     if not path.exists():
         return False
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if expected_session_date:
+            file_session = data.get("session_date")
+            if file_session and str(file_session) != expected_session_date:
+                return False
         updated_at = data.get("updated_at")
         if not updated_at:
             return False
@@ -80,6 +96,25 @@ def is_runner_running(status_file: Optional[Path] = None) -> bool:
         return age < RUNNER_STALE_SECONDS
     except (OSError, ValueError, json.JSONDecodeError):
         return False
+
+
+def is_runner_running(
+    status_file: Optional[Path] = None,
+    *,
+    session_date: Optional[str] = None,
+) -> bool:
+    """
+    Runner is running if status heartbeat is fresh, or a start lease is still
+    active for the startup gap before the first heartbeat.
+    """
+    date = session_date or _today_ist()
+    heartbeat = is_status_heartbeat_fresh(
+        status_file, expected_session_date=date
+    )
+    reconcile_start_lock_with_heartbeat(session_date=date, heartbeat_fresh=heartbeat)
+    if heartbeat:
+        return True
+    return is_start_lease_active(date)
 
 
 def _relative(path: Path) -> str:
@@ -107,27 +142,44 @@ def _build_runner_command() -> list[str]:
 
 
 def fetch_checklist_summary(session_date: Optional[str] = None) -> dict:
+    """
+    Read cached checklist summary only (no deep DB scan).
+
+    Cache miss → not_checked with a run-checklist reason.
+    """
     date = session_date or _today_ist()
-    return fetch_premarket_checklist(
-        live_db=config.LIVE_DB_PATH,
-        instruments_db=config.INSTRUMENTS_DB_PATH,
-        historical_db=config.HISTORICAL_DB_PATH,
-        baselines_db=config.BASELINES_DB_PATH,
-        session_date=date,
-    )
+    cached = read_checklist_cache(date)
+    if cached is None:
+        return {
+            "session_date": date,
+            "overall_status": "not_checked",
+            "reason_summary": "Run Pre-Market Checklist",
+        }
+    return {
+        "session_date": cached["session_date"],
+        "overall_status": cached["overall_status"],
+        "reason_summary": cached.get("reason_summary")
+        or cached.get("next_step")
+        or (
+            ""
+            if cached["overall_status"] == "ok"
+            else "Complete Pre-Market Checklist first"
+        ),
+    }
 
 
 def compute_readiness(session_date: Optional[str] = None) -> dict:
-    checklist = fetch_checklist_summary(session_date)
+    date = session_date or _today_ist()
+    checklist = fetch_checklist_summary(date)
     checklist_ok = checklist["overall_status"] == "ok"
     market_open = is_market_open()
-    runner_running = is_runner_running()
+    runner_running = is_runner_running(session_date=date)
 
     if runner_running:
         reason = "Observation runner is already running"
         can_start = False
     elif not checklist_ok:
-        reason = "Complete Pre-Market Checklist first"
+        reason = str(checklist.get("reason_summary") or "Complete Pre-Market Checklist first")
         can_start = False
     elif not market_open:
         reason = "Market closed — available 09:15–15:30 IST on weekdays"
@@ -149,13 +201,30 @@ def compute_readiness(session_date: Optional[str] = None) -> dict:
 
 
 def start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, str, Optional[int]]:
-    readiness = compute_readiness(session_date)
+    """
+    Start the observation runner under an atomic start lease.
+
+    The lease is held through the startup gap until a fresh matching status
+    heartbeat arrives (or the spawned PID dies and the lease is reclaimed).
+    """
+    date = session_date or _today_ist()
+    readiness = compute_readiness(date)
     if readiness["runner_running"]:
         return False, readiness["reason"], None
     if not readiness["checklist_ok"]:
         return False, readiness["reason"], None
     if not readiness["market_open"]:
         return False, readiness["reason"], None
+
+    try:
+        lock_file = acquire_start_lock(date)
+    except ObservationStartBusy as exc:
+        return False, str(exc), None
+
+    # Re-check under the lock (another tab may have started between checks).
+    if is_status_heartbeat_fresh(expected_session_date=date):
+        release_start_lock(lock_file)
+        return False, "Observation runner is already running", None
 
     command = _build_runner_command()
     env = os.environ.copy()
@@ -171,6 +240,15 @@ def start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, 
             start_new_session=True,
         )
     except OSError as exc:
+        release_start_lock(lock_file)
         return False, f"Failed to start observation runner: {exc}", None
+
+    # Hold lease with spawned PID — do NOT release after Popen.
+    try:
+        update_start_lock_pid(lock_file, pid=proc.pid, session_date=date)
+    except OSError:
+        # Lease file still exists from acquire; best-effort update failed.
+        # Keep original lease (API pid) so the gap remains covered.
+        pass
 
     return True, f"Observation runner started (pid {proc.pid})", proc.pid

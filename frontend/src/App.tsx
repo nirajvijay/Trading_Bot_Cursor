@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AppFooter } from './components/AppFooter'
 import { AppSidebar } from './components/AppSidebar'
 import { useRadarDashboard } from './hooks/useRadarDashboard'
-import { usePreMarketChecklist, mergeKiteAuthStatus, computeEffectiveOverallStatus } from './hooks/usePreMarketChecklist'
+import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
 import { postStartObservation } from './api/client'
@@ -13,7 +13,7 @@ import { StatusStrip } from './components/StatusStrip'
 import { TopAppBar, type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
 import { FeedAlertBanner } from './components/FeedAlertBanner'
-import { resolveFeedStatus } from './lib/feedStatus'
+import { resolveFeedStatus, resolveRunnerPresence } from './lib/feedStatus'
 import type { RadarRow } from './api/types'
 
 function exportCsv(rows: RadarRow[]) {
@@ -63,11 +63,16 @@ export default function App() {
   const [sessionDate, setSessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
   const radarEnabled = activeTab === 'radar'
-  const { rows, coverage, status, sessions, loading, error, refresh: refreshRadar } = useRadarDashboard(
-    sessionDate,
-    5000,
-    radarEnabled,
-  )
+  const {
+    rows,
+    coverage,
+    status,
+    statusFetchOk,
+    sessions,
+    loading,
+    error,
+    refresh: refreshRadar,
+  } = useRadarDashboard(sessionDate, 5000, radarEnabled)
   const {
     data: checklistData,
     loading: checklistLoading,
@@ -123,47 +128,16 @@ export default function App() {
     return rows.filter((r) => r.symbol.includes(q))
   }, [rows, search])
 
-  const effectiveChecklistOk = useMemo(() => {
-    if (!checklistData) return false
-    const kite = checklistData.areas.kite_auth
-    const kiteStatus = mergeKiteAuthStatus(
-      kite.status,
-      tokenCheck !== null || kite.token_validated_today === true,
-      tokenCheck?.valid ?? (kite.token_validated_today ? true : null),
-    )
-    return computeEffectiveOverallStatus(checklistData, kiteStatus) === 'ok'
-  }, [checklistData, tokenCheck])
+  // Server is authoritative for Start — do not override can_start / checklist_ok.
+  const observationReadinessForUi = observationReadiness
 
-  const observationReadinessForUi = useMemo(() => {
-    if (!observationReadiness) return null
-    const checklistOk = effectiveChecklistOk || observationReadiness.checklist_ok
-    const runnerRunning = observationReadiness.runner_running
-    const marketOpen = observationReadiness.market_open
-    let reason = observationReadiness.reason
-    let canStart = observationReadiness.can_start
-    if (!checklistOk) {
-      reason = 'Complete Pre-Market Checklist first'
-      canStart = false
-    } else if (!marketOpen) {
-      reason = 'Market closed — available 09:15–15:30 IST on weekdays'
-      canStart = false
-    } else if (runnerRunning) {
-      reason = 'Observation runner is already running'
-      canStart = false
-    } else {
-      reason = ''
-      canStart = true
-    }
-    return {
-      ...observationReadiness,
-      checklist_ok: checklistOk,
-      can_start: canStart,
-      reason,
-    }
-  }, [observationReadiness, effectiveChecklistOk])
+  const runnerPresence = resolveRunnerPresence(status, statusFetchOk)
+  const feedStatus = resolveFeedStatus(status, runnerPresence)
 
-  const runnerRunning = observationReadinessForUi?.runner_running ?? false
-  const feedStatus = resolveFeedStatus(status, runnerRunning)
+  const handleChecklistRefresh = useCallback(async () => {
+    await refreshChecklist()
+    await refreshObservationReadiness()
+  }, [refreshChecklist, refreshObservationReadiness])
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -185,6 +159,7 @@ export default function App() {
               <StatusStrip
                 coverage={coverage}
                 status={status}
+                runnerPresence={runnerPresence}
                 observationReadiness={observationReadinessForUi}
                 startingObservation={startingObservation}
                 observationError={observationError}
@@ -211,7 +186,7 @@ export default function App() {
               data={checklistData}
               loading={checklistLoading}
               error={checklistError}
-              onRefresh={refreshChecklist}
+              onRefresh={handleChecklistRefresh}
               onGoToAuth={() => setActiveTab('auth')}
               tokenCheck={tokenCheck}
               tokenCheckedAt={tokenCheckedAt}
@@ -222,7 +197,7 @@ export default function App() {
             <KiteAuthPage />
           )}
         </main>
-        <AppFooter activeTab={activeTab} status={status} runnerRunning={runnerRunning} />
+        <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
       </div>
     </div>
   )

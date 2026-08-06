@@ -197,6 +197,9 @@ def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple
             tail = "\n".join(detail.splitlines()[-8:])
             return False, f"Generation failed (exit {result.returncode}):\n{tail}"
 
+        from api.services.checklist_cache import invalidate_checklist_cache
+
+        invalidate_checklist_cache(local_data_dir=LOCAL_DATA_DIR)
         summary = (result.stdout or "").strip()
         tail = "\n".join(summary.splitlines()[-5:]) if summary else "Completed successfully"
         return True, tail

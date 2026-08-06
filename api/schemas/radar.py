@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+RunnerState = Literal["running", "stopped"]
 
 
 class RadarRow(BaseModel):
@@ -50,6 +52,7 @@ class RunnerStatus(BaseModel):
     feed_status: Optional[str] = None
     last_tick_time: Optional[str] = None
     updated_at: Optional[str] = None
+    runner_state: RunnerState = "stopped"
 
 
 class HealthResponse(BaseModel):

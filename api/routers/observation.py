@@ -29,15 +29,15 @@ def observation_readiness(
 def observation_start(
     session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),
 ) -> ObservationStartResponse:
-    readiness = compute_readiness(session_date)
-    if readiness["runner_running"]:
-        raise HTTPException(status_code=409, detail=readiness["reason"])
-    if not readiness["checklist_ok"]:
-        raise HTTPException(status_code=400, detail=readiness["reason"])
-    if not readiness["market_open"]:
-        raise HTTPException(status_code=400, detail=readiness["reason"])
-
+    # Single locked start path performs cheap readiness gates + start lease.
     success, message, pid = start_observation_runner(session_date)
     if not success:
+        lowered = message.lower()
+        if (
+            "already running" in lowered
+            or "already starting" in lowered
+            or "start lease" in lowered
+        ):
+            raise HTTPException(status_code=409, detail=message)
         raise HTTPException(status_code=400, detail=message)
     return ObservationStartResponse(success=True, message=message, pid=pid)

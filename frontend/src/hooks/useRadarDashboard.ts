@@ -8,6 +8,8 @@ interface DashboardState {
   rows: RadarRow[]
   coverage: SessionCoverage | null
   status: RunnerStatus | null
+  /** False when the status request failed — presence becomes "unknown". */
+  statusFetchOk: boolean
   sessions: string[]
   loading: boolean
   error: string | null
@@ -18,6 +20,7 @@ export function useRadarDashboard(sessionDate: string, intervalMs = DEFAULT_INTE
     rows: [],
     coverage: null,
     status: null,
+    statusFetchOk: true,
     sessions: [],
     loading: true,
     error: null,
@@ -28,16 +31,21 @@ export function useRadarDashboard(sessionDate: string, intervalMs = DEFAULT_INTE
   const refresh = useCallback(async () => {
     const date = sessionRef.current
     try {
-      const [radar, coverage, status, sessions] = await Promise.all([
+      const statusPromise = fetchStatus(date)
+        .then((status) => ({ ok: true as const, status }))
+        .catch(() => ({ ok: false as const, status: null }))
+
+      const [radar, coverage, statusResult, sessions] = await Promise.all([
         fetchRadar(date),
         fetchCoverage(date),
-        fetchStatus(date),
+        statusPromise,
         fetchSessions(),
       ])
       setState({
         rows: radar.rows,
         coverage,
-        status,
+        status: statusResult.status,
+        statusFetchOk: statusResult.ok,
         sessions,
         loading: false,
         error: null,

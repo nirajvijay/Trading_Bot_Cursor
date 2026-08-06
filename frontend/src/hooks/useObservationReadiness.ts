@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { fetchObservationReadiness } from '../api/client'
 import type { ObservationReadiness } from '../api/types'
 
-const DEFAULT_INTERVAL_MS = 5000
+/** Slow poll — readiness is cache-backed; live badge uses /status. */
+const DEFAULT_INTERVAL_MS = 60_000
 
 export function useObservationReadiness(sessionDate: string, enabled: boolean) {
   const [readiness, setReadiness] = useState<ObservationReadiness | null>(null)

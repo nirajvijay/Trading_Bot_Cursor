@@ -27,7 +27,7 @@ export function FeedStatusBadge({ feed, compact = false }: Props) {
     >
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${DOT_CLASSES[feed.tone]}`} />
       {feed.label}
-      {!compact && feed.code !== 'OFFLINE' && (
+      {!compact && feed.code !== 'OFFLINE' && feed.code !== 'UNAVAILABLE' && (
         <span className="font-normal text-[10px] opacity-80 hidden sm:inline">
           · {feed.code}
         </span>
