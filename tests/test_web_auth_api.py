@@ -179,6 +179,38 @@ class WebsiteAuthTests(unittest.TestCase):
             )
             self.assertEqual(ok.status_code, 200)
 
+    def test_mfa_setup_and_confirm_require_csrf(self) -> None:
+        with AuthTestHarness() as h:
+            h.login()
+            no_csrf = h.client.post("/api/v1/account/mfa/setup", json={})
+            self.assertEqual(no_csrf.status_code, 403)
+            setup = h.client.post(
+                "/api/v1/account/mfa/setup",
+                json={},
+                headers=h.csrf_headers(),
+            )
+            self.assertEqual(setup.status_code, 200)
+            body = setup.json()
+            self.assertIn("otpauth_uri", body)
+            self.assertTrue(body["secret"])
+            self.assertTrue(body["otpauth_uri"].startswith("otpauth://"))
+
+            no_csrf_confirm = h.client.post(
+                "/api/v1/account/mfa/confirm",
+                json={"totp": "000000"},
+            )
+            self.assertEqual(no_csrf_confirm.status_code, 403)
+
+            bad_origin = h.client.post(
+                "/api/v1/account/mfa/setup",
+                json={},
+                headers={
+                    **h.csrf_headers(),
+                    "Origin": "https://evil.example",
+                },
+            )
+            self.assertEqual(bad_origin.status_code, 403)
+
     def test_mfa_confirm_rate_limit_429(self) -> None:
         with AuthTestHarness() as h:
             h.login()

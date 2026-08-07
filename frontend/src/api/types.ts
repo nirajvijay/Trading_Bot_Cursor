@@ -122,6 +122,12 @@ export interface MeResponse {
   auth_enabled: boolean
 }
 
+export interface MfaSetupResponse {
+  otpauth_uri: string
+  secret: string
+  message: string
+}
+
 export interface SessionResponse {
   success: boolean
   user_id?: string | null

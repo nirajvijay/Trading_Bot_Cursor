@@ -4,6 +4,7 @@ import type {
   KiteStartResponse,
   LoginUrlResponse,
   MeResponse,
+  MfaSetupResponse,
   ObservationReadiness,
   ObservationStartResponse,
   PreMarketChecklistResponse,
@@ -142,6 +143,14 @@ export function postStepUp(password: string, totp?: string): Promise<{ success: 
     password,
     ...(totp ? { totp } : {}),
   })
+}
+
+export function postMfaSetup(): Promise<MfaSetupResponse> {
+  return postJson<MfaSetupResponse>('/account/mfa/setup', {})
+}
+
+export function postMfaConfirm(totp: string): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/mfa/confirm', { totp })
 }
 
 export function fetchAuthStatus(): Promise<AuthStatusResponse> {

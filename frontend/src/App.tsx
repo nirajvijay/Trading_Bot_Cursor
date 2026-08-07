@@ -8,6 +8,7 @@ import { useTokenCheck } from './hooks/useTokenCheck'
 import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
 import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
+import { MfaSetupPage } from './components/MfaSetupPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarTable } from './components/RadarTable'
 import { StatusStrip } from './components/StatusStrip'
@@ -205,6 +206,18 @@ export default function App() {
 
   if (!authenticated) {
     return <LoginPage onLogin={handleLogin} />
+  }
+
+  if (me && !me.mfa_enabled) {
+    return (
+      <MfaSetupPage
+        username={me.username}
+        onLogout={() => void handleLogout()}
+        onCompleted={() => {
+          clearSession()
+        }}
+      />
+    )
   }
 
   return (
