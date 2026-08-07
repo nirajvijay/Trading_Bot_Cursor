@@ -18,6 +18,7 @@ from api.auth.deps import (
     require_web_session_mutating,
 )
 from api.auth.kite_oauth_store import reset_kite_oauth_store_cache
+from api.auth.rate_limit import reset_rate_limiter
 from api.auth.web_auth_store import (
     SessionRecord,
     reset_web_auth_store_cache,
@@ -90,6 +91,7 @@ class AuthTestHarness:
         settings.reload_from_environ()
         reset_web_auth_store_cache()
         reset_kite_oauth_store_cache()
+        reset_rate_limiter()
         clear_auth_overrides()
         store = get_web_auth_store()
         store.init_db()
@@ -104,6 +106,7 @@ class AuthTestHarness:
         settings.reload_from_environ()
         reset_web_auth_store_cache()
         reset_kite_oauth_store_cache()
+        reset_rate_limiter()
         self._tmpdir.cleanup()
 
     def _set_env(self, values: dict[str, str]) -> None:

@@ -129,6 +129,13 @@ class WebAuthStore:
         assert user is not None
         return user
 
+    def delete_all_sessions(self, user_id: int = 1) -> int:
+        """Revoke every session for the owner (password/MFA security events)."""
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return int(cur.rowcount)
+
     def reset_password(self, new_password: str) -> None:
         user = self.get_user()
         if user is None:
@@ -139,8 +146,8 @@ class WebAuthStore:
                 "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = 1",
                 (hash_password(new_password), now),
             )
-            conn.execute("DELETE FROM sessions WHERE user_id = 1")
             conn.commit()
+        self.delete_all_sessions(user.id)
 
     def clear_mfa(self) -> None:
         user = self.get_user()
@@ -157,10 +164,9 @@ class WebAuthStore:
                 """,
                 (now,),
             )
-            conn.execute(
-                "UPDATE sessions SET step_up_expires_at = NULL WHERE user_id = 1"
-            )
             conn.commit()
+        # MFA reset must invalidate all sessions (not only step-up).
+        self.delete_all_sessions(user.id)
 
     def verify_login(self, username: str, password: str) -> Optional[UserRecord]:
         user = self.get_user()
@@ -288,6 +294,8 @@ class WebAuthStore:
                 (secret, now),
             )
             conn.commit()
+        # Enrollment success: revoke all sessions; client must re-login with MFA.
+        self.delete_all_sessions(1)
 
     def change_password(self, user_id: int, new_password: str) -> None:
         now = _iso(_utc_now())
@@ -297,6 +305,7 @@ class WebAuthStore:
                 (hash_password(new_password), now, user_id),
             )
             conn.commit()
+        self.delete_all_sessions(user_id)
 
 
 _store: Optional[WebAuthStore] = None

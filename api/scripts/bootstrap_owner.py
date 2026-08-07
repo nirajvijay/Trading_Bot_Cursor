@@ -7,9 +7,13 @@ Examples:
 
 MFA bootstrap sequence (ops):
   1. Create owner locally (this script) with WEB_AUTH_ENABLED=true and MFA not required yet.
-  2. Log in on the website, enrol TOTP via /api/v1/account/mfa/setup + mfa/confirm.
-  3. Set WEB_AUTH_MFA_REQUIRED=true (production profile) and restart.
+  2. Log in on the website, enrol TOTP via /api/v1/account/mfa/setup + mfa/confirm
+     (confirm revokes all sessions — re-login with MFA).
+  3. Set WEB_AUTH_MFA_REQUIRED=true (production profile), wipe any leftover sessions if
+     needed, and restart the API (no runtime config reload).
   4. Only then expose the domain (Phase 4 — not implemented here).
+
+  --clear-mfa deletes ALL sessions. --reset-password deletes ALL sessions.
 """
 
 from __future__ import annotations
