@@ -12,6 +12,15 @@ from api.auth import settings
 from api.auth.audit import write_audit
 from api.auth.csrf import require_csrf_and_origin
 from api.auth.deps import WebAuthContext, require_web_session, require_web_session_mutating
+from api.auth.rate_limit import (
+    ACTION_LOGIN,
+    ACTION_MFA_VERIFY,
+    ACTION_STEP_UP,
+    check_rate_limit,
+    clear_auth_failures,
+    clear_login_related_failures,
+    record_auth_failure,
+)
 from api.auth.totp import generate_totp_secret, provisioning_uri, verify_totp
 from api.auth.web_auth_store import get_web_auth_store
 
@@ -80,8 +89,22 @@ def _set_session_cookies(response: Response, session_id: str, csrf_token: str) -
 
 
 def _clear_session_cookies(response: Response) -> None:
-    response.delete_cookie(settings.SESSION_COOKIE_NAME, path="/")
-    response.delete_cookie(settings.CSRF_COOKIE_NAME, path="/")
+    """Delete session cookies with the same attrs used at create time."""
+    secure = settings.WEB_AUTH_COOKIE_SECURE
+    response.delete_cookie(
+        key=settings.SESSION_COOKIE_NAME,
+        path="/",
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
+    response.delete_cookie(
+        key=settings.CSRF_COOKIE_NAME,
+        path="/",
+        secure=secure,
+        httponly=False,
+        samesite="lax",
+    )
 
 
 def _mfa_needed(user_mfa_enabled: bool) -> bool:
@@ -89,12 +112,17 @@ def _mfa_needed(user_mfa_enabled: bool) -> bool:
 
 
 @router.post("/login", response_model=MeResponse)
-def login(body: LoginRequest, response: Response) -> MeResponse:
+def login(body: LoginRequest, request: Request, response: Response) -> MeResponse:
     if not settings.WEB_AUTH_ENABLED:
         raise HTTPException(status_code=400, detail="Website auth is disabled")
+
+    check_rate_limit(ACTION_LOGIN, request, username=body.username)
+    check_rate_limit(ACTION_MFA_VERIFY, request, username=body.username)
+
     store = get_web_auth_store()
     user = store.verify_login(body.username, body.password)
     if user is None:
+        record_auth_failure(ACTION_LOGIN, request, username=body.username)
         write_audit("web_login_failed", reason="invalid_credentials")
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
@@ -106,9 +134,11 @@ def login(body: LoginRequest, response: Response) -> MeResponse:
                 detail="MFA is required but not enrolled. Complete MFA setup first.",
             )
         if not body.totp or not verify_totp(user.mfa_secret, body.totp):
+            record_auth_failure(ACTION_MFA_VERIFY, request, username=body.username)
             write_audit("web_login_failed", reason="invalid_totp")
             raise HTTPException(status_code=401, detail="Invalid MFA code")
 
+    clear_login_related_failures(request, body.username)
     session = store.create_session(user.id)
     _set_session_cookies(response, session.id, session.csrf_token)
     write_audit("web_login_ok", username=user.username)
@@ -162,6 +192,7 @@ def me(ctx: WebAuthContext = Depends(require_web_session)) -> MeResponse:
 @router.post("/change-password", response_model=MessageResponse)
 def change_password(
     body: ChangePasswordRequest,
+    response: Response,
     ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> MessageResponse:
     if ctx.auth_disabled:
@@ -173,28 +204,37 @@ def change_password(
     if store.verify_login(user.username, body.current_password) is None:
         raise HTTPException(status_code=401, detail="Current password is incorrect")
     store.change_password(user.id, body.new_password)
+    _clear_session_cookies(response)
     write_audit("web_password_changed", username=user.username)
-    return MessageResponse(success=True, message="Password updated")
+    return MessageResponse(
+        success=True,
+        message="Password updated. Please sign in again.",
+    )
 
 
 @router.post("/step-up", response_model=MessageResponse)
 def step_up(
     body: StepUpRequest,
+    request: Request,
     ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> MessageResponse:
     if ctx.auth_disabled:
         return MessageResponse(success=True, message="Step-up not required (auth disabled)")
+    check_rate_limit(ACTION_STEP_UP, request, username=ctx.session.username)
     store = get_web_auth_store()
     user = store.get_user()
     if user is None:
         raise HTTPException(status_code=400, detail="No owner configured")
     if store.verify_login(user.username, body.password) is None:
+        record_auth_failure(ACTION_STEP_UP, request, username=user.username)
         write_audit("web_step_up_failed", reason="bad_password")
         raise HTTPException(status_code=401, detail="Invalid password")
     if _mfa_needed(user.mfa_enabled):
         if not user.mfa_secret or not body.totp or not verify_totp(user.mfa_secret, body.totp):
+            record_auth_failure(ACTION_STEP_UP, request, username=user.username)
             write_audit("web_step_up_failed", reason="bad_totp")
             raise HTTPException(status_code=401, detail="Invalid MFA code")
+    clear_auth_failures(ACTION_STEP_UP, request, username=user.username)
     expires = store.grant_step_up(ctx.session.id)
     write_audit("web_step_up_ok", username=user.username)
     return MessageResponse(
@@ -224,16 +264,26 @@ def mfa_setup(ctx: WebAuthContext = Depends(require_web_session_mutating)) -> Mf
 @router.post("/mfa/confirm", response_model=MessageResponse)
 def mfa_confirm(
     body: MfaConfirmRequest,
+    request: Request,
+    response: Response,
     ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> MessageResponse:
     if ctx.auth_disabled:
         raise HTTPException(status_code=400, detail="Website auth is disabled")
+    check_rate_limit(ACTION_MFA_VERIFY, request, username=ctx.session.username)
     store = get_web_auth_store()
     user = store.get_user()
     if user is None or not user.mfa_pending_secret:
         raise HTTPException(status_code=400, detail="No MFA setup in progress")
     if not verify_totp(user.mfa_pending_secret, body.totp):
+        record_auth_failure(ACTION_MFA_VERIFY, request, username=user.username)
+        write_audit("web_mfa_confirm_failed", reason="invalid_totp")
         raise HTTPException(status_code=401, detail="Invalid MFA code")
+    clear_auth_failures(ACTION_MFA_VERIFY, request, username=user.username)
     store.confirm_mfa(user.mfa_pending_secret)
+    _clear_session_cookies(response)
     write_audit("web_mfa_enabled", username=user.username)
-    return MessageResponse(success=True, message="MFA enabled")
+    return MessageResponse(
+        success=True,
+        message="MFA enabled. Please sign in again with MFA.",
+    )

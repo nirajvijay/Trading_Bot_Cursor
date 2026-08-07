@@ -19,6 +19,7 @@ from api.auth.deps import (
     WebAuthContext,
     require_step_up,
     require_web_session,
+    require_web_session_mutating,
 )
 from api.auth.kite_oauth_store import get_kite_oauth_store
 from api.schemas.auth import (
@@ -57,9 +58,13 @@ def require_localhost(request: Request) -> None:
 
 
 def _clear_kite_oauth_cookie(response: Response) -> None:
+    """Delete oauth cookie with the same attrs used at create time."""
     response.delete_cookie(
-        settings.KITE_OAUTH_COOKIE_NAME,
+        key=settings.KITE_OAUTH_COOKIE_NAME,
         path=KITE_OAUTH_COOKIE_PATH,
+        secure=settings.WEB_AUTH_COOKIE_SECURE,
+        httponly=True,
+        samesite="lax",
     )
 
 
@@ -250,7 +255,7 @@ def create_session(
 @router.post(
     "/check-token",
     response_model=CheckTokenResponse,
-    dependencies=[Depends(require_web_session)],
+    dependencies=[Depends(require_web_session_mutating)],
 )
 def check_token() -> CheckTokenResponse:
     valid, message, user_id = check_access_token_details()

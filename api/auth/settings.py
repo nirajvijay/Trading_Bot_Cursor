@@ -1,9 +1,18 @@
-"""Website auth and Kite OAuth settings (env-configurable paths + flags)."""
+"""Website auth and Kite OAuth settings (env-configurable paths + flags).
+
+Production notes:
+  - Enabling WEB_AUTH_MFA_REQUIRED (or flipping MFA enforcement) requires an
+    API restart. There is no runtime config-reload API; wipe existing sessions
+    after enabling MFA enforcement (or rely on MFA confirm / password change
+    which already revoke all sessions).
+  - CORS and CSRF share WEB_AUTH_ORIGIN_ALLOWLIST as the single canonical origin list.
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -87,11 +96,55 @@ KITE_OAUTH_COOKIE_NAME = "nr_kite_oauth"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 
 
+def _is_localhost_origin(origin: str) -> bool:
+    try:
+        host = (urlparse(origin).hostname or "").lower()
+    except ValueError:
+        return True
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def cors_origins() -> list[str]:
+    """CORS allow_origins — same source as CSRF Origin allowlist."""
+    return list(WEB_AUTH_ORIGIN_ALLOWLIST)
+
+
 def validate_startup_settings() -> None:
     """Refuse unsafe production configuration."""
-    if APP_ENV == "production" and not WEB_AUTH_ENABLED:
+    if APP_ENV != "production":
+        return
+    if not WEB_AUTH_ENABLED:
         raise RuntimeError(
             "WEB_AUTH_ENABLED=false is forbidden when APP_ENV=production"
+        )
+    if not WEB_AUTH_MFA_REQUIRED:
+        raise RuntimeError(
+            "WEB_AUTH_MFA_REQUIRED must be true when APP_ENV=production"
+        )
+    if not KITE_EXPECTED_USER_ID:
+        raise RuntimeError(
+            "KITE_EXPECTED_USER_ID must be set when APP_ENV=production"
+        )
+    if not WEB_AUTH_COOKIE_SECURE:
+        raise RuntimeError(
+            "WEB_AUTH_COOKIE_SECURE must be true when APP_ENV=production"
+        )
+    origins = cors_origins()
+    if not origins:
+        raise RuntimeError(
+            "WEB_AUTH_ORIGIN_ALLOWLIST must be a non-empty https allowlist "
+            "when APP_ENV=production"
+        )
+    if any(_is_localhost_origin(o) for o in origins):
+        raise RuntimeError(
+            "localhost/127.0.0.1 origins are forbidden in production "
+            "WEB_AUTH_ORIGIN_ALLOWLIST"
+        )
+    non_https = [o for o in origins if not o.lower().startswith("https://")]
+    if non_https:
+        raise RuntimeError(
+            "production WEB_AUTH_ORIGIN_ALLOWLIST entries must use https:// "
+            f"(got: {non_https[0]!r})"
         )
 
 

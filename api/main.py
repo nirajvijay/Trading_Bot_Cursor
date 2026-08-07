@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.auth.settings import validate_startup_settings
+from api.auth.settings import cors_origins, validate_startup_settings
 from api.routers.account import router as account_router
 from api.routers.auth import router as auth_router
 from api.routers.checklist import router as checklist_router
@@ -31,14 +31,10 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="NIFTY RADAR API", version="1.0.0", lifespan=lifespan)
 
+# CORS allow_origins derived from the same WEB_AUTH_ORIGIN_ALLOWLIST as CSRF.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
