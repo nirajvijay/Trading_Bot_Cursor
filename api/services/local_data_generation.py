@@ -71,8 +71,11 @@ def _relative(path: Path) -> str:
 
 
 def get_generate_command(task: str, session_date: Optional[str] = None) -> str:
-    """Return the CLI command string for display/copy."""
-    _ensure_local_dir()
+    """Return the CLI command string for display/copy.
+
+    Does not create directories — checklist/read paths must stay safe under
+    ProtectSystem=strict immutable releases.
+    """
     if task == "instruments":
         return (
             f"python3 instrument_collector.py --db {_relative(config.LOCAL_INSTRUMENTS_DB_PATH)}"
