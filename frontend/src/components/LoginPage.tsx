@@ -1,4 +1,4 @@
-import { FormEvent, useState } from 'react'
+import { useState, type FormEvent } from 'react'
 
 interface Props {
   onLogin: (username: string, password: string, totp?: string) => Promise<void>
