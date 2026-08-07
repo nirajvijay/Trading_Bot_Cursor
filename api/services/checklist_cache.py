@@ -1,4 +1,8 @@
-"""Atomic private cache of completed pre-market checklist results."""
+"""Atomic private cache of completed pre-market checklist results.
+
+Default cache file lives under NIFTY_RADAR_DATA_ROOT/runtime-cache
+(never under a release checkout). Tests may override via local_data_dir.
+"""
 
 from __future__ import annotations
 
@@ -18,9 +22,28 @@ CACHE_FILENAME = "checklist_cache.json"
 SCHEMA_VERSION = 3
 
 
-def _cache_path(*, local_data_dir: Optional[Path] = None) -> Path:
-    root = local_data_dir or config.LOCAL_DATA_DIR
-    root.mkdir(parents=True, exist_ok=True)
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def _cache_root(*, local_data_dir: Optional[Path] = None) -> Path:
+    """Directory for checklist_cache.json (writable persistent root by default)."""
+    return local_data_dir or config.runtime_cache_dir()
+
+
+def _manifest_root(*, local_data_dir: Optional[Path] = None) -> Path:
+    """Directory containing universe_manifest.json for cache identity checks."""
+    return local_data_dir or config.LOCAL_DATA_DIR
+
+
+def _cache_path(*, local_data_dir: Optional[Path] = None, create: bool = True) -> Path:
+    root = _cache_root(local_data_dir=local_data_dir)
+    if create:
+        _ensure_dir(root)
     return root / CACHE_FILENAME
 
 
@@ -30,7 +53,7 @@ def _today_ist() -> str:
 
 def current_universe_manifest_id(*, local_data_dir: Optional[Path] = None) -> str:
     """Cheap identity for the universe/manifest used by cache validation."""
-    root = local_data_dir or config.LOCAL_DATA_DIR
+    root = _manifest_root(local_data_dir=local_data_dir)
     path = default_manifest_path(root)
     expected = symbol_list_checksum()
     if not path.exists():
@@ -69,14 +92,13 @@ def write_checklist_cache(
     local_data_dir: Optional[Path] = None,
 ) -> None:
     """Persist any completed checklist result (ok / warning / failed / needs_update)."""
-    root = local_data_dir or config.LOCAL_DATA_DIR
-    path = _cache_path(local_data_dir=root)
+    path = _cache_path(local_data_dir=local_data_dir)
     session_date = str(checklist.get("session_date") or _today_ist())
     overall_status = str(checklist.get("overall_status") or "not_checked")
     payload = {
         "schema_version": SCHEMA_VERSION,
         "session_date": session_date,
-        "universe_manifest_id": current_universe_manifest_id(local_data_dir=root),
+        "universe_manifest_id": current_universe_manifest_id(local_data_dir=local_data_dir),
         "overall_status": overall_status,
         "computed_at": str(checklist.get("checked_at") or datetime.now(IST).isoformat()),
         "reason_summary": _reason_summary(checklist),
@@ -104,7 +126,7 @@ def write_checklist_cache(
 
 
 def invalidate_checklist_cache(*, local_data_dir: Optional[Path] = None) -> None:
-    path = _cache_path(local_data_dir=local_data_dir)
+    path = _cache_path(local_data_dir=local_data_dir, create=False)
     try:
         path.unlink(missing_ok=True)
     except OSError:
@@ -121,11 +143,10 @@ def read_checklist_cache(
 
     Corrupt / partial / mismatched identity → None (treat as not ready).
     """
-    root = local_data_dir or config.LOCAL_DATA_DIR
-    path = _cache_path(local_data_dir=root)
-    if not path.exists():
-        return None
+    path = _cache_path(local_data_dir=local_data_dir, create=False)
     try:
+        if not path.exists():
+            return None
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
@@ -146,7 +167,7 @@ def read_checklist_cache(
     cached_manifest_id = str(data.get("universe_manifest_id") or "")
     if not cached_manifest_id:
         return None
-    if cached_manifest_id != current_universe_manifest_id(local_data_dir=root):
+    if cached_manifest_id != current_universe_manifest_id(local_data_dir=local_data_dir):
         return None
 
     overall = str(data.get("overall_status") or "")

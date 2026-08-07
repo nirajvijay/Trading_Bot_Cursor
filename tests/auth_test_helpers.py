@@ -92,6 +92,8 @@ class AuthTestHarness:
                 "WEB_AUTH_ORIGIN_ALLOWLIST": ORIGIN,
                 "KITE_API_KEY": "test_api_key",
                 "KITE_API_SECRET": "test_api_secret",
+                "NIFTY_RADAR_DATA_ROOT": str(self.root / "data"),
+                "NIFTY_RADAR_RUNTIME_CACHE_DIR": str(self.root / "data" / "runtime-cache"),
             }
         )
         settings.reload_from_environ()
