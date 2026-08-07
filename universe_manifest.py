@@ -54,9 +54,12 @@ def write_universe_manifest_atomic(path: Path, *, created_at: Optional[str] = No
             except OSError:
                 pass
     # Manifest identity is part of checklist cache validation; drop stale cache.
+    # Clear persistent runtime-cache (production default) and any cache colocated
+    # with the manifest directory (tests / older layouts).
     try:
         from api.services.checklist_cache import invalidate_checklist_cache
 
+        invalidate_checklist_cache()
         invalidate_checklist_cache(local_data_dir=path.parent)
     except Exception:
         pass
