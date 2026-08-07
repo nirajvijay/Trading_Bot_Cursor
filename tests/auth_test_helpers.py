@@ -28,6 +28,12 @@ from api.main import app
 
 
 ORIGIN = "http://localhost:5173"
+TEST_BASE_URL = "http://127.0.0.1"
+
+
+def make_test_client() -> TestClient:
+    """TestClient with an allowlisted Host (TrustedHostMiddleware rejects testserver)."""
+    return TestClient(app, base_url=TEST_BASE_URL)
 
 
 def disable_web_auth_overrides() -> None:
@@ -96,7 +102,7 @@ class AuthTestHarness:
         store = get_web_auth_store()
         store.init_db()
         store.create_owner(self.username, self.password)
-        self.client = TestClient(app)
+        self.client = make_test_client()
         return self
 
     def __exit__(self, *args: object) -> None:

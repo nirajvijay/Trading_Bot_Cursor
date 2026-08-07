@@ -11,8 +11,6 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from fastapi.testclient import TestClient
-
 from api.main import app
 from api.services.observation_runner import (
     _build_runner_command,
@@ -218,9 +216,11 @@ class ObservationApiTests(unittest.TestCase):
         from api.routers import auth as auth_router
         from tests.auth_test_helpers import disable_web_auth_overrides
 
+        from tests.auth_test_helpers import make_test_client
+
         disable_web_auth_overrides()
         app.dependency_overrides[auth_router.require_localhost] = lambda: None
-        self.client = TestClient(app)
+        self.client = make_test_client()
 
     def tearDown(self) -> None:
         from tests.auth_test_helpers import clear_auth_overrides

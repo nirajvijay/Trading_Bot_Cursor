@@ -6,7 +6,6 @@ import os
 import unittest
 from unittest.mock import patch
 import pyotp
-from fastapi.testclient import TestClient
 from starlette.responses import Response as StarletteResponse
 
 from api.auth import settings
@@ -21,6 +20,7 @@ from tests.auth_test_helpers import (
     AuthTestHarness,
     clear_auth_overrides,
     disable_web_auth_overrides,
+    make_test_client,
 )
 
 
@@ -205,7 +205,7 @@ class WebsiteAuthTests(unittest.TestCase):
     def test_password_change_revokes_other_sessions(self) -> None:
         with AuthTestHarness() as h:
             h.login()
-            other = TestClient(app)
+            other = make_test_client()
             other_login = other.post(
                 "/api/v1/account/login",
                 json={"username": h.username, "password": h.password},
@@ -234,7 +234,7 @@ class WebsiteAuthTests(unittest.TestCase):
     def test_mfa_confirm_revokes_sessions_and_requires_relogin(self) -> None:
         with AuthTestHarness() as h:
             h.login()
-            other = TestClient(app)
+            other = make_test_client()
             self.assertEqual(
                 other.post(
                     "/api/v1/account/login",
@@ -545,7 +545,7 @@ class LegacyAuthApiTests(unittest.TestCase):
     def setUp(self) -> None:
         disable_web_auth_overrides()
         app.dependency_overrides[auth_router.require_localhost] = lambda: None
-        self.client = TestClient(app)
+        self.client = make_test_client()
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
