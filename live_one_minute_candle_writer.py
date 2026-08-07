@@ -22,10 +22,11 @@ from candle_aggregation import (
     is_in_session,
     minute_of_day_from_datetime,
 )
+from api.config import LIVE_DB_PATH
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_DB_PATH = ROOT / "data" / "nifty50_live_1m.db"
+DEFAULT_DB_PATH = LIVE_DB_PATH
 
 SQLITE_BUSY = 5
 SQLITE_LOCKED = 6

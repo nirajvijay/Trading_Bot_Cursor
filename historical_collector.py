@@ -23,13 +23,13 @@ from pathlib import Path
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import InputException, PermissionException, TokenException
 
+from api.config import HISTORICAL_DB_PATH, INSTRUMENTS_DB_PATH
 from config.nifty100_symbols import NIFTY_100_SYMBOLS
 from login import _get_kite, check_access_token
 
 ROOT = Path(__file__).resolve().parent
-LOCAL_DATA_DIR = ROOT / "data" / "local"
-DEFAULT_DB_PATH = LOCAL_DATA_DIR / "nifty50_historical.db"
-DEFAULT_INSTRUMENTS_DB_PATH = LOCAL_DATA_DIR / "nifty50_instruments.db"
+DEFAULT_DB_PATH = HISTORICAL_DB_PATH
+DEFAULT_INSTRUMENTS_DB_PATH = INSTRUMENTS_DB_PATH
 
 INTERVAL = "minute"
 CHUNK_DAYS = 29

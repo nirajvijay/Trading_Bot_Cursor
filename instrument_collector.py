@@ -25,13 +25,13 @@ from pathlib import Path
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import PermissionException
 
+from api.config import INSTRUMENTS_DB_PATH, LOCAL_DATA_DIR
 from config.nifty100_symbols import NIFTY_100_SYMBOLS
 from login import _get_kite, check_access_token
 from universe_manifest import default_manifest_path, write_universe_manifest_atomic
 
 ROOT = Path(__file__).resolve().parent
-LOCAL_DATA_DIR = ROOT / "data" / "local"
-DEFAULT_DB_PATH = LOCAL_DATA_DIR / "nifty50_instruments.db"
+DEFAULT_DB_PATH = INSTRUMENTS_DB_PATH
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS nifty50_instruments (

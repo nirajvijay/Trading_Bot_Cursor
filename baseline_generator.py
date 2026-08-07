@@ -35,10 +35,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from api.config import BASELINES_DB_PATH, HISTORICAL_DB_PATH
+
 ROOT = Path(__file__).resolve().parent
-LOCAL_DATA_DIR = ROOT / "data" / "local"
-DEFAULT_HISTORICAL_DB_PATH = LOCAL_DATA_DIR / "nifty50_historical.db"
-DEFAULT_BASELINES_DB_PATH = LOCAL_DATA_DIR / "nifty50_baselines.db"
+DEFAULT_HISTORICAL_DB_PATH = HISTORICAL_DB_PATH
+DEFAULT_BASELINES_DB_PATH = BASELINES_DB_PATH
 
 GENERATOR_VERSION = "1.0.0"
 LOOKBACK_SESSIONS = 21

@@ -15,7 +15,6 @@ from api.db import open_readonly
 from nse_trading_calendar import prior_nse_trading_session
 
 ROOT = config.ROOT
-LOCAL_DATA_DIR = config.LOCAL_DATA_DIR
 GENERATION_TIMEOUT_SECONDS = 3600
 
 TASK_NAMES = frozenset({"instruments", "historical", "five-minute", "baselines"})
@@ -60,14 +59,48 @@ def _instruments_source_db() -> Path:
 
 
 def _ensure_local_dir() -> None:
-    LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config.LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _relative(path: Path) -> str:
+def _abs_db(path: Path | str) -> str:
+    """Return an absolute, resolved DB path string for CLI / copy commands."""
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    return str(candidate.resolve())
+
+
+def _copy_command(script: str, *argv: str) -> str:
+    """Fully-qualified SSH-safe copy command (any cwd).
+
+    Uses prod venv python, cd into PROD_APP_ROOT, absolute script + argv paths.
+    """
+    app_root = str(config.PROD_APP_ROOT)
+    script_path = str(Path(app_root) / script)
+    parts = [
+        f"cd {app_root}",
+        f"&& {config.PROD_PYTHON}",
+        script_path,
+        *argv,
+    ]
+    return " ".join(parts)
+
+
+def _path_allowed_for_generation(path: Path | str) -> bool:
+    """Reject release trees and anything outside the configured local data dir."""
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    resolved = candidate.resolve()
+    normalized = str(resolved).replace("\\", "/")
+    if "/releases/" in normalized:
+        return False
+    local_resolved = config.LOCAL_DATA_DIR.resolve()
     try:
-        return str(path.relative_to(ROOT))
+        resolved.relative_to(local_resolved)
     except ValueError:
-        return str(path)
+        return False
+    return True
 
 
 def get_generate_command(task: str, session_date: Optional[str] = None) -> str:
@@ -77,58 +110,67 @@ def get_generate_command(task: str, session_date: Optional[str] = None) -> str:
     ProtectSystem=strict immutable releases.
     """
     if task == "instruments":
-        return (
-            f"python3 instrument_collector.py --db {_relative(config.LOCAL_INSTRUMENTS_DB_PATH)}"
+        return _copy_command(
+            "instrument_collector.py",
+            "--db",
+            _abs_db(config.LOCAL_INSTRUMENTS_DB_PATH),
         )
     if task == "historical":
-        return (
-            f"python3 historical_collector.py --db {_relative(config.LOCAL_HISTORICAL_DB_PATH)} "
-            f"--instruments-db {_relative(_instruments_source_db())}"
+        return _copy_command(
+            "historical_collector.py",
+            "--db",
+            _abs_db(config.LOCAL_HISTORICAL_DB_PATH),
+            "--instruments-db",
+            _abs_db(_instruments_source_db()),
         )
     if task == "five-minute":
-        return (
-            f"python3 five_minute_candle_generator.py --db {_relative(config.LOCAL_HISTORICAL_DB_PATH)}"
+        return _copy_command(
+            "five_minute_candle_generator.py",
+            "--db",
+            _abs_db(config.LOCAL_HISTORICAL_DB_PATH),
         )
     if task == "baselines":
         as_of = prior_nse_trading_session(session_date or _today_ist())
-        as_of_flag = f" --as-of {as_of}" if as_of else ""
-        return (
-            f"python3 baseline_generator.py "
-            f"--historical-db {_relative(config.LOCAL_HISTORICAL_DB_PATH)} "
-            f"--baselines-db {_relative(config.LOCAL_BASELINES_DB_PATH)}"
-            f"{as_of_flag}"
-        )
+        argv = [
+            "--historical-db",
+            _abs_db(config.LOCAL_HISTORICAL_DB_PATH),
+            "--baselines-db",
+            _abs_db(config.LOCAL_BASELINES_DB_PATH),
+        ]
+        if as_of:
+            argv.extend(["--as-of", as_of])
+        return _copy_command("baseline_generator.py", *argv)
     raise ValueError(f"Unknown task: {task}")
 
 
 def _build_command(task: str, session_date: Optional[str] = None) -> List[str]:
     _ensure_local_dir()
     if task == "instruments":
-        return [
+        command = [
             sys.executable,
             "instrument_collector.py",
             "--db",
-            str(config.LOCAL_INSTRUMENTS_DB_PATH),
+            _abs_db(config.LOCAL_INSTRUMENTS_DB_PATH),
         ]
-    if task == "historical":
-        return [
+    elif task == "historical":
+        command = [
             sys.executable,
             "historical_collector.py",
             "--db",
-            str(config.LOCAL_HISTORICAL_DB_PATH),
+            _abs_db(config.LOCAL_HISTORICAL_DB_PATH),
             "--instruments-db",
-            str(_instruments_source_db()),
+            _abs_db(_instruments_source_db()),
         ]
-    if task == "five-minute":
+    elif task == "five-minute":
         if not config.LOCAL_HISTORICAL_DB_PATH.exists():
             raise ValueError("Local historical database not found — generate historical candles first")
-        return [
+        command = [
             sys.executable,
             "five_minute_candle_generator.py",
             "--db",
-            str(config.LOCAL_HISTORICAL_DB_PATH),
+            _abs_db(config.LOCAL_HISTORICAL_DB_PATH),
         ]
-    if task == "baselines":
+    elif task == "baselines":
         if not config.LOCAL_HISTORICAL_DB_PATH.exists():
             raise ValueError("Local historical database not found — generate historical candles first")
         as_of = prior_nse_trading_session(session_date or _today_ist())
@@ -136,21 +178,27 @@ def _build_command(task: str, session_date: Optional[str] = None) -> List[str]:
             raise ValueError(
                 f"No prior NSE trading session found before {session_date or _today_ist()}"
             )
-        return [
+        command = [
             sys.executable,
             "baseline_generator.py",
             "--historical-db",
-            str(config.LOCAL_HISTORICAL_DB_PATH),
+            _abs_db(config.LOCAL_HISTORICAL_DB_PATH),
             "--baselines-db",
-            str(config.LOCAL_BASELINES_DB_PATH),
+            _abs_db(config.LOCAL_BASELINES_DB_PATH),
             "--as-of",
             as_of,
         ]
-    raise ValueError(f"Unknown task: {task}")
+    else:
+        raise ValueError(f"Unknown task: {task}")
+
+    for arg in command:
+        if arg.endswith(".db") and not _path_allowed_for_generation(arg):
+            raise ValueError(f"Refusing to write outside local data dir: {arg}")
+    return command
 
 
 def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple[bool, str]:
-    """Run a collector/generator writing only to backend/data/local/."""
+    """Run a collector/generator writing only to the configured local data dir."""
     if task not in TASK_NAMES:
         return False, f"Unknown generation task: {task}"
 
@@ -165,19 +213,14 @@ def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple
     except ValueError as exc:
         return False, str(exc)
 
-    # Safety: all output paths must be under LOCAL_DATA_DIR
+    # Safety: all output paths must be under LOCAL_DATA_DIR and never under releases/
     for arg in command:
-        if arg.endswith(".db"):
-            path = Path(arg)
-            if not path.is_absolute():
-                path = ROOT / path
-            resolved = path.resolve()
-            local_resolved = LOCAL_DATA_DIR.resolve()
-            if not str(resolved).startswith(str(local_resolved)):
-                return False, f"Refusing to write outside local data dir: {resolved}"
+        if arg.endswith(".db") and not _path_allowed_for_generation(arg):
+            return False, f"Refusing to write outside local data dir: {Path(arg).resolve()}"
 
+    local_dir = config.LOCAL_DATA_DIR
     try:
-        lock_file = acquire_generation_lock(task, local_data_dir=LOCAL_DATA_DIR)
+        lock_file = acquire_generation_lock(task, local_data_dir=local_dir)
     except GenerationLockBusy as exc:
         return False, str(exc)
 
@@ -205,12 +248,12 @@ def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple
         # Clear persistent runtime-cache (production) and any LOCAL_DATA_DIR
         # colocated cache used by tests / older layouts.
         invalidate_checklist_cache()
-        invalidate_checklist_cache(local_data_dir=LOCAL_DATA_DIR)
+        invalidate_checklist_cache(local_data_dir=local_dir)
         summary = (result.stdout or "").strip()
         tail = "\n".join(summary.splitlines()[-5:]) if summary else "Completed successfully"
         return True, tail
     finally:
-        release_generation_lock(lock_file, local_data_dir=LOCAL_DATA_DIR)
+        release_generation_lock(lock_file, local_data_dir=local_dir)
 
 
 def generate_action_for_task(task: str, *, available: bool, reason: str = "") -> Dict[str, object]:
