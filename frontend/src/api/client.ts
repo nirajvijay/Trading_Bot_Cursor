@@ -1,7 +1,9 @@
 import type {
   AuthStatusResponse,
   CheckTokenResponse,
+  KiteStartResponse,
   LoginUrlResponse,
+  MeResponse,
   ObservationReadiness,
   ObservationStartResponse,
   PreMarketChecklistResponse,
@@ -14,33 +16,80 @@ import type {
 } from './types'
 
 const BASE = '/api/v1'
-const LOCAL_AUTH_HEADER = 'X-NIFTY-RADAR-LOCAL-AUTH'
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
+export class ApiError extends Error {
+  status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
+  const parts = document.cookie.split(';')
+  for (const part of parts) {
+    const [rawKey, ...rest] = part.trim().split('=')
+    if (rawKey === name) {
+      return decodeURIComponent(rest.join('='))
+    }
+  }
+  return null
+}
+
+function csrfHeaders(): Record<string, string> {
+  const token = readCookie('nr_csrf')
+  return token ? { 'X-CSRF-Token': token } : {}
+}
+
+type AuthHandlers = {
+  onUnauthorized?: () => void
+}
+
+let authHandlers: AuthHandlers = {}
+
+export function setAuthHandlers(handlers: AuthHandlers) {
+  authHandlers = handlers
+}
+
+async function handleResponse<T>(res: Response, path: string): Promise<T> {
+  if (res.status === 401) {
+    authHandlers.onUnauthorized?.()
+    const body = await res.json().catch(() => ({}))
+    const detail = typeof body.detail === 'string' ? body.detail : 'Authentication required'
+    throw new ApiError(401, detail)
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     const detail = typeof body.detail === 'string' ? body.detail : `API ${res.status}: ${path}`
-    throw new Error(detail)
+    throw new ApiError(res.status, detail)
+  }
+  if (res.status === 204) {
+    return undefined as T
   }
   return res.json() as Promise<T>
 }
 
-async function postJson<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
+  })
+  return handleResponse<T>(res, path)
+}
+
+async function postJson<T>(path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...headers,
+      ...csrfHeaders(),
+      ...extraHeaders,
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    const detail = typeof data.detail === 'string' ? data.detail : `API ${res.status}: ${path}`
-    throw new Error(detail)
-  }
-  return res.json() as Promise<T>
+  return handleResponse<T>(res, path)
 }
 
 export function fetchSessions(): Promise<string[]> {
@@ -72,6 +121,29 @@ export function fetchHealth(): Promise<{ status: string }> {
   return getJson<{ status: string }>('/health')
 }
 
+export function fetchMe(): Promise<MeResponse> {
+  return getJson<MeResponse>('/account/me')
+}
+
+export function postLogin(username: string, password: string, totp?: string): Promise<MeResponse> {
+  return postJson<MeResponse>('/account/login', {
+    username,
+    password,
+    ...(totp ? { totp } : {}),
+  })
+}
+
+export function postLogout(): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/logout')
+}
+
+export function postStepUp(password: string, totp?: string): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/step-up', {
+    password,
+    ...(totp ? { totp } : {}),
+  })
+}
+
 export function fetchAuthStatus(): Promise<AuthStatusResponse> {
   return getJson<AuthStatusResponse>('/auth/status')
 }
@@ -80,12 +152,12 @@ export function fetchLoginUrl(): Promise<LoginUrlResponse> {
   return getJson<LoginUrlResponse>('/auth/login-url')
 }
 
+export function postKiteStart(): Promise<KiteStartResponse> {
+  return postJson<KiteStartResponse>('/auth/kite/start')
+}
+
 export function postSession(requestToken: string): Promise<SessionResponse> {
-  return postJson<SessionResponse>(
-    '/auth/session',
-    { request_token: requestToken },
-    { [LOCAL_AUTH_HEADER]: 'true' },
-  )
+  return postJson<SessionResponse>('/auth/session', { request_token: requestToken })
 }
 
 export function postCheckToken(): Promise<CheckTokenResponse> {

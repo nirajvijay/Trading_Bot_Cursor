@@ -5,8 +5,9 @@ import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
-import { postStartObservation } from './api/client'
+import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
 import { KiteAuthPage } from './components/KiteAuthPage'
+import { LoginPage } from './components/LoginPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarTable } from './components/RadarTable'
 import { StatusStrip } from './components/StatusStrip'
@@ -14,7 +15,7 @@ import { TopAppBar, type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
 import { FeedAlertBanner } from './components/FeedAlertBanner'
 import { resolveFeedStatus, resolveRunnerPresence } from './lib/feedStatus'
-import type { RadarRow } from './api/types'
+import type { MeResponse, RadarRow } from './api/types'
 
 function exportCsv(rows: RadarRow[]) {
   const headers = [
@@ -59,10 +60,14 @@ function exportCsv(rows: RadarRow[]) {
 }
 
 export default function App() {
+  const [me, setMe] = useState<MeResponse | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [authChecked, setAuthChecked] = useState(false)
   const [activeTab, setActiveTab] = useState<AppTab>('radar')
   const [sessionDate, setSessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
-  const radarEnabled = activeTab === 'radar'
+  const authenticated = Boolean(me)
+  const radarEnabled = authenticated && activeTab === 'radar'
   const {
     rows,
     coverage,
@@ -78,7 +83,7 @@ export default function App() {
     loading: checklistLoading,
     error: checklistError,
     refresh: refreshChecklist,
-  } = usePreMarketChecklist(sessionDate, true)
+  } = usePreMarketChecklist(sessionDate, authenticated)
   const {
     readiness: observationReadiness,
     refresh: refreshObservationReadiness,
@@ -95,6 +100,59 @@ export default function App() {
   const [observationError, setObservationError] = useState<string | null>(null)
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
   const [timelineRefreshToken, setTimelineRefreshToken] = useState(0)
+
+  const clearSession = useCallback(() => {
+    setMe(null)
+  }, [])
+
+  useEffect(() => {
+    setAuthHandlers({
+      onUnauthorized: () => {
+        setMe(null)
+      },
+    })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setAuthLoading(true)
+      try {
+        const data = await fetchMe()
+        if (!cancelled) setMe(data)
+      } catch (err) {
+        if (!cancelled) {
+          if (err instanceof ApiError && err.status === 401) {
+            setMe(null)
+          } else {
+            setMe(null)
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthLoading(false)
+          setAuthChecked(true)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleLogin = useCallback(async (username: string, password: string, totp?: string) => {
+    const data = await postLogin(username, password, totp)
+    setMe(data)
+  }, [])
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await postLogout()
+    } catch {
+      // Session may already be gone.
+    }
+    clearSession()
+  }, [clearSession])
 
   const handleRowClick = useCallback((symbol: string) => {
     setExpandedSymbol((current) => (current === symbol ? null : symbol))
@@ -128,9 +186,7 @@ export default function App() {
     return rows.filter((r) => r.symbol.includes(q))
   }, [rows, search])
 
-  // Server is authoritative for Start — do not override can_start / checklist_ok.
   const observationReadinessForUi = observationReadiness
-
   const runnerPresence = resolveRunnerPresence(status, statusFetchOk)
   const feedStatus = resolveFeedStatus(status, runnerPresence)
 
@@ -138,6 +194,18 @@ export default function App() {
     await refreshChecklist()
     await refreshObservationReadiness()
   }, [refreshChecklist, refreshObservationReadiness])
+
+  if (!authChecked || authLoading) {
+    return (
+      <div className="flex h-full items-center justify-center bg-background text-sm text-on-surface-variant">
+        Checking session...
+      </div>
+    )
+  }
+
+  if (!authenticated) {
+    return <LoginPage onLogin={handleLogin} />
+  }
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -152,6 +220,8 @@ export default function App() {
           onSessionChange={setSessionDate}
           search={search}
           onSearchChange={setSearch}
+          username={me?.username}
+          onLogout={() => void handleLogout()}
         />
         <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
           {activeTab === 'radar' ? (

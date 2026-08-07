@@ -12,6 +12,8 @@ interface Props {
   sessions: string[]
   search: string
   onSearchChange: (value: string) => void
+  username?: string
+  onLogout?: () => void
 }
 
 export function TopAppBar({
@@ -23,6 +25,8 @@ export function TopAppBar({
   sessions,
   search,
   onSearchChange,
+  username,
+  onLogout,
 }: Props) {
   const market = marketStatusNow()
   const subscribed = status?.subscribed_tokens ?? coverage?.subscribed ?? 100
@@ -52,11 +56,16 @@ export function TopAppBar({
         <span className="label-caps font-extrabold px-2.5 py-1 bg-surface-container border border-outline-variant text-on-surface-variant rounded-sm hidden sm:inline">
           Mode:{' '}
           {activeTab === 'auth'
-            ? 'local auth only'
+            ? 'kite token'
             : activeTab === 'checklist'
               ? 'pre-market checks'
               : 'observation only'}
         </span>
+        {username && (
+          <span className="label-caps text-on-surface-variant hidden md:inline truncate max-w-[8rem]">
+            {username}
+          </span>
+        )}
         {activeTab === 'radar' && (
           <>
             <input
@@ -81,14 +90,16 @@ export function TopAppBar({
             </select>
           </>
         )}
-        <button
-          type="button"
-          className="w-8 h-8 flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low rounded"
-          title="Settings"
-          disabled
-        >
-          <span className="material-symbols-outlined text-[20px]">settings</span>
-        </button>
+        {onLogout && (
+          <button
+            type="button"
+            className="label-caps px-2 py-1 border border-outline-variant text-on-surface-variant hover:bg-surface-container-low text-[10px]"
+            onClick={onLogout}
+            title="Log out"
+          >
+            Logout
+          </button>
+        )}
       </div>
     </header>
   )
