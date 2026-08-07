@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from config.nifty100_symbols import NIFTY_100_SYMBOLS
+from nse_trading_calendar import prior_nse_trading_session
 from session_quality import LOOKBACK_COMPLETED_SESSIONS, discover_completed_sessions
 from universe_manifest import default_manifest_path, validate_universe_manifest
 
@@ -19,7 +20,6 @@ from api.queries.radar import fetch_radar_rows, list_sessions
 from api.services.local_data_generation import (
     generate_action_for_task,
     get_generate_command,
-    prior_trading_session,
 )
 from api.services.token_check_cache import read_token_check, token_valid_for_today
 from login import read_auth_status
@@ -142,6 +142,63 @@ def _symbols_missing_on_date(
         present = set()
     missing = [s for s in NIFTY_100_SYMBOLS if s not in present]
     return len(missing), missing[:limit]
+
+
+def _per_symbol_latest_session_dates(
+    conn: sqlite3.Connection,
+    table: str,
+) -> Dict[str, str]:
+    """Latest session date (YYYY-MM-DD) per tradingsymbol in table."""
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT tradingsymbol, MAX(substr(candle_time, 1, 10)) AS latest_date
+            FROM {table}
+            GROUP BY tradingsymbol
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {str(r[0]): str(r[1]) for r in rows if r[1]}
+
+
+def _symbols_stale_vs_prior_session(
+    per_symbol_latest: Dict[str, str],
+    required_prior: str,
+) -> Tuple[int, List[str], Optional[str]]:
+    """
+    Return (stale_count, stale_sample, actual_latest_aggregate).
+
+    actual_latest_aggregate is the newest latest-date among NIFTY symbols (for UI).
+    """
+    stale: List[str] = []
+    actual_dates: List[str] = []
+    for symbol in NIFTY_100_SYMBOLS:
+        latest = per_symbol_latest.get(symbol)
+        if latest:
+            actual_dates.append(latest)
+        if latest != required_prior:
+            stale.append(symbol)
+    aggregate = max(actual_dates) if actual_dates else None
+    return len(stale), stale[:8], aggregate
+
+
+def _freshness_message(
+    *,
+    area_label: str,
+    required_prior: str,
+    actual_latest: Optional[str],
+    stale_count: int,
+    stale_sample: List[str],
+) -> str:
+    sample = ", ".join(stale_sample[:5])
+    more = "" if stale_count <= 5 else f" (+{stale_count - 5} more)"
+    actual = actual_latest or "none"
+    return (
+        f"{area_label}: expected prior session {required_prior}, "
+        f"actual latest {actual} ({stale_count}/{EXPECTED_COUNT} symbols stale"
+        f"{': ' + sample + more if sample else ''})"
+    )
 
 
 def _resolve_baseline_as_of(conn: sqlite3.Connection, session_date: str) -> Optional[str]:
@@ -460,7 +517,7 @@ def _build_instruments(instruments_db: Path) -> dict:
     }
 
 
-def _build_historical(historical_db: Path) -> dict:
+def _build_historical(historical_db: Path, session_date: str) -> dict:
     copy_command = get_generate_command("historical")
     generate = generate_action_for_task(
         "historical",
@@ -468,6 +525,22 @@ def _build_historical(historical_db: Path) -> dict:
         reason="Downloads into backend/data/local/ only — does not modify external repos",
     )
     db_path = str(historical_db)
+    required_prior = prior_nse_trading_session(session_date)
+
+    if required_prior is None:
+        return {
+            "status": "failed",
+            "message": f"Cannot resolve prior NSE session before {session_date}",
+            "latest_date": None,
+            "expected_prior_session": None,
+            "symbols_covered": 0,
+            "expected_count": EXPECTED_COUNT,
+            "missing_count": EXPECTED_COUNT,
+            "missing_symbols_sample": list(NIFTY_100_SYMBOLS[:5]),
+            "copy_command": copy_command,
+            "db_path": db_path,
+            "generate_action": generate,
+        }
 
     if not historical_db.exists():
         return {
@@ -477,6 +550,7 @@ def _build_historical(historical_db: Path) -> dict:
                 "External repos are not used for this checklist."
             ),
             "latest_date": None,
+            "expected_prior_session": required_prior,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
             "missing_count": EXPECTED_COUNT,
@@ -493,6 +567,7 @@ def _build_historical(historical_db: Path) -> dict:
             "status": "failed",
             "message": "Local historical database not readable",
             "latest_date": None,
+            "expected_prior_session": required_prior,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
             "missing_count": EXPECTED_COUNT,
@@ -503,12 +578,13 @@ def _build_historical(historical_db: Path) -> dict:
         }
 
     try:
-        latest_date = _latest_session_date(conn, "candles")
-        if latest_date is None:
+        per_symbol_latest = _per_symbol_latest_session_dates(conn, "candles")
+        if not per_symbol_latest:
             return {
                 "status": "failed",
                 "message": "No historical candle data in local database",
                 "latest_date": None,
+                "expected_prior_session": required_prior,
                 "symbols_covered": 0,
                 "expected_count": EXPECTED_COUNT,
                 "missing_count": EXPECTED_COUNT,
@@ -518,9 +594,15 @@ def _build_historical(historical_db: Path) -> dict:
                 "generate_action": generate,
             }
 
-        symbols_covered = _count_symbols_on_date(conn, "candles", latest_date)
+        stale_count, stale_sample, aggregate_latest = _symbols_stale_vs_prior_session(
+            per_symbol_latest, required_prior
+        )
+        symbols_covered = EXPECTED_COUNT - stale_count
+        latest_date = aggregate_latest
+
+        symbols_covered_on_p = _count_symbols_on_date(conn, "candles", required_prior)
         missing_count, missing_sample = _symbols_missing_on_date(
-            conn, "candles", latest_date
+            conn, "candles", required_prior
         )
 
         # Per-symbol completed-session quality (≥21 completed sessions required).
@@ -542,7 +624,7 @@ def _build_historical(historical_db: Path) -> dict:
                     conn,
                     token,
                     lookback_sessions=LOOKBACK_COMPLETED_SESSIONS,
-                    as_of=latest_date,
+                    as_of=required_prior,
                 )
             )
             if completed < LOOKBACK_COMPLETED_SESSIONS:
@@ -550,7 +632,16 @@ def _build_historical(historical_db: Path) -> dict:
     finally:
         conn.close()
 
-    if below_threshold:
+    if stale_count > 0:
+        status = "needs_update"
+        message = _freshness_message(
+            area_label="1m candles",
+            required_prior=required_prior,
+            actual_latest=latest_date,
+            stale_count=stale_count,
+            stale_sample=stale_sample,
+        )
+    elif below_threshold:
         status = "needs_update"
         sample = ", ".join(below_threshold[:8])
         more = "" if len(below_threshold) <= 8 else f" (+{len(below_threshold) - 8} more)"
@@ -559,31 +650,40 @@ def _build_historical(historical_db: Path) -> dict:
             f"{LOOKBACK_COMPLETED_SESSIONS} completed sessions "
             f"(incomplete dates excluded): {sample}{more}"
         )
-    elif missing_count == 0 and symbols_covered >= EXPECTED_COUNT:
+    elif symbols_covered_on_p >= EXPECTED_COUNT:
         status = "ok"
         message = (
-            f"Latest session {latest_date} covers {symbols_covered}/{EXPECTED_COUNT} "
-            f"symbols with ≥{LOOKBACK_COMPLETED_SESSIONS} completed sessions each"
+            f"1m candles current through prior session {required_prior} "
+            f"({symbols_covered_on_p}/{EXPECTED_COUNT} symbols, "
+            f"≥{LOOKBACK_COMPLETED_SESSIONS} completed sessions each)"
         )
     elif missing_count > 0:
         status = "needs_update" if missing_count > 2 else "warning"
         message = (
-            f"Latest {latest_date}: {symbols_covered}/{EXPECTED_COUNT} symbols "
+            f"Prior session {required_prior}: {symbols_covered_on_p}/{EXPECTED_COUNT} symbols "
             f"({missing_count} missing)"
         )
     else:
         status = "warning"
-        message = f"Latest session {latest_date}: partial coverage {symbols_covered}/{EXPECTED_COUNT}"
+        message = (
+            f"Prior session {required_prior}: partial coverage "
+            f"{symbols_covered_on_p}/{EXPECTED_COUNT}"
+        )
 
     return {
         "status": status,
         "message": message,
         "latest_date": latest_date,
-        "symbols_covered": symbols_covered,
+        "expected_prior_session": required_prior,
+        "symbols_covered": symbols_covered_on_p,
         "expected_count": EXPECTED_COUNT,
-        "missing_count": missing_count if not below_threshold else len(below_threshold),
+        "missing_count": stale_count if stale_count else (
+            len(below_threshold) if below_threshold else missing_count
+        ),
         "missing_symbols_sample": (
-            below_threshold[:5] if below_threshold else missing_sample
+            stale_sample[:5]
+            if stale_count
+            else (below_threshold[:5] if below_threshold else missing_sample)
         ),
         "copy_command": copy_command,
         "db_path": db_path,
@@ -594,7 +694,6 @@ def _build_historical(historical_db: Path) -> dict:
 def _build_baselines(
     baselines_db: Path,
     session_date: str,
-    historical_latest: Optional[str],
 ) -> dict:
     copy_command = get_generate_command("baselines", session_date)
     historical_ready = config.LOCAL_HISTORICAL_DB_PATH.exists()
@@ -608,6 +707,22 @@ def _build_baselines(
         ),
     )
     db_path = str(baselines_db)
+    expected_as_of = prior_nse_trading_session(session_date)
+
+    if expected_as_of is None:
+        return {
+            "status": "failed",
+            "message": f"Cannot resolve prior NSE session before {session_date}",
+            "baseline_as_of": None,
+            "expected_as_of": None,
+            "symbols_covered": 0,
+            "expected_count": EXPECTED_COUNT,
+            "reliable_count": 0,
+            "last_generated_at": None,
+            "copy_command": copy_command,
+            "db_path": db_path,
+            "generate_action": generate,
+        }
 
     if not baselines_db.exists():
         return {
@@ -617,7 +732,7 @@ def _build_baselines(
                 "External baselines in other repos are not used for this checklist."
             ),
             "baseline_as_of": None,
-            "expected_as_of": historical_latest,
+            "expected_as_of": expected_as_of,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
             "reliable_count": 0,
@@ -634,7 +749,7 @@ def _build_baselines(
             "status": "failed",
             "message": "Local baselines database not readable",
             "baseline_as_of": None,
-            "expected_as_of": historical_latest,
+            "expected_as_of": expected_as_of,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
             "reliable_count": 0,
@@ -645,44 +760,32 @@ def _build_baselines(
         }
 
     try:
-        baseline_as_of = _resolve_baseline_as_of(conn, session_date)
         last_generated_at = _latest_generation_run(conn)
-        symbols_covered = 0
-        reliable_count = 0
-        if baseline_as_of:
-            symbols_covered, reliable_count = _baseline_token_coverage(conn, baseline_as_of)
+        symbols_covered, reliable_count = _baseline_token_coverage(conn, expected_as_of)
+        stored_as_of = _resolve_baseline_as_of(conn, session_date)
     finally:
         conn.close()
 
-    expected_as_of = historical_latest
-    prior_session = prior_trading_session(
-        config.LOCAL_HISTORICAL_DB_PATH, session_date
-    )
-    if prior_session and (
-        expected_as_of is None or expected_as_of >= session_date
-    ):
-        expected_as_of = prior_session
+    baseline_as_of = expected_as_of if symbols_covered > 0 else stored_as_of
 
-    if baseline_as_of is None:
-        status = "failed"
-        message = f"No baseline strictly prior to session {session_date}"
-    elif expected_as_of and baseline_as_of < expected_as_of:
+    if symbols_covered < EXPECTED_COUNT:
         status = "needs_update"
+        actual = stored_as_of or "none"
         message = (
-            f"Baseline as-of {baseline_as_of} is behind historical latest {expected_as_of}"
+            f"Baselines: expected as-of {expected_as_of}, actual latest {actual} "
+            f"({symbols_covered}/{EXPECTED_COUNT} symbols at required date)"
         )
-    elif symbols_covered < EXPECTED_COUNT:
-        status = "needs_update"
-        message = f"Baseline covers {symbols_covered}/{EXPECTED_COUNT} symbols"
     elif reliable_count < symbols_covered:
         status = "warning"
         message = (
-            f"Baseline {baseline_as_of}: {symbols_covered}/{EXPECTED_COUNT} symbols, "
+            f"Baseline as-of {expected_as_of}: {symbols_covered}/{EXPECTED_COUNT} symbols, "
             f"{reliable_count} reliable"
         )
     else:
         status = "ok"
-        message = f"Baseline as-of {baseline_as_of} covers {symbols_covered}/{EXPECTED_COUNT}"
+        message = (
+            f"Baseline as-of {expected_as_of} covers {symbols_covered}/{EXPECTED_COUNT}"
+        )
 
     return {
         "status": status,
@@ -703,7 +806,6 @@ def _build_five_minute(
     historical_db: Path,
     instruments_db: Path,
     session_date: str,
-    historical_latest: Optional[str],
 ) -> dict:
     copy_command = get_generate_command("five-minute")
     historical_ready = historical_db.exists()
@@ -716,6 +818,21 @@ def _build_five_minute(
             else "Generates 5m candles into local historical DB"
         ),
     )
+    required_prior = prior_nse_trading_session(session_date)
+
+    if required_prior is None:
+        return {
+            "status": "failed",
+            "message": f"Cannot resolve prior NSE session before {session_date}",
+            "latest_date": None,
+            "expected_prior_session": None,
+            "symbols_covered": 0,
+            "expected_count": EXPECTED_COUNT,
+            "ema_seed_ready": 0,
+            "ema_seed_missing": EXPECTED_COUNT,
+            "copy_command": copy_command,
+            "generate_action": generate,
+        }
 
     if not historical_db.exists():
         return {
@@ -725,6 +842,7 @@ def _build_five_minute(
                 "Generate local historical data first."
             ),
             "latest_date": None,
+            "expected_prior_session": required_prior,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
             "ema_seed_ready": 0,
@@ -743,6 +861,7 @@ def _build_five_minute(
             "status": "failed",
             "message": "Local historical database not readable",
             "latest_date": None,
+            "expected_prior_session": required_prior,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
             "ema_seed_ready": 0,
@@ -752,12 +871,13 @@ def _build_five_minute(
         }
 
     try:
-        latest_date = _latest_session_date(conn, "candles_5m")
-        if latest_date is None:
+        per_symbol_latest = _per_symbol_latest_session_dates(conn, "candles_5m")
+        if not per_symbol_latest:
             return {
                 "status": "needs_update",
                 "message": "No local 5-minute candles — run generator",
                 "latest_date": None,
+                "expected_prior_session": required_prior,
                 "symbols_covered": 0,
                 "expected_count": EXPECTED_COUNT,
                 "ema_seed_ready": 0,
@@ -766,36 +886,42 @@ def _build_five_minute(
                 "generate_action": generate,
             }
 
-        symbols_covered = _count_symbols_on_date(conn, "candles_5m", latest_date)
+        stale_count, stale_sample, aggregate_latest = _symbols_stale_vs_prior_session(
+            per_symbol_latest, required_prior
+        )
+        symbols_covered = EXPECTED_COUNT - stale_count
+        latest_date = aggregate_latest
         ema_ready, ema_missing = _ema_seed_ready_count(conn, tokens, session_date)
     finally:
         conn.close()
 
-    if historical_latest and latest_date < historical_latest:
+    if stale_count > 0:
         status = "needs_update"
-        message = (
-            f"5m latest {latest_date} behind 1m historical {historical_latest}"
+        message = _freshness_message(
+            area_label="5m candles",
+            required_prior=required_prior,
+            actual_latest=latest_date,
+            stale_count=stale_count,
+            stale_sample=stale_sample,
         )
-    elif symbols_covered < EXPECTED_COUNT:
-        status = "needs_update" if symbols_covered < EXPECTED_COUNT - 2 else "warning"
-        message = f"5m latest {latest_date}: {symbols_covered}/{EXPECTED_COUNT} symbols"
     elif ema_missing > 0:
         status = "warning" if ema_missing <= 2 else "needs_update"
         message = (
-            f"5m {latest_date}: EMA seed ready {ema_ready}/{len(tokens)} "
+            f"5m {required_prior}: EMA seed ready {ema_ready}/{len(tokens)} "
             f"({ema_missing} missing)"
         )
     else:
         status = "ok"
         message = (
-            f"5m latest {latest_date}: {symbols_covered}/{EXPECTED_COUNT}, "
-            f"EMA seed {ema_ready}/{len(tokens)}"
+            f"5m candles current through prior session {required_prior}: "
+            f"{symbols_covered}/{EXPECTED_COUNT}, EMA seed {ema_ready}/{len(tokens)}"
         )
 
     return {
         "status": status,
         "message": message,
         "latest_date": latest_date,
+        "expected_prior_session": required_prior,
         "symbols_covered": symbols_covered,
         "expected_count": EXPECTED_COUNT,
         "ema_seed_ready": ema_ready,
@@ -933,12 +1059,9 @@ def fetch_premarket_checklist(
 
     kite_auth = _build_kite_auth()
     instruments = _build_instruments(instruments_db)
-    historical = _build_historical(historical_db)
-    historical_latest = historical.get("latest_date")
-    baselines = _build_baselines(baselines_db, session_date, historical_latest)
-    five_minute = _build_five_minute(
-        historical_db, instruments_db, session_date, historical_latest
-    )
+    historical = _build_historical(historical_db, session_date)
+    baselines = _build_baselines(baselines_db, session_date)
+    five_minute = _build_five_minute(historical_db, instruments_db, session_date)
 
     # Universe manifest is a hard blocker (not warning-only).
     manifest = validate_universe_manifest(default_manifest_path(config.LOCAL_DATA_DIR))

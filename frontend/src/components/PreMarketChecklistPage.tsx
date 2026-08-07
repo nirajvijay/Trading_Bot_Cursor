@@ -262,6 +262,9 @@ export function PreMarketChecklistPage({
           copyCommand={data.areas.historical_candles.copy_command}
           copyLabel="Copy Collector Command"
         >
+          <StatusField label="Expected prior session">
+            {data.areas.historical_candles.expected_prior_session ?? '—'}
+          </StatusField>
           <StatusField label="Latest date">
             {data.areas.historical_candles.latest_date ?? '—'}
           </StatusField>
@@ -287,6 +290,9 @@ export function PreMarketChecklistPage({
           copyLabel="Copy Generator Command"
         >
           <StatusField label="As-of">{data.areas.baselines.baseline_as_of ?? '—'}</StatusField>
+          <StatusField label="Expected as-of">
+            {data.areas.baselines.expected_as_of ?? '—'}
+          </StatusField>
           <StatusField label="Symbols">
             {data.areas.baselines.symbols_covered}/{data.areas.baselines.expected_count}
           </StatusField>
@@ -304,6 +310,9 @@ export function PreMarketChecklistPage({
           generating={generatingTask === 'five-minute'}
           copyCommand={data.areas.five_minute_candles.copy_command}
         >
+          <StatusField label="Expected prior session">
+            {data.areas.five_minute_candles.expected_prior_session ?? '—'}
+          </StatusField>
           <StatusField label="Latest date">
             {data.areas.five_minute_candles.latest_date ?? '—'}
           </StatusField>

@@ -253,15 +253,17 @@ class ChecklistQueryTests(unittest.TestCase):
     def test_historical_ok(self, _mock_sessions) -> None:
         db = self.root / "historical.db"
         _init_historical_db(db)
-        result = _build_historical(db)
+        result = _build_historical(db, "2026-08-03")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["symbols_covered"], 100)
+        self.assertEqual(result["expected_prior_session"], "2026-07-31")
 
-    def test_baselines_needs_update_when_behind_historical(self) -> None:
+    def test_baselines_needs_update_when_behind_prior_session(self) -> None:
         db = self.root / "baselines.db"
         _init_baselines_db(db, as_of="2026-07-28")
-        result = _build_baselines(db, "2026-08-03", "2026-07-31")
+        result = _build_baselines(db, "2026-08-03")
         self.assertEqual(result["status"], "needs_update")
+        self.assertIn("expected as-of 2026-07-31", result["message"])
 
     def test_full_checklist_aggregate(self) -> None:
         instruments = self.root / "instruments.db"

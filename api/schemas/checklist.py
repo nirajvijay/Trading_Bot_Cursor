@@ -77,6 +77,7 @@ class HistoricalCandlesCheck(BaseModel):
     status: ChecklistStatus
     message: str
     latest_date: Optional[str] = None
+    expected_prior_session: Optional[str] = None
     symbols_covered: int = 0
     expected_count: int = 100
     missing_count: int = 0
@@ -104,6 +105,7 @@ class FiveMinuteCandlesCheck(BaseModel):
     status: ChecklistStatus
     message: str
     latest_date: Optional[str] = None
+    expected_prior_session: Optional[str] = None
     symbols_covered: int = 0
     expected_count: int = 100
     ema_seed_ready: int = 0

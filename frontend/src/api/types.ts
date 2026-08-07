@@ -185,6 +185,7 @@ export interface HistoricalCandlesCheck {
   status: ChecklistStatus
   message: string
   latest_date?: string | null
+  expected_prior_session?: string | null
   symbols_covered: number
   expected_count: number
   missing_count: number
@@ -212,6 +213,7 @@ export interface FiveMinuteCandlesCheck {
   status: ChecklistStatus
   message: string
   latest_date?: string | null
+  expected_prior_session?: string | null
   symbols_covered: number
   expected_count: number
   ema_seed_ready: number

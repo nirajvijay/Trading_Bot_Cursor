@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from api import config
 from api.db import open_readonly
+from nse_trading_calendar import prior_nse_trading_session
 
 ROOT = config.ROOT
 LOCAL_DATA_DIR = config.LOCAL_DATA_DIR
@@ -86,7 +87,7 @@ def get_generate_command(task: str, session_date: Optional[str] = None) -> str:
             f"python3 five_minute_candle_generator.py --db {_relative(config.LOCAL_HISTORICAL_DB_PATH)}"
         )
     if task == "baselines":
-        as_of = prior_trading_session(config.LOCAL_HISTORICAL_DB_PATH, session_date)
+        as_of = prior_nse_trading_session(session_date or _today_ist())
         as_of_flag = f" --as-of {as_of}" if as_of else ""
         return (
             f"python3 baseline_generator.py "
@@ -127,11 +128,10 @@ def _build_command(task: str, session_date: Optional[str] = None) -> List[str]:
     if task == "baselines":
         if not config.LOCAL_HISTORICAL_DB_PATH.exists():
             raise ValueError("Local historical database not found — generate historical candles first")
-        as_of = prior_trading_session(config.LOCAL_HISTORICAL_DB_PATH, session_date)
+        as_of = prior_nse_trading_session(session_date or _today_ist())
         if as_of is None:
             raise ValueError(
-                "No completed trading session found before "
-                f"{session_date or _today_ist()} in local historical DB"
+                f"No prior NSE trading session found before {session_date or _today_ist()}"
             )
         return [
             sys.executable,
