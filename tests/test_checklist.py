@@ -482,11 +482,13 @@ class ChecklistApiTests(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def test_api_endpoint(self) -> None:
-        from fastapi.testclient import TestClient
-
         from api import config as api_config
         from api.main import app
-        from tests.auth_test_helpers import clear_auth_overrides, disable_web_auth_overrides
+        from tests.auth_test_helpers import (
+            clear_auth_overrides,
+            disable_web_auth_overrides,
+            make_test_client,
+        )
 
         api_config.LIVE_DB_PATH = self.live
         api_config.INSTRUMENTS_DB_PATH = self.instruments
@@ -506,7 +508,7 @@ class ChecklistApiTests(unittest.TestCase):
                     "access_token_present": True,
                     "masked_access_token": "abcd...wxyz",
                 }
-                client = TestClient(app)
+                client = make_test_client()
                 res = client.get("/api/v1/premarket-checklist?session_date=2026-08-03")
         finally:
             app.dependency_overrides.clear()

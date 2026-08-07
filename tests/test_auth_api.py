@@ -6,18 +6,20 @@ import json
 import unittest
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
 from api.main import app
 from api.routers import auth as auth_router
-from tests.auth_test_helpers import clear_auth_overrides, disable_web_auth_overrides
+from tests.auth_test_helpers import (
+    clear_auth_overrides,
+    disable_web_auth_overrides,
+    make_test_client,
+)
 
 
 class AuthApiTests(unittest.TestCase):
     def setUp(self) -> None:
         disable_web_auth_overrides()
         app.dependency_overrides[auth_router.require_localhost] = lambda: None
-        self.client = TestClient(app)
+        self.client = make_test_client()
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
@@ -83,7 +85,7 @@ class AuthApiTests(unittest.TestCase):
             from api.auth import settings as auth_settings
 
             auth_settings.reload_from_environ()
-            client = TestClient(app)
+            client = make_test_client()
             res = client.post(
                 "/api/v1/auth/session",
                 json={"request_token": "reqtoken"},
