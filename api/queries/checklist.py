@@ -165,38 +165,47 @@ def _per_symbol_latest_session_dates(
 def _symbols_stale_vs_prior_session(
     per_symbol_latest: Dict[str, str],
     required_prior: str,
-) -> Tuple[int, List[str], Optional[str]]:
+) -> Tuple[int, List[str], Optional[str], Optional[str]]:
     """
-    Return (stale_count, stale_sample, actual_latest_aggregate).
+    Return (stale_count, stale_sample, newest_latest_aggregate, newest_stale_latest).
 
-    actual_latest_aggregate is the newest latest-date among NIFTY symbols (for UI).
+    A symbol is stale when its latest session date is missing or strictly before
+  required_prior. Latest dates on session_date D (today) or later are acceptable
+    when prior session P is also present in the database.
     """
     stale: List[str] = []
     actual_dates: List[str] = []
+    stale_latest_dates: List[str] = []
     for symbol in NIFTY_100_SYMBOLS:
         latest = per_symbol_latest.get(symbol)
         if latest:
             actual_dates.append(latest)
-        if latest != required_prior:
+        if latest is None or latest < required_prior:
             stale.append(symbol)
+            if latest:
+                stale_latest_dates.append(latest)
     aggregate = max(actual_dates) if actual_dates else None
-    return len(stale), stale[:8], aggregate
+    newest_stale = max(stale_latest_dates) if stale_latest_dates else None
+    return len(stale), stale[:8], aggregate, newest_stale
 
 
 def _freshness_message(
     *,
     area_label: str,
     required_prior: str,
-    actual_latest: Optional[str],
+    newest_stale_latest: Optional[str],
     stale_count: int,
     stale_sample: List[str],
 ) -> str:
     sample = ", ".join(stale_sample[:5])
     more = "" if stale_count <= 5 else f" (+{stale_count - 5} more)"
-    actual = actual_latest or "none"
+    if newest_stale_latest:
+        actual = f"newest stale latest {newest_stale_latest}"
+    else:
+        actual = "no data"
     return (
-        f"{area_label}: expected prior session {required_prior}, "
-        f"actual latest {actual} ({stale_count}/{EXPECTED_COUNT} symbols stale"
+        f"{area_label}: need coverage through prior session {required_prior}, "
+        f"{stale_count}/{EXPECTED_COUNT} symbols behind ({actual}"
         f"{': ' + sample + more if sample else ''})"
     )
 
@@ -594,8 +603,8 @@ def _build_historical(historical_db: Path, session_date: str) -> dict:
                 "generate_action": generate,
             }
 
-        stale_count, stale_sample, aggregate_latest = _symbols_stale_vs_prior_session(
-            per_symbol_latest, required_prior
+        stale_count, stale_sample, aggregate_latest, newest_stale = (
+            _symbols_stale_vs_prior_session(per_symbol_latest, required_prior)
         )
         symbols_covered = EXPECTED_COUNT - stale_count
         latest_date = aggregate_latest
@@ -637,7 +646,7 @@ def _build_historical(historical_db: Path, session_date: str) -> dict:
         message = _freshness_message(
             area_label="1m candles",
             required_prior=required_prior,
-            actual_latest=latest_date,
+            newest_stale_latest=newest_stale,
             stale_count=stale_count,
             stale_sample=stale_sample,
         )
@@ -886,10 +895,13 @@ def _build_five_minute(
                 "generate_action": generate,
             }
 
-        stale_count, stale_sample, aggregate_latest = _symbols_stale_vs_prior_session(
-            per_symbol_latest, required_prior
+        stale_count, stale_sample, aggregate_latest, newest_stale = (
+            _symbols_stale_vs_prior_session(per_symbol_latest, required_prior)
         )
-        symbols_covered = EXPECTED_COUNT - stale_count
+        symbols_covered_on_p = _count_symbols_on_date(conn, "candles_5m", required_prior)
+        missing_count, missing_sample = _symbols_missing_on_date(
+            conn, "candles_5m", required_prior
+        )
         latest_date = aggregate_latest
         ema_ready, ema_missing = _ema_seed_ready_count(conn, tokens, session_date)
     finally:
@@ -900,9 +912,15 @@ def _build_five_minute(
         message = _freshness_message(
             area_label="5m candles",
             required_prior=required_prior,
-            actual_latest=latest_date,
+            newest_stale_latest=newest_stale,
             stale_count=stale_count,
             stale_sample=stale_sample,
+        )
+    elif symbols_covered_on_p < EXPECTED_COUNT:
+        status = "needs_update"
+        message = (
+            f"5m prior session {required_prior}: {symbols_covered_on_p}/{EXPECTED_COUNT} "
+            f"symbols ({missing_count} missing)"
         )
     elif ema_missing > 0:
         status = "warning" if ema_missing <= 2 else "needs_update"
@@ -914,7 +932,7 @@ def _build_five_minute(
         status = "ok"
         message = (
             f"5m candles current through prior session {required_prior}: "
-            f"{symbols_covered}/{EXPECTED_COUNT}, EMA seed {ema_ready}/{len(tokens)}"
+            f"{symbols_covered_on_p}/{EXPECTED_COUNT}, EMA seed {ema_ready}/{len(tokens)}"
         )
 
     return {
@@ -922,7 +940,7 @@ def _build_five_minute(
         "message": message,
         "latest_date": latest_date,
         "expected_prior_session": required_prior,
-        "symbols_covered": symbols_covered,
+        "symbols_covered": symbols_covered_on_p,
         "expected_count": EXPECTED_COUNT,
         "ema_seed_ready": ema_ready,
         "ema_seed_missing": ema_missing,

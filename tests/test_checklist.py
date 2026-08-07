@@ -258,6 +258,29 @@ class ChecklistQueryTests(unittest.TestCase):
         self.assertEqual(result["symbols_covered"], 100)
         self.assertEqual(result["expected_prior_session"], "2026-07-31")
 
+    @patch(
+        "api.queries.checklist.discover_completed_sessions",
+        return_value=_FAKE_COMPLETED,
+    )
+    def test_historical_ok_when_latest_is_session_date(self, _mock_sessions) -> None:
+        """Today's partial candles must not fail when prior session P is covered."""
+        db = self.root / "historical.db"
+        _init_historical_db(db, session_date="2026-07-31")
+        conn = sqlite3.connect(db)
+        for i, symbol in enumerate(NIFTY_100_SYMBOLS):
+            conn.execute(
+                """
+                INSERT INTO candles VALUES (?, ?, ?, 1, 1, 1, 1, 100)
+                """,
+                (100000 + i, symbol, "2026-08-03T10:00:00+05:30"),
+            )
+        conn.commit()
+        conn.close()
+        result = _build_historical(db, "2026-08-03")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["latest_date"], "2026-08-03")
+        self.assertEqual(result["expected_prior_session"], "2026-07-31")
+
     def test_baselines_needs_update_when_behind_prior_session(self) -> None:
         db = self.root / "baselines.db"
         _init_baselines_db(db, as_of="2026-07-28")
