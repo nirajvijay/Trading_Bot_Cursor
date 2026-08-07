@@ -129,6 +129,39 @@ class RuntimeCachePathTests(unittest.TestCase):
                 (host_data / "runtime-cache" / "checklist_cache.json").exists()
             )
 
+    def test_manifest_write_invalidates_runtime_cache(self) -> None:
+        """Manifest updates must clear persistent runtime-cache, not only LOCAL_DATA_DIR."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "data"
+            release_local = root / "releases" / "abc123" / "data" / "local"
+            release_local.mkdir(parents=True)
+
+            os.environ["APP_ENV"] = "production"
+            os.environ["NIFTY_RADAR_DATA_ROOT"] = str(data)
+            os.environ.pop("NIFTY_RADAR_RUNTIME_CACHE_DIR", None)
+            os.environ["LOCAL_DATA_DIR"] = str(release_local)
+
+            _, _, checklist_cache = self._reload_modules()
+            from universe_manifest import write_universe_manifest_atomic
+
+            write_universe_manifest_atomic(release_local / "universe_manifest.json")
+            checklist_cache.write_checklist_cache(
+                {
+                    "session_date": "2026-08-07",
+                    "overall_status": "ok",
+                    "checked_at": "2026-08-07T08:00:00+05:30",
+                    "next_step": "Start live observation",
+                    "blockers": [],
+                }
+            )
+            runtime_path = data / "runtime-cache" / "checklist_cache.json"
+            self.assertTrue(runtime_path.is_file())
+
+            # Second manifest write must clear the persistent runtime cache.
+            write_universe_manifest_atomic(release_local / "universe_manifest.json")
+            self.assertFalse(runtime_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
