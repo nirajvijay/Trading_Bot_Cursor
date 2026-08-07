@@ -11,10 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional, Sequence
 
+from api.config import HISTORICAL_DB_PATH
 from pullback_indicators import Ema20State
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_HISTORICAL_DB = ROOT / "data" / "local" / "nifty50_historical.db"
+DEFAULT_HISTORICAL_DB = HISTORICAL_DB_PATH
 
 
 @dataclass(frozen=True)

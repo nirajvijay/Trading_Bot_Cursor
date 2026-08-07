@@ -177,8 +177,9 @@ class ChecklistQueryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmpdir.cleanup()
 
+    @patch("api.queries.checklist.token_valid_for_today", return_value=None)
     @patch("api.queries.checklist.read_auth_status")
-    def test_kite_auth_warning_when_token_present(self, mock_auth) -> None:
+    def test_kite_auth_warning_when_token_present(self, mock_auth, _mock_valid) -> None:
         mock_auth.return_value = {
             "api_key_configured": True,
             "api_secret_configured": True,

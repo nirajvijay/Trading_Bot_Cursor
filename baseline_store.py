@@ -13,10 +13,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Dict, Literal, Mapping, Optional, Tuple
 
+from api.config import BASELINES_DB_PATH
 from spike_types import BaselineSnapshot
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_BASELINES_DB_PATH = ROOT / "data" / "local" / "nifty50_baselines.db"
+DEFAULT_BASELINES_DB_PATH = BASELINES_DB_PATH
 
 BaselineLookupStatus = Literal["hit", "miss", "unreliable"]
 
