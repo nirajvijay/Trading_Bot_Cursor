@@ -1,4 +1,4 @@
-"""Pydantic schemas for local Kite auth API responses."""
+"""Pydantic schemas for Kite auth API responses."""
 
 from __future__ import annotations
 
@@ -21,6 +21,10 @@ class LoginUrlResponse(BaseModel):
     login_url: str
 
 
+class KiteStartResponse(BaseModel):
+    authorize_url: str
+
+
 class SessionRequest(BaseModel):
     request_token: str = Field(..., min_length=1, description="Raw request_token or full redirect URL")
 
@@ -31,8 +35,8 @@ class SessionResponse(BaseModel):
     masked_access_token: str
     masked_refresh_token: Optional[str] = None
     message: str = Field(
-        default="Tokens saved to backend/.env",
-        description="POST /auth/session writes KITE_ACCESS_TOKEN (and refresh token if returned) to backend/.env",
+        default="Tokens saved to Kite secrets store",
+        description="POST /auth/session writes tokens via the secrets store",
     )
 
 

@@ -1,4 +1,4 @@
-"""Tests for local Kite auth API."""
+"""Tests for local Kite auth API (legacy coverage; auth overridden)."""
 
 from __future__ import annotations
 
@@ -10,15 +10,18 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from api.routers import auth as auth_router
+from tests.auth_test_helpers import clear_auth_overrides, disable_web_auth_overrides
 
 
 class AuthApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        disable_web_auth_overrides()
         app.dependency_overrides[auth_router.require_localhost] = lambda: None
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
+        clear_auth_overrides()
 
     @patch("api.routers.auth.read_auth_status")
     def test_status_masks_tokens_only(self, mock_status) -> None:
@@ -62,7 +65,6 @@ class AuthApiTests(unittest.TestCase):
         res = self.client.post(
             "/api/v1/auth/session",
             json={"request_token": "reqtoken"},
-            headers={"X-NIFTY-RADAR-LOCAL-AUTH": "true"},
         )
         self.assertEqual(res.status_code, 200)
         body = res.json()
@@ -70,14 +72,33 @@ class AuthApiTests(unittest.TestCase):
         self.assertNotIn(full_refresh, json.dumps(body))
         self.assertEqual(body["user_id"], "AB1234")
         self.assertIn("...", body["masked_access_token"])
-        self.assertIn("backend/.env", body["message"])
+        self.assertIn("secrets store", body["message"])
 
-    def test_session_requires_local_header(self) -> None:
-        res = self.client.post(
-            "/api/v1/auth/session",
-            json={"request_token": "reqtoken"},
-        )
-        self.assertEqual(res.status_code, 403)
+    def test_session_unauthenticated_without_override(self) -> None:
+        app.dependency_overrides.clear()
+        # Force auth enabled path: without session cookie → 401
+        prev = os.environ.get("WEB_AUTH_ENABLED")
+        try:
+            os.environ["WEB_AUTH_ENABLED"] = "true"
+            from api.auth import settings as auth_settings
+
+            auth_settings.reload_from_environ()
+            client = TestClient(app)
+            res = client.post(
+                "/api/v1/auth/session",
+                json={"request_token": "reqtoken"},
+            )
+            self.assertEqual(res.status_code, 401)
+        finally:
+            if prev is None:
+                os.environ.pop("WEB_AUTH_ENABLED", None)
+            else:
+                os.environ["WEB_AUTH_ENABLED"] = prev
+            from api.auth import settings as auth_settings
+
+            auth_settings.reload_from_environ()
+            disable_web_auth_overrides()
+            app.dependency_overrides[auth_router.require_localhost] = lambda: None
 
     @patch("api.routers.auth.check_access_token_details")
     def test_check_token_response(self, mock_check) -> None:
@@ -92,6 +113,10 @@ class AuthApiTests(unittest.TestCase):
         res = self.client.get("/api/v1/health")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["status"], "ok")
+
+
+# Late import used by unauthenticated test.
+import os  # noqa: E402
 
 
 if __name__ == "__main__":

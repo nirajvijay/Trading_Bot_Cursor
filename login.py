@@ -4,51 +4,108 @@ Kite Connect login helper.
 Flow:
 1. Run `python login.py` and open the printed login URL in a browser.
 2. After login, paste the request_token (or full redirect URL) when prompted.
-3. Access token (and refresh token, if provided by Kite) are saved to `.env`.
+3. Access token (and refresh token, if provided by Kite) are saved via the secrets store
+   (KITE_SECRETS_PATH, default /opt/nifty-radar/secrets/kite.env) with legacy .env fallback.
 
 Other commands:
-  python login.py --check-token       Validate access token in .env via kite.profile()
+  python login.py --check-token       Validate access token via kite.profile()
   python login.py --request-token TOKEN
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from dotenv import dotenv_values, set_key
+from dotenv import dotenv_values
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import TokenException
 
-ENV_PATH = Path(__file__).resolve().parent / ".env"
+ROOT = Path(__file__).resolve().parent
+LEGACY_ENV_PATH = ROOT / ".env"
+
+
+def _secrets_path() -> Path:
+    try:
+        from api.auth import settings
+
+        return settings.KITE_SECRETS_PATH
+    except Exception:
+        return Path(
+            os.environ.get(
+                "KITE_SECRETS_PATH",
+                "/opt/nifty-radar/secrets/kite.env",
+            )
+        )
+
+
+def _read_env_merged() -> dict[str, str]:
+    """Prefer secrets store, fall back to legacy project .env."""
+    merged: dict[str, str] = {}
+    if LEGACY_ENV_PATH.exists():
+        for key, value in dotenv_values(LEGACY_ENV_PATH).items():
+            if key and value is not None:
+                merged[key] = value
+    secrets = _secrets_path()
+    if secrets.exists():
+        for key, value in dotenv_values(secrets).items():
+            if key and value is not None:
+                merged[key] = value
+    # Process env wins for overrides in tests/ops.
+    for key in (
+        "KITE_API_KEY",
+        "KITE_API_SECRET",
+        "KITE_ACCESS_TOKEN",
+        "KITE_REFRESH_TOKEN",
+        "KITE_EXPECTED_USER_ID",
+    ):
+        if os.environ.get(key):
+            merged[key] = os.environ[key]
+    return merged
 
 
 def _require_env(*keys: str) -> dict[str, str]:
-    values = dotenv_values(ENV_PATH)
+    values = _read_env_merged()
     missing = [key for key in keys if not values.get(key)]
     if missing:
         raise ValueError(
-            f"Missing required .env keys: {', '.join(missing)}. "
-            f"Add them to {ENV_PATH}"
+            f"Missing required keys: {', '.join(missing)}. "
+            f"Set them in {_secrets_path()} (or legacy {LEGACY_ENV_PATH})"
         )
     return {key: values[key] for key in keys}
 
 
 def _save_env_vars(updates: dict[str, str]) -> None:
-    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not ENV_PATH.exists():
-        ENV_PATH.touch()
+    try:
+        from api.auth.secrets_store import write_secrets_atomic
 
+        write_secrets_atomic(updates)
+        return
+    except Exception:
+        # Fallback for CLI use before api package paths are ready.
+        pass
+
+    from dotenv import set_key
+
+    path = _secrets_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.touch()
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
     for key, value in updates.items():
-        set_key(str(ENV_PATH), key, value)
+        set_key(str(path), key, value)
 
 
 def _get_kite(api_key: str | None = None, access_token: str | None = None) -> KiteConnect:
-    env = dotenv_values(ENV_PATH)
+    env = _read_env_merged()
     key = api_key or env.get("KITE_API_KEY")
     if not key:
-        raise ValueError("KITE_API_KEY is not set in .env")
+        raise ValueError("KITE_API_KEY is not set")
 
     kite = KiteConnect(api_key=key)
     token = access_token or env.get("KITE_ACCESS_TOKEN")
@@ -58,7 +115,7 @@ def _get_kite(api_key: str | None = None, access_token: str | None = None) -> Ki
 
 
 def _save_session_tokens(session: dict) -> None:
-    """Save access token and refresh token (if returned) to .env."""
+    """Save access token and refresh token (if returned) via secrets store."""
     updates = {"KITE_ACCESS_TOKEN": session["access_token"]}
     refresh_token = session.get("refresh_token")
     if refresh_token:
@@ -69,6 +126,16 @@ def _save_session_tokens(session: dict) -> None:
 def get_login_url() -> str:
     env = _require_env("KITE_API_KEY")
     return _get_kite(api_key=env["KITE_API_KEY"]).login_url()
+
+
+def build_authorize_url_with_state(opaque_state: str) -> str:
+    """Kite login URL with redirect_params so callback receives state=<opaque>."""
+    from urllib.parse import quote
+
+    base = get_login_url()
+    redirect_params = quote(f"state={opaque_state}", safe="")
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}redirect_params={redirect_params}"
 
 
 def extract_request_token(value: str) -> str:
@@ -83,10 +150,17 @@ def extract_request_token(value: str) -> str:
     return value
 
 
-def generate_session(request_token: str) -> dict:
+def generate_session(
+    request_token: str,
+    *,
+    expected_user_id: str | None = None,
+    persist: bool = True,
+) -> dict:
     """
     Exchange request_token for access_token and refresh_token.
-    Saves tokens to .env (refresh token only if Kite returns one).
+
+    If expected_user_id is set and the session user_id mismatches, raise ValueError
+    without writing tokens. When persist=False, return session without writing.
     """
     env = _require_env("KITE_API_KEY", "KITE_API_SECRET")
     kite = _get_kite(api_key=env["KITE_API_KEY"])
@@ -96,13 +170,23 @@ def generate_session(request_token: str) -> dict:
         request_token=request_token,
         api_secret=env["KITE_API_SECRET"],
     )
-    _save_session_tokens(session)
+    user_id = session.get("user_id")
+    uid = str(user_id) if user_id is not None else None
+    expected = expected_user_id
+    if expected is None:
+        expected = _read_env_merged().get("KITE_EXPECTED_USER_ID") or None
+    if expected and uid != expected:
+        raise ValueError(
+            f"Kite user_id mismatch: expected {expected}, got {uid or 'n/a'}"
+        )
+    if persist:
+        _save_session_tokens(session)
     return session
 
 
 def is_access_token_valid(access_token: str | None = None) -> bool:
     """Return True if the access token is valid (checked via kite.profile())."""
-    env = dotenv_values(ENV_PATH)
+    env = _read_env_merged()
     token = access_token or env.get("KITE_ACCESS_TOKEN")
     if not token:
         return False
@@ -122,10 +206,10 @@ def is_access_token_valid(access_token: str | None = None) -> bool:
 
 def check_access_token(access_token: str | None = None) -> tuple[bool, str]:
     """Check access token validity via kite.profile() and return (is_valid, message)."""
-    env = dotenv_values(ENV_PATH)
+    env = _read_env_merged()
     token = access_token or env.get("KITE_ACCESS_TOKEN")
     if not token:
-        return False, "KITE_ACCESS_TOKEN is missing from .env"
+        return False, "KITE_ACCESS_TOKEN is missing"
 
     try:
         _require_env("KITE_API_KEY")
@@ -157,7 +241,7 @@ def mask_token(token: str) -> str:
 
 def read_auth_status() -> dict:
     """Read-only auth configuration status with masked token previews only."""
-    env = dotenv_values(ENV_PATH)
+    env = _read_env_merged()
     api_key = env.get("KITE_API_KEY") or ""
     api_secret = env.get("KITE_API_SECRET") or ""
     access_token = env.get("KITE_ACCESS_TOKEN") or ""
@@ -178,10 +262,10 @@ def check_access_token_details(
     access_token: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """Check token validity and return (is_valid, message, user_id)."""
-    env = dotenv_values(ENV_PATH)
+    env = _read_env_merged()
     token = access_token or env.get("KITE_ACCESS_TOKEN")
     if not token:
-        return False, "KITE_ACCESS_TOKEN is missing from .env", None
+        return False, "KITE_ACCESS_TOKEN is missing", None
 
     try:
         _require_env("KITE_API_KEY")
@@ -212,7 +296,7 @@ def main() -> None:
     parser.add_argument(
         "--check-token",
         action="store_true",
-        help="Check whether KITE_ACCESS_TOKEN in .env is valid (via kite.profile())",
+        help="Check whether KITE_ACCESS_TOKEN is valid (via kite.profile())",
     )
     args = parser.parse_args()
 
@@ -233,7 +317,7 @@ def main() -> None:
             raise SystemExit("No request_token provided.")
         session = generate_session(pasted)
 
-    print("Login successful. Tokens saved to .env")
+    print(f"Login successful. Tokens saved to {_secrets_path()}")
     print(f"  user_id:       {session.get('user_id', 'n/a')}")
     print(f"  access_token:  {_mask_token(session['access_token'])}")
     if session.get("refresh_token"):

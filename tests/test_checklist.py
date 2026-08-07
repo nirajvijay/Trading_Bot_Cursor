@@ -486,6 +486,7 @@ class ChecklistApiTests(unittest.TestCase):
 
         from api import config as api_config
         from api.main import app
+        from tests.auth_test_helpers import clear_auth_overrides, disable_web_auth_overrides
 
         api_config.LIVE_DB_PATH = self.live
         api_config.INSTRUMENTS_DB_PATH = self.instruments
@@ -496,15 +497,20 @@ class ChecklistApiTests(unittest.TestCase):
         api_config.LOCAL_HISTORICAL_DB_PATH = self.historical
         api_config.LOCAL_BASELINES_DB_PATH = self.baselines
 
-        with patch("api.queries.checklist.read_auth_status") as mock_auth:
-            mock_auth.return_value = {
-                "api_key_configured": True,
-                "api_secret_configured": True,
-                "access_token_present": True,
-                "masked_access_token": "abcd...wxyz",
-            }
-            client = TestClient(app)
-            res = client.get("/api/v1/premarket-checklist?session_date=2026-08-03")
+        disable_web_auth_overrides()
+        try:
+            with patch("api.queries.checklist.read_auth_status") as mock_auth:
+                mock_auth.return_value = {
+                    "api_key_configured": True,
+                    "api_secret_configured": True,
+                    "access_token_present": True,
+                    "masked_access_token": "abcd...wxyz",
+                }
+                client = TestClient(app)
+                res = client.get("/api/v1/premarket-checklist?session_date=2026-08-03")
+        finally:
+            app.dependency_overrides.clear()
+            clear_auth_overrides()
         self.assertEqual(res.status_code, 200)
         body = res.json()
         self.assertEqual(body["session_date"], "2026-08-03")

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { FormEvent, useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   fetchAuthStatus,
   fetchLoginUrl,
   postCheckToken,
+  postKiteStart,
   postSession,
+  postStepUp,
 } from '../api/client'
 import { formatTimeIst } from '../lib/format'
 import type { AuthStatusResponse, CheckTokenResponse, SessionResponse } from '../api/types'
@@ -43,6 +45,19 @@ function FlowStep({
   )
 }
 
+function kiteBannerFromQuery(): { kind: 'ok' | 'error'; text: string } | null {
+  if (typeof window === 'undefined') return null
+  const params = new URLSearchParams(window.location.search)
+  const kite = params.get('kite')
+  if (kite === 'connected') {
+    return { kind: 'ok', text: 'Kite connected. Market-data token saved on the server.' }
+  }
+  if (kite === 'error') {
+    return { kind: 'error', text: 'Kite login failed. Existing token was not changed.' }
+  }
+  return null
+}
+
 export function KiteAuthPage() {
   const [status, setStatus] = useState<AuthStatusResponse | null>(null)
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
@@ -55,6 +70,12 @@ export function KiteAuthPage() {
   const [lastCheck, setLastCheck] = useState<CheckTokenResponse | null>(null)
   const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null)
   const [logMessage, setLogMessage] = useState('Awaiting input sequence...')
+  const [showPaste, setShowPaste] = useState(false)
+  const [showStepUp, setShowStepUp] = useState(false)
+  const [stepUpPassword, setStepUpPassword] = useState('')
+  const [stepUpTotp, setStepUpTotp] = useState('')
+  const [pendingAfterStepUp, setPendingAfterStepUp] = useState<'kite-start' | 'paste' | null>(null)
+  const [kiteBanner, setKiteBanner] = useState(kiteBannerFromQuery)
 
   const loadStatus = useCallback(async () => {
     setLoading(true)
@@ -74,6 +95,16 @@ export function KiteAuthPage() {
     void loadStatus()
   }, [loadStatus])
 
+  useEffect(() => {
+    if (!kiteBanner) return
+    // Strip kite query params from the address bar without reload.
+    const url = new URL(window.location.href)
+    if (url.searchParams.has('kite')) {
+      url.searchParams.delete('kite')
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+    }
+  }, [kiteBanner])
+
   const tokenValid: BadgeValue = lastCheck
     ? lastCheck.valid
       ? 'YES'
@@ -89,6 +120,82 @@ export function KiteAuthPage() {
 
   const maskedAccessPreview =
     status?.masked_access_token ?? lastSession?.masked_access_token ?? ''
+
+  async function runKiteStart() {
+    setActionLoading(true)
+    setError(null)
+    setSuccess(null)
+    setLogMessage('Starting remote Kite login...')
+    try {
+      const data = await postKiteStart()
+      setLogMessage('Redirecting to Kite...')
+      window.location.assign(data.authorize_url)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to start Kite login'
+      setError(msg)
+      setLogMessage(msg)
+      if (msg.toLowerCase().includes('step-up')) {
+        setShowStepUp(true)
+      }
+      setActionLoading(false)
+    }
+  }
+
+  async function handleStartKiteLogin() {
+    setPendingAfterStepUp('kite-start')
+    setShowStepUp(true)
+  }
+
+  async function finalizePasteLogin() {
+    const trimmed = requestToken.trim()
+    if (!trimmed) return
+    setActionLoading(true)
+    setError(null)
+    setSuccess(null)
+    setLastSession(null)
+    setLogMessage('Exchanging request token...')
+    try {
+      const data = await postSession(trimmed)
+      setLastSession(data)
+      setSuccess(data.message)
+      setRequestToken('')
+      setLastCheck(null)
+      setLastCheckedAt(null)
+      setLogMessage('Access token saved to secrets store.')
+      await loadStatus()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to generate access token'
+      setError(msg)
+      setLogMessage(msg)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function handleStepUpSubmit(event: FormEvent) {
+    event.preventDefault()
+    setActionLoading(true)
+    setError(null)
+    try {
+      await postStepUp(stepUpPassword, stepUpTotp.trim() || undefined)
+      const next = pendingAfterStepUp
+      setShowStepUp(false)
+      setStepUpPassword('')
+      setStepUpTotp('')
+      setPendingAfterStepUp(null)
+      if (next === 'paste') {
+        setActionLoading(false)
+        await finalizePasteLogin()
+      } else {
+        await runKiteStart()
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Step-up failed'
+      setError(msg)
+      setLogMessage(msg)
+      setActionLoading(false)
+    }
+  }
 
   async function handleGenerateLoginUrl() {
     setActionLoading(true)
@@ -123,27 +230,9 @@ export function KiteAuthPage() {
       setLogMessage('Token input required.')
       return
     }
-    setActionLoading(true)
-    setError(null)
-    setSuccess(null)
-    setLastSession(null)
-    setLogMessage('Exchanging request token...')
-    try {
-      const data = await postSession(trimmed)
-      setLastSession(data)
-      setSuccess(data.message)
-      setRequestToken('')
-      setLastCheck(null)
-      setLastCheckedAt(null)
-      setLogMessage('Access token saved to backend/.env.')
-      await loadStatus()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to generate access token'
-      setError(msg)
-      setLogMessage(msg)
-    } finally {
-      setActionLoading(false)
-    }
+    setPendingAfterStepUp('paste')
+    setShowStepUp(true)
+    setLogMessage('Complete step-up to finalize paste login.')
   }
 
   async function handleCheckToken() {
@@ -198,15 +287,31 @@ export function KiteAuthPage() {
                 Kite Auth Configuration
               </h1>
               <p className="text-xs text-on-surface-variant truncate">
-                System authentication bridge for Zerodha Kite Connect API
+                Daily market-data token for Zerodha Kite Connect (observation only)
               </p>
             </div>
           </div>
-          <span className="label-caps px-2 py-0.5 bg-emerald-50 text-positive border border-emerald-200 rounded-sm shrink-0">
-            Local only
-          </span>
         </div>
       </div>
+
+      {kiteBanner && (
+        <div
+          className={`shrink-0 mx-4 mt-2 px-3 py-1.5 text-xs border ${
+            kiteBanner.kind === 'error'
+              ? 'bg-red-50 border-red-200 text-red-800'
+              : 'bg-emerald-50 border-emerald-200 text-positive'
+          }`}
+        >
+          {kiteBanner.text}
+          <button
+            type="button"
+            className="ml-2 underline"
+            onClick={() => setKiteBanner(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {alertMessage && (
         <div
@@ -217,6 +322,52 @@ export function KiteAuthPage() {
           }`}
         >
           {alertMessage}
+        </div>
+      )}
+
+      {showStepUp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <form
+            onSubmit={(e) => void handleStepUpSubmit(e)}
+            className="w-full max-w-sm bg-white border border-outline-variant p-4 space-y-3"
+          >
+            <h2 className="text-sm font-bold text-on-surface">Confirm step-up</h2>
+            <p className="text-[11px] text-on-surface-variant">
+              Password{status?.access_token_present ? '' : ''} and MFA (if enabled) required before
+              changing the Kite token.
+            </p>
+            <input
+              type="password"
+              className="w-full border border-outline-variant px-2 py-1.5 text-sm"
+              placeholder="Password"
+              value={stepUpPassword}
+              onChange={(e) => setStepUpPassword(e.target.value)}
+              required
+            />
+            <input
+              className="w-full border border-outline-variant px-2 py-1.5 text-sm font-data"
+              placeholder="MFA code (if enabled)"
+              value={stepUpTotp}
+              onChange={(e) => setStepUpTotp(e.target.value)}
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                className="px-3 py-1.5 text-[10px] label-caps border border-outline-variant"
+                onClick={() => setShowStepUp(false)}
+                disabled={actionLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-3 py-1.5 text-[10px] label-caps bg-primary text-white font-bold disabled:opacity-50"
+                disabled={actionLoading}
+              >
+                Confirm
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -260,7 +411,16 @@ export function KiteAuthPage() {
               </>
             ) : null}
           </div>
-          <div className="shrink-0 px-3 pb-3 pt-1">
+          <div className="shrink-0 px-3 pb-3 pt-1 space-y-2">
+            <button
+              type="button"
+              className="w-full bg-primary text-white py-2 rounded label-caps font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 text-[10px]"
+              onClick={() => void handleStartKiteLogin()}
+              disabled={actionLoading || loading}
+            >
+              <span className="material-symbols-outlined text-[16px]">login</span>
+              Start Kite Login
+            </button>
             <button
               type="button"
               className="w-full border-2 border-primary text-primary bg-white py-2 rounded label-caps font-bold hover:bg-secondary-container/30 disabled:opacity-50 flex items-center justify-center gap-2 text-[10px]"
@@ -270,11 +430,6 @@ export function KiteAuthPage() {
               <span className="material-symbols-outlined text-[16px]">verified_user</span>
               Check access token
             </button>
-            {!status?.access_token_present && (
-              <p className="mt-2 text-[10px] text-on-surface-variant leading-snug">
-                No active session. Complete the login flow to initialize market data streams.
-              </p>
-            )}
           </div>
         </section>
 
@@ -285,92 +440,107 @@ export function KiteAuthPage() {
               <h2 className="text-xs font-bold text-on-surface">Safety protocol</h2>
             </div>
             <ul className="text-[10px] text-on-surface-variant space-y-0.5 list-disc pl-4 leading-snug">
-              <li>Updates local backend/.env only. Does not place orders.</li>
-              <li>API secrets are never shown. Tokens are masked in the UI.</li>
+              <li>Updates server secrets store only. Does not place orders.</li>
+              <li>API secrets and raw tokens are never shown in the UI.</li>
+              <li>Token changes require website step-up authentication.</li>
             </ul>
           </section>
 
           <section className="bg-white border border-outline-variant flex flex-col flex-1 min-h-0 overflow-hidden">
             <div className="shrink-0 px-3 py-2 border-b border-outline-variant bg-surface-container-low flex items-center justify-between gap-2">
-              <h2 className="label-caps text-on-surface">Kite login sequence flow</h2>
+              <h2 className="label-caps text-on-surface">Legacy paste login (optional)</h2>
               <button
                 type="button"
-                onClick={handleClear}
+                onClick={() => setShowPaste((v) => !v)}
                 className="text-[10px] label-caps text-on-surface-variant hover:text-primary"
-                disabled={actionLoading}
               >
-                Clear
+                {showPaste ? 'Hide' : 'Show'}
               </button>
             </div>
-            <div className="flex-1 min-h-0 flex flex-col p-3 overflow-hidden">
-              <div className="flex-1 min-h-0 overflow-hidden">
-                <FlowStep
-                  number="01"
-                  title="Session initialization"
-                  description="Generate the Kite Connect login URL."
-                  compact
-                >
-                  <button
-                    type="button"
-                    className="bg-primary text-white px-3 py-1.5 rounded label-caps font-bold hover:opacity-90 disabled:opacity-50 text-[10px]"
-                    onClick={() => void handleGenerateLoginUrl()}
-                    disabled={actionLoading}
+            {showPaste ? (
+              <div className="flex-1 min-h-0 flex flex-col p-3 overflow-hidden">
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <FlowStep
+                    number="01"
+                    title="Session initialization"
+                    description="Generate the Kite Connect login URL."
+                    compact
                   >
-                    Generate login URL
-                  </button>
-                  <input
-                    readOnly
-                    value={loginUrl ?? ''}
-                    placeholder="Login URL will appear here..."
-                    className="mt-1.5 w-full font-data text-[10px] bg-surface-container-low border border-outline-variant px-2 py-1 text-on-surface-variant"
-                  />
-                </FlowStep>
+                    <button
+                      type="button"
+                      className="bg-primary text-white px-3 py-1.5 rounded label-caps font-bold hover:opacity-90 disabled:opacity-50 text-[10px]"
+                      onClick={() => void handleGenerateLoginUrl()}
+                      disabled={actionLoading}
+                    >
+                      Generate login URL
+                    </button>
+                    <input
+                      readOnly
+                      value={loginUrl ?? ''}
+                      placeholder="Login URL will appear here..."
+                      className="mt-1.5 w-full font-data text-[10px] bg-surface-container-low border border-outline-variant px-2 py-1 text-on-surface-variant"
+                    />
+                  </FlowStep>
 
-                <FlowStep
-                  number="02"
-                  title="Interactive authentication"
-                  description="Open Zerodha login in your browser."
-                  compact
-                >
-                  <button
-                    type="button"
-                    className="border border-outline-variant bg-white px-3 py-1.5 rounded label-caps flex items-center gap-1.5 hover:bg-surface-container-low disabled:opacity-50 text-[10px]"
-                    onClick={handleOpenLogin}
-                    disabled={!loginUrl || actionLoading}
+                  <FlowStep
+                    number="02"
+                    title="Interactive authentication"
+                    description="Open Zerodha login in your browser."
+                    compact
                   >
-                    <span className="material-symbols-outlined text-[14px]">open_in_new</span>
-                    Open Kite login
-                  </button>
-                </FlowStep>
+                    <button
+                      type="button"
+                      className="border border-outline-variant bg-white px-3 py-1.5 rounded label-caps flex items-center gap-1.5 hover:bg-surface-container-low disabled:opacity-50 text-[10px]"
+                      onClick={handleOpenLogin}
+                      disabled={!loginUrl || actionLoading}
+                    >
+                      <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                      Open Kite login
+                    </button>
+                  </FlowStep>
 
-                <FlowStep
-                  number="03"
-                  title="Token capture and finalize"
-                  description="Paste request_token or full redirect URL."
-                  compact
-                >
-                  <textarea
-                    className="w-full h-14 font-data text-[10px] bg-surface-container-low border border-outline-variant px-2 py-1.5 mb-2 resize-none"
-                    placeholder="Paste full redirect URL or token here..."
-                    value={requestToken}
-                    onChange={(e) => setRequestToken(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="w-full bg-primary text-white py-2 rounded label-caps font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 text-[10px]"
-                    onClick={() => void handleGenerateSession()}
-                    disabled={actionLoading}
+                  <FlowStep
+                    number="03"
+                    title="Token capture and finalize"
+                    description="Paste request_token or full redirect URL (dev/non-prod)."
+                    compact
                   >
-                    <span className="material-symbols-outlined text-[16px]">sync</span>
-                    Generate access token
-                  </button>
-                </FlowStep>
+                    <textarea
+                      className="w-full h-14 font-data text-[10px] bg-surface-container-low border border-outline-variant px-2 py-1.5 mb-2 resize-none"
+                      placeholder="Paste full redirect URL or token here..."
+                      value={requestToken}
+                      onChange={(e) => setRequestToken(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="w-full bg-primary text-white py-2 rounded label-caps font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 text-[10px]"
+                      onClick={() => void handleGenerateSession()}
+                      disabled={actionLoading}
+                    >
+                      <span className="material-symbols-outlined text-[16px]">sync</span>
+                      Generate access token
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClear}
+                      className="mt-2 text-[10px] label-caps text-on-surface-variant hover:text-primary"
+                      disabled={actionLoading}
+                    >
+                      Clear
+                    </button>
+                  </FlowStep>
+                </div>
+
+                <p className="shrink-0 font-data text-[10px] text-on-surface-variant border-t border-outline-variant pt-2 truncate">
+                  * Log: {logMessage}
+                </p>
               </div>
-
-              <p className="shrink-0 font-data text-[10px] text-on-surface-variant border-t border-outline-variant pt-2 truncate">
-                * Log: {logMessage}
-              </p>
-            </div>
+            ) : (
+              <div className="p-3 text-[11px] text-on-surface-variant">
+                Prefer <strong>Start Kite Login</strong>. Paste login remains available for
+                non-production recovery when enabled on the server.
+              </div>
+            )}
           </section>
         </div>
       </div>

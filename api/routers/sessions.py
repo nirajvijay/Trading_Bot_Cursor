@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from api import config
+from api.auth.deps import require_web_session
 from api.db import open_readonly
 from api.queries.radar import fetch_coverage, fetch_radar_rows, list_sessions
 from api.queries.status import read_runner_status
@@ -34,7 +35,11 @@ def health() -> HealthResponse:
     )
 
 
-@router.get("/instruments", response_model=List[InstrumentRow])
+@router.get(
+    "/instruments",
+    response_model=List[InstrumentRow],
+    dependencies=[Depends(require_web_session)],
+)
 def instruments() -> List[InstrumentRow]:
     try:
         conn = open_readonly(config.INSTRUMENTS_DB_PATH)
@@ -62,12 +67,20 @@ def instruments() -> List[InstrumentRow]:
         conn.close()
 
 
-@router.get("/sessions", response_model=List[str])
+@router.get(
+    "/sessions",
+    response_model=List[str],
+    dependencies=[Depends(require_web_session)],
+)
 def sessions() -> List[str]:
     return list_sessions(config.LIVE_DB_PATH)
 
 
-@router.get("/sessions/{session_date}/coverage", response_model=SessionCoverage)
+@router.get(
+    "/sessions/{session_date}/coverage",
+    response_model=SessionCoverage,
+    dependencies=[Depends(require_web_session)],
+)
 def session_coverage(session_date: str) -> SessionCoverage:
     data = fetch_coverage(
         config.LIVE_DB_PATH,
@@ -77,7 +90,11 @@ def session_coverage(session_date: str) -> SessionCoverage:
     return SessionCoverage(**data)
 
 
-@router.get("/sessions/{session_date}/radar", response_model=RadarResponse)
+@router.get(
+    "/sessions/{session_date}/radar",
+    response_model=RadarResponse,
+    dependencies=[Depends(require_web_session)],
+)
 def session_radar(session_date: str) -> RadarResponse:
     rows = fetch_radar_rows(
         config.LIVE_DB_PATH,
@@ -90,6 +107,7 @@ def session_radar(session_date: str) -> RadarResponse:
 @router.get(
     "/sessions/{session_date}/symbols/{symbol}/timeline",
     response_model=SymbolTimelineResponse,
+    dependencies=[Depends(require_web_session)],
 )
 def session_symbol_timeline(session_date: str, symbol: str) -> SymbolTimelineResponse:
     if symbol not in NIFTY_100_SYMBOLS:
@@ -97,7 +115,11 @@ def session_symbol_timeline(session_date: str, symbol: str) -> SymbolTimelineRes
     return fetch_symbol_timeline(config.LIVE_DB_PATH, session_date, symbol)
 
 
-@router.get("/sessions/{session_date}/status", response_model=RunnerStatus)
+@router.get(
+    "/sessions/{session_date}/status",
+    response_model=RunnerStatus,
+    dependencies=[Depends(require_web_session)],
+)
 def session_status(session_date: str) -> RunnerStatus:
     return read_runner_status(
         str(config.RUNNER_STATUS_FILE),

@@ -216,12 +216,17 @@ class SessionCloseEngineTests(unittest.TestCase):
 class ObservationApiTests(unittest.TestCase):
     def setUp(self) -> None:
         from api.routers import auth as auth_router
+        from tests.auth_test_helpers import disable_web_auth_overrides
 
+        disable_web_auth_overrides()
         app.dependency_overrides[auth_router.require_localhost] = lambda: None
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
+        from tests.auth_test_helpers import clear_auth_overrides
+
         app.dependency_overrides.clear()
+        clear_auth_overrides()
 
     def test_readiness_endpoint(self) -> None:
         with patch("api.routers.observation.compute_readiness") as mock_ready:

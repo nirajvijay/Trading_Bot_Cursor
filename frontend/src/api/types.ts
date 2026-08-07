@@ -110,6 +110,18 @@ export interface LoginUrlResponse {
   login_url: string
 }
 
+export interface KiteStartResponse {
+  authorize_url: string
+}
+
+export interface MeResponse {
+  username: string
+  mfa_enabled: boolean
+  mfa_required: boolean
+  step_up_active: boolean
+  auth_enabled: boolean
+}
+
 export interface SessionResponse {
   success: boolean
   user_id?: string | null

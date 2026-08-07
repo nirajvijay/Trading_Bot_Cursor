@@ -1,4 +1,8 @@
-"""Pre-market checklist API (read-only checks + local data generation)."""
+"""Pre-market checklist API (read-only checks + local data generation).
+
+Checklist read requires website session.
+Generate requires website session AND localhost (existing safeguard retained).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api import config
+from api.auth.deps import require_web_session, require_web_session_mutating
 from api.queries.checklist import fetch_premarket_checklist
 from api.routers.auth import require_localhost
 from api.schemas.checklist import GenerateResponse, PreMarketChecklistResponse
@@ -23,7 +28,11 @@ def _today_ist() -> str:
     return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
 
 
-@router.get("/premarket-checklist", response_model=PreMarketChecklistResponse)
+@router.get(
+    "/premarket-checklist",
+    response_model=PreMarketChecklistResponse,
+    dependencies=[Depends(require_web_session)],
+)
 def premarket_checklist(
     session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),
 ) -> PreMarketChecklistResponse:
@@ -43,7 +52,7 @@ def premarket_checklist(
 @router.post(
     "/premarket-checklist/generate/{task}",
     response_model=GenerateResponse,
-    dependencies=[Depends(require_localhost)],
+    dependencies=[Depends(require_web_session_mutating), Depends(require_localhost)],
 )
 def generate_local_data(
     task: str,

@@ -1,4 +1,8 @@
-"""Observation runner control (localhost only)."""
+"""Observation runner control.
+
+Readiness requires website session.
+Start requires website session AND localhost (existing safeguard retained).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.auth.deps import require_web_session, require_web_session_mutating
 from api.routers.auth import require_localhost
 from api.schemas.observation import ObservationReadinessResponse, ObservationStartResponse
 from api.services.observation_runner import compute_readiness, start_observation_runner
@@ -13,7 +18,11 @@ from api.services.observation_runner import compute_readiness, start_observation
 router = APIRouter(prefix="/observation", tags=["observation"])
 
 
-@router.get("/readiness", response_model=ObservationReadinessResponse)
+@router.get(
+    "/readiness",
+    response_model=ObservationReadinessResponse,
+    dependencies=[Depends(require_web_session)],
+)
 def observation_readiness(
     session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),
 ) -> ObservationReadinessResponse:
@@ -24,7 +33,7 @@ def observation_readiness(
 @router.post(
     "/start",
     response_model=ObservationStartResponse,
-    dependencies=[Depends(require_localhost)],
+    dependencies=[Depends(require_web_session_mutating), Depends(require_localhost)],
 )
 def observation_start(
     session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),
