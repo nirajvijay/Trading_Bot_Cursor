@@ -1,7 +1,7 @@
 """Observation runner control.
 
 Readiness requires website session.
-Start requires website session AND localhost (existing safeguard retained).
+Start requires website session + CSRF/Origin (remote domain allowed).
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth.deps import require_web_session, require_web_session_mutating
-from api.routers.auth import require_localhost
 from api.schemas.observation import ObservationReadinessResponse, ObservationStartResponse
 from api.services.observation_runner import compute_readiness, start_observation_runner
 
@@ -33,7 +32,7 @@ def observation_readiness(
 @router.post(
     "/start",
     response_model=ObservationStartResponse,
-    dependencies=[Depends(require_web_session_mutating), Depends(require_localhost)],
+    dependencies=[Depends(require_web_session_mutating)],
 )
 def observation_start(
     session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),

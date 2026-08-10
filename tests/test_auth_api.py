@@ -7,7 +7,6 @@ import unittest
 from unittest.mock import patch
 
 from api.main import app
-from api.routers import auth as auth_router
 from tests.auth_test_helpers import (
     clear_auth_overrides,
     disable_web_auth_overrides,
@@ -18,7 +17,6 @@ from tests.auth_test_helpers import (
 class AuthApiTests(unittest.TestCase):
     def setUp(self) -> None:
         disable_web_auth_overrides()
-        app.dependency_overrides[auth_router.require_localhost] = lambda: None
         self.client = make_test_client()
 
     def tearDown(self) -> None:
@@ -100,7 +98,6 @@ class AuthApiTests(unittest.TestCase):
 
             auth_settings.reload_from_environ()
             disable_web_auth_overrides()
-            app.dependency_overrides[auth_router.require_localhost] = lambda: None
 
     @patch("api.routers.auth.check_access_token_details")
     def test_check_token_response(self, mock_check) -> None:

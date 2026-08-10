@@ -43,18 +43,9 @@ from login import (
 
 logger = logging.getLogger(__name__)
 
-LOCALHOST_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 KITE_OAUTH_COOKIE_PATH = "/api/v1/auth/callback"
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-def require_localhost(request: Request) -> None:
-    """Localhost gate retained for observation start + checklist generate."""
-    client = request.client
-    host = client.host if client else None
-    if host not in LOCALHOST_HOSTS:
-        raise HTTPException(status_code=403, detail="This endpoint is for local use only")
 
 
 def _clear_kite_oauth_cookie(response: Response) -> None:

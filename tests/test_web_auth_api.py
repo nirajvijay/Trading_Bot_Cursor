@@ -576,7 +576,6 @@ class LegacyAuthApiTests(unittest.TestCase):
 
     def setUp(self) -> None:
         disable_web_auth_overrides()
-        app.dependency_overrides[auth_router.require_localhost] = lambda: None
         self.client = make_test_client()
 
     def tearDown(self) -> None:

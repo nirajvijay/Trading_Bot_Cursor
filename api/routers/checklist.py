@@ -1,7 +1,7 @@
 """Pre-market checklist API (read-only checks + local data generation).
 
 Checklist read requires website session.
-Generate requires website session AND localhost (existing safeguard retained).
+Generate requires website session + CSRF/Origin (remote domain allowed).
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api import config
 from api.auth.deps import require_web_session, require_web_session_mutating
 from api.queries.checklist import fetch_premarket_checklist
-from api.routers.auth import require_localhost
 from api.schemas.checklist import GenerateResponse, PreMarketChecklistResponse
 from api.services.checklist_cache import invalidate_checklist_cache, write_checklist_cache
 from api.services.local_data_generation import TASK_NAMES, run_local_generation
@@ -52,7 +51,7 @@ def premarket_checklist(
 @router.post(
     "/premarket-checklist/generate/{task}",
     response_model=GenerateResponse,
-    dependencies=[Depends(require_web_session_mutating), Depends(require_localhost)],
+    dependencies=[Depends(require_web_session_mutating)],
 )
 def generate_local_data(
     task: str,
