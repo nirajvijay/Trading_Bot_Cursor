@@ -2,7 +2,7 @@
 Live observation runner: Kite ticks → 1m/5m candles → spike → pullback → continuation.
 
 Observation only. No orders, risk, or execution.
-Default run duration: 60 minutes (or --until-session-close for full session to 15:30 IST).
+Default run duration: 60 minutes.
 """
 
 from __future__ import annotations
@@ -20,11 +20,6 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 from zoneinfo import ZoneInfo
 
-from api.runner_status import write_runner_status
-from api.services.observation_runner import (
-    seconds_until_session_close,
-    session_close_datetime,
-)
 from baseline_store import BaselineStore, DEFAULT_BASELINES_DB_PATH
 from candle_aggregation import CompletedOneMinuteCandle
 from candle_emission import CandleEmissionError
@@ -302,12 +297,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--duration-minutes",
         type=float,
         default=60.0,
-        help="Auto-stop after N minutes (default: 60; ignored with --until-session-close)",
-    )
-    p.add_argument(
-        "--until-session-close",
-        action="store_true",
-        help="Auto-stop at 15:30 IST (overrides --duration-minutes)",
+        help="Auto-stop after N minutes (default: 60)",
     )
     p.add_argument(
         "--db",
@@ -336,12 +326,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--queue-maxsize", type=int, default=10_000)
     p.add_argument("--stale-seconds", type=float, default=30.0)
     p.add_argument("--health-interval", type=float, default=10.0)
-    p.add_argument(
-        "--status-file",
-        type=Path,
-        default=None,
-        help="Optional path to write runner status JSON for the read API",
-    )
     return p.parse_args(argv)
 
 
@@ -358,25 +342,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     session_date = _ist_today()
     stocks = load_nifty50_tokens(args.instruments_db)
     if not stocks:
-        print("No Nifty 100 tokens loaded from %s" % args.instruments_db, flush=True)
+        print("No Nifty 50 tokens loaded from %s" % args.instruments_db, flush=True)
         return 1
     token_to_symbol = {s.instrument_token: s.tradingsymbol for s in stocks}
     tokens = list(token_to_symbol.keys())
     token_set = set(tokens)
 
-    if args.until_session_close:
-        stop_at = session_close_datetime()
-        print(
-            "Observation-only live runner | session_date=%s | until_session_close=%s | tokens=%d"
-            % (session_date, stop_at.isoformat(timespec="seconds"), len(tokens)),
-            flush=True,
-        )
-    else:
-        print(
-            "Observation-only live runner | session_date=%s | duration=%.1f min | tokens=%d"
-            % (session_date, args.duration_minutes, len(tokens)),
-            flush=True,
-        )
+    print(
+        "Observation-only live runner | session_date=%s | duration=%.1f min | tokens=%d"
+        % (session_date, args.duration_minutes, len(tokens)),
+        flush=True,
+    )
     print("DB: %s" % args.db, flush=True)
     print(
         "Restored 0 active setup(s) (restore deferred / none present)",
@@ -632,13 +608,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    if args.until_session_close:
-        duration_s = seconds_until_session_close()
-        stop_reason_name = "session_close"
-    else:
-        duration_s = max(1.0, float(args.duration_minutes) * 60.0)
-        stop_reason_name = "duration_elapsed"
-    timer = threading.Timer(duration_s, lambda: _request_stop(stop_reason_name))
+    duration_s = max(1.0, float(args.duration_minutes) * 60.0)
+    timer = threading.Timer(duration_s, lambda: _request_stop("duration_elapsed"))
     timer.daemon = True
     timer.start()
 
@@ -675,39 +646,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 ),
                 flush=True,
             )
-            if args.status_file is not None:
-                last_tick = receiver.last_tick_at
-                if last_tick is None:
-                    feed_status = "DISCONNECTED"
-                elif receiver.is_feed_stale():
-                    feed_status = "STALE"
-                else:
-                    feed_status = "STABLE"
-                write_runner_status(
-                    args.status_file,
-                    session_date=session_date,
-                    subscribed_tokens=len(tokens),
-                    feed_status=feed_status,
-                    last_tick_time=last_tick.isoformat() if last_tick else None,
-                )
 
     metrics_thread = threading.Thread(
         target=_metrics_loop, name="observation-metrics", daemon=True
     )
     metrics_thread.start()
 
-    if args.until_session_close:
-        print(
-            "Starting live feed until 15:30 IST (%s). Ctrl+C to stop early.\n"
-            % session_close_datetime().isoformat(timespec="seconds"),
-            flush=True,
-        )
-    else:
-        print(
-            "Starting live feed for %.1f minutes. Ctrl+C to stop early.\n"
-            % args.duration_minutes,
-            flush=True,
-        )
+    print(
+        "Starting live feed for %.1f minutes. Ctrl+C to stop early.\n"
+        % args.duration_minutes,
+        flush=True,
+    )
 
     exit_code = 0
     try:
@@ -731,11 +680,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         metrics_stop.set()
         metrics_thread.join(timeout=2.0)
         print("\nShutting down pipeline (reason=%s)..." % stop_reason["value"], flush=True)
-        if stop_reason["value"] == "session_close":
-            try:
-                engine.on_session_closed(session_date)
-            except Exception:
-                logger.exception("engine.on_session_closed() failed")
         try:
             pipeline.shutdown()
         except Exception:
