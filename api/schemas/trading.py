@@ -33,6 +33,10 @@ class TradingTrailRequest(BaseModel):
     last_price: Optional[float] = None
 
 
+class TradingAutoTrailRequest(BaseModel):
+    enabled: bool
+
+
 class TradingStatusResponse(BaseModel):
     state: str
     session_date: str
@@ -52,6 +56,7 @@ class TradingStatusResponse(BaseModel):
     last_error: Optional[str] = None
     engine_running: bool
     can_confirm_live: bool
+    accepting_triggers: bool = False
 
 
 class TradingSnapshotResponse(BaseModel):
@@ -70,6 +75,7 @@ class TradingSnapshotResponse(BaseModel):
     remaining_capital: float
     buying_power: float
     last_error: Optional[str] = None
+    accepting_triggers: bool = False
     active: List[dict[str, Any]]
     closed: List[dict[str, Any]]
     skipped: List[dict[str, Any]]

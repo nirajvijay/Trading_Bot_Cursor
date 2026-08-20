@@ -26,7 +26,7 @@ export function AppFooter({
             TRADING ENGINE V1
           </span>
         </div>
-        <span className="label-caps tracking-wider">Demo 5x · live orders gated</span>
+        <span className="label-caps tracking-wider">Demo 5x unless Live Kite orders is checked</span>
         <div className="flex items-center gap-1.5 font-data">
           <span className="material-symbols-outlined text-[14px]">schedule</span>
           <span>{now} IST</span>

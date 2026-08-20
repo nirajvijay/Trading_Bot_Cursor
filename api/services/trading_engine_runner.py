@@ -67,11 +67,24 @@ def is_heartbeat_fresh(*, expected_session_date: Optional[str] = None) -> bool:
     return age < STALE_SECONDS
 
 
+def heartbeat_indicates_running(*, expected_session_date: Optional[str] = None) -> bool:
+    if not is_heartbeat_fresh(expected_session_date=expected_session_date):
+        return False
+    data = read_heartbeat()
+    if not data:
+        return False
+    if data.get("running") is False:
+        return False
+    if data.get("running") is True:
+        return True
+    return str(data.get("state") or "") not in {"stopped", "error"}
+
+
 def is_engine_running(*, session_date: Optional[str] = None) -> bool:
     date = session_date or _today_ist()
-    fresh = is_heartbeat_fresh(expected_session_date=date)
-    reconcile_start_lock_with_heartbeat(heartbeat_fresh=fresh)
-    if fresh:
+    hb_running = heartbeat_indicates_running(expected_session_date=date)
+    reconcile_start_lock_with_heartbeat(heartbeat_fresh=hb_running)
+    if hb_running:
         return True
     return is_start_lease_active(date)
 
@@ -109,8 +122,6 @@ def start_trading_engine(
     if is_engine_running(session_date=date):
         return False, "Trading engine is already running", None
     live_wanted = bool(confirm_live_orders)
-    if live_wanted and not config.trading_engine_live_orders_enabled():
-        return False, "Live orders are disabled (TRADING_ENGINE_LIVE_ORDERS=false)", None
 
     try:
         lock_file = acquire_start_lock(date)
@@ -123,6 +134,7 @@ def start_trading_engine(
             stop.unlink()
         except OSError:
             pass
+    _ack_pending_stop_engine()
 
     env = os.environ.copy()
     env["TRADING_ENGINE_STATUS_FILE"] = str(_status_file())
@@ -153,18 +165,36 @@ def start_trading_engine(
     return True, f"Trading engine started (pid {proc.pid})", proc.pid
 
 
-def stop_trading_engine() -> Tuple[bool, str]:
-    path = _stop_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("stop\n", encoding="utf-8")
+def _ack_pending_stop_engine() -> None:
     try:
         from trading_engine_store import TradingEngineStore
 
         db = config.trading_engine_db_path()
-        if db.exists():
-            store = TradingEngineStore(db)
-            store.enqueue_command("stop_engine")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        store = TradingEngineStore(db)
+        try:
+            store.ack_pending_commands("stop_engine")
+        finally:
             store.close()
     except OSError:
         pass
+
+
+def stop_trading_engine() -> Tuple[bool, str]:
+    path = _stop_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("stop\n", encoding="utf-8")
+    if is_engine_running():
+        try:
+            from trading_engine_store import TradingEngineStore
+
+            db = config.trading_engine_db_path()
+            if db.exists():
+                store = TradingEngineStore(db)
+                try:
+                    store.enqueue_command("stop_engine")
+                finally:
+                    store.close()
+        except OSError:
+            pass
     return True, "Stop requested. Open positions are not flattened."

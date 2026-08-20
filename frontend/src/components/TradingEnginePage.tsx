@@ -13,9 +13,18 @@ function inr(n: number | null | undefined): string {
   return `₹${fmt(n, 2)}`
 }
 
+function estIfHit(row: TradingTradeRow, stop: number): number | null {
+  const entry = row.entry_fill ?? row.entry_estimate
+  if (entry == null || !row.qty) return null
+  if (row.direction === 'UP') return row.qty * (stop - entry)
+  return row.qty * (entry - stop)
+}
+
 function statusLabel(state: string): string {
   if (state === 'critical') return 'CRITICAL'
   if (state === 'starting') return 'STARTING'
+  if (state === 'stopping') return 'STOPPING'
+  if (state === 'paused') return 'RUNNING · not taking new trades'
   if (state === 'running') return 'RUNNING'
   if (state === 'error') return 'ERROR'
   return 'STOPPED'
@@ -24,7 +33,9 @@ function statusLabel(state: string): string {
 function statusClass(state: string): string {
   if (state === 'critical' || state === 'error') return 'bg-red-50 text-negative border-red-200'
   if (state === 'running') return 'bg-emerald-50 text-positive border-emerald-200'
-  if (state === 'starting') return 'bg-amber-50 text-amber-800 border-amber-200'
+  if (state === 'starting' || state === 'stopping' || state === 'paused') {
+    return 'bg-amber-50 text-amber-800 border-amber-200'
+  }
   return 'bg-surface-container text-on-surface-variant border-outline-variant'
 }
 
@@ -43,14 +54,105 @@ function isUnprotected(row: TradingTradeRow): boolean {
   return row.status === 'entry_filled' || row.status === 'stop_pending'
 }
 
+function TrailControls({
+  row,
+  draft,
+  busy,
+  onDraft,
+  onSet,
+  onAuto,
+}: {
+  row: TradingTradeRow
+  draft: string | undefined
+  busy: boolean
+  onDraft: (value: string) => void
+  onSet: (value: number) => Promise<void>
+  onAuto?: (enabled: boolean) => Promise<void>
+}) {
+  const tick = row.tick_size && row.tick_size > 0 ? row.tick_size : 0.05
+  const current = row.current_stop ?? 0
+  const display = draft !== undefined && draft !== '' ? draft : String(current)
+  const numeric = Number(display)
+  const usable = !Number.isNaN(numeric)
+  const est = usable ? estIfHit(row, numeric) : null
+
+  const bump = (delta: number) => {
+    const base = usable ? numeric : current
+    const next = Math.round((base + delta) / tick) * tick
+    onDraft(String(Number(next.toFixed(4))))
+  }
+
+  return (
+    <form
+      className="flex flex-wrap items-center gap-1"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!usable) return
+        void onSet(numeric)
+      }}
+    >
+      <button
+        type="button"
+        className="px-1.5 py-0.5 border border-outline-variant bg-white font-data"
+        disabled={busy}
+        onClick={() => bump(-tick)}
+      >
+        −
+      </button>
+      <input
+        type="number"
+        step={tick}
+        className="w-20 bg-surface-container-low border border-outline-variant font-data text-[10px] px-1 py-0.5"
+        value={display}
+        onChange={(e) => onDraft(e.target.value)}
+      />
+      <button
+        type="button"
+        className="px-1.5 py-0.5 border border-outline-variant bg-white font-data"
+        disabled={busy}
+        onClick={() => bump(tick)}
+      >
+        +
+      </button>
+      <button
+        type="submit"
+        disabled={busy || !usable}
+        className="label-caps px-1.5 py-0.5 border border-outline-variant bg-white"
+      >
+        Set
+      </button>
+      {onAuto && (
+        <label className="flex items-center gap-1 text-[10px] text-on-surface-variant">
+          <input
+            type="checkbox"
+            disabled={busy}
+            checked={Boolean(row.auto_trail_enabled)}
+            onChange={(e) => void onAuto(e.target.checked)}
+          />
+          Auto
+        </label>
+      )}
+      <span
+        className={`font-data text-[10px] ${
+          est != null && est < 0 ? 'text-negative' : 'text-positive'
+        }`}
+      >
+        Est. if hit {inr(est)}
+      </span>
+    </form>
+  )
+}
+
 function TradeTable({
   rows,
   kind,
   onTrail,
+  onAutoTrail,
 }: {
   rows: TradingTradeRow[]
   kind: 'active' | 'closed' | 'skipped'
   onTrail?: (tradeId: string, newStop: number) => Promise<void>
+  onAutoTrail?: (tradeId: string, enabled: boolean) => Promise<void>
 }) {
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
@@ -154,38 +256,34 @@ function TradeTable({
                 {kind === 'active' && onTrail && (
                   <td className="px-2 py-1.5">
                     {row.status === 'protected_open' ? (
-                      <form
-                        className="flex items-center gap-1"
-                        onSubmit={async (e) => {
-                          e.preventDefault()
-                          const raw = drafts[row.trade_id]
-                          const value = Number(raw)
-                          if (!raw || Number.isNaN(value)) return
+                      <TrailControls
+                        row={row}
+                        draft={drafts[row.trade_id]}
+                        busy={busy === row.trade_id}
+                        onDraft={(value) =>
+                          setDrafts((d) => ({ ...d, [row.trade_id]: value }))
+                        }
+                        onSet={async (value) => {
                           setBusy(row.trade_id)
                           try {
                             await onTrail(row.trade_id, value)
-                            setDrafts((d) => ({ ...d, [row.trade_id]: '' }))
                           } finally {
                             setBusy(null)
                           }
                         }}
-                      >
-                        <input
-                          className="w-20 bg-surface-container-low border border-outline-variant font-data text-[10px] px-1 py-0.5"
-                          value={drafts[row.trade_id] ?? ''}
-                          placeholder={fmt(row.current_stop)}
-                          onChange={(e) =>
-                            setDrafts((d) => ({ ...d, [row.trade_id]: e.target.value }))
-                          }
-                        />
-                        <button
-                          type="submit"
-                          disabled={busy === row.trade_id}
-                          className="label-caps px-1.5 py-0.5 border border-outline-variant bg-white"
-                        >
-                          Set
-                        </button>
-                      </form>
+                        onAuto={
+                          onAutoTrail
+                            ? async (enabled) => {
+                                setBusy(row.trade_id)
+                                try {
+                                  await onAutoTrail(row.trade_id, enabled)
+                                } finally {
+                                  setBusy(null)
+                                }
+                              }
+                            : undefined
+                        }
+                      />
                     ) : (
                       <span className="text-on-surface-variant">—</span>
                     )}
@@ -204,7 +302,7 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
   const engine = useTradingEngine(sessionDate, true)
   const snap = engine.snapshot
   const status = engine.status
-  const state = String(status?.state || snap?.state || 'stopped')
+  const stateRaw = String(status?.state || snap?.state || 'stopped')
   const [capitalDraft, setCapitalDraft] = useState('')
   const [confirmLive, setConfirmLive] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -212,8 +310,15 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
   const totalCapital = status?.total_capital ?? snap?.total_capital ?? 300000
   const unprotected = (status?.unprotected_count ?? snap?.unprotected_count ?? 0) > 0
   const running = Boolean(status?.engine_running)
-  const liveAllowed = Boolean(status?.can_confirm_live)
-
+  const accepting = Boolean(status?.accepting_triggers ?? snap?.accepting_triggers)
+  const liveOrders = Boolean(status?.live_orders_enabled || snap?.live_orders_enabled)
+  const displayState = engine.stopping
+    ? 'stopping'
+    : engine.starting || stateRaw === 'starting'
+      ? 'starting'
+      : running && !accepting && stateRaw === 'running'
+        ? 'paused'
+        : stateRaw
   const capitalValue = useMemo(() => {
     const n = Number(capitalDraft)
     if (capitalDraft && !Number.isNaN(n) && n > 0) return n
@@ -226,21 +331,29 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <h1 className="text-sm font-extrabold uppercase tracking-tight">Trading Engine</h1>
-            <span className={`label-caps font-extrabold px-2.5 py-1 border rounded ${statusClass(state)}`}>
-              {statusLabel(state)}
+            <span className={`label-caps font-extrabold px-2.5 py-1 border rounded ${statusClass(displayState)}`}>
+              {statusLabel(displayState)}
             </span>
           </div>
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1.5 text-[11px] text-on-surface-variant">
               <input
                 type="checkbox"
-                disabled={!liveAllowed}
-                checked={confirmLive && liveAllowed}
+                disabled={running || engine.starting}
+                checked={confirmLive || Boolean(status?.live_orders_enabled || snap?.live_orders_enabled)}
                 onChange={(e) => setConfirmLive(e.target.checked)}
               />
               Live Kite orders
             </label>
-            {running ? (
+            {engine.starting ? (
+              <button
+                type="button"
+                className="label-caps px-3 py-1.5 bg-primary text-white"
+                disabled
+              >
+                Starting…
+              </button>
+            ) : running || engine.stopping ? (
               <button
                 type="button"
                 className="label-caps px-3 py-1.5 border border-outline-variant bg-white"
@@ -253,17 +366,16 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
               <button
                 type="button"
                 className="label-caps px-3 py-1.5 bg-primary text-white"
-                disabled={engine.starting}
                 onClick={async () => {
                   setActionError(null)
                   try {
-                    await engine.start(confirmLive && liveAllowed, capitalValue)
+                    await engine.start(confirmLive, capitalValue)
                   } catch (err) {
                     setActionError(err instanceof Error ? err.message : 'Start failed')
                   }
                 }}
               >
-                {engine.starting ? 'Starting…' : 'Start'}
+                Start
               </button>
             )}
           </div>
@@ -271,7 +383,7 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
 
         {unprotected && (
           <div className="px-3 py-2 bg-red-100 border-2 border-negative text-negative text-sm font-semibold">
-            Unprotected position: a fill has no confirmed SL-M. New trades are blocked. ₹900 / ₹3,000
+            Unprotected position: a fill has no confirmed stop. New trades are blocked. ₹900 / ₹3,000
             limits are not in force until the broker stop is confirmed.
           </div>
         )}
@@ -308,8 +420,12 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
             <div className="font-data text-sm">{inr(status?.committed_risk ?? 0)}</div>
           </div>
           <div className="bg-surface-container-low border border-outline-variant px-2 py-2">
-            <div className="label-caps text-on-surface-variant">Demo leverage</div>
-            <div className="font-data text-sm">{status?.leverage_factor ?? 5}x (FakeBroker)</div>
+            <div className="label-caps text-on-surface-variant">
+              {liveOrders ? 'Live mode' : 'Demo leverage'}
+            </div>
+            <div className="font-data text-sm">
+              {liveOrders ? 'Live Kite' : `${status?.leverage_factor ?? snap?.leverage_factor ?? 5}x (demo)`}
+            </div>
           </div>
           <div className="bg-surface-container-low border border-outline-variant px-2 py-2">
             <div className="label-caps text-on-surface-variant">Margin used</div>
@@ -335,6 +451,7 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
             kind="active"
             rows={snap?.active ?? []}
             onTrail={(id, stop) => engine.trailStop(id, stop)}
+            onAutoTrail={(id, enabled) => engine.autoTrail(id, enabled)}
           />
         </section>
         <section>

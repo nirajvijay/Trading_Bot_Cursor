@@ -56,6 +56,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(pending[0].command_id, cid)
         store.mark_command_processed(cid)
         self.assertEqual(store.pending_commands(), [])
+        store.enqueue_command("stop_engine")
+        self.assertEqual(len(store.pending_commands()), 1)
+        self.assertEqual(store.ack_pending_commands("stop_engine"), 1)
+        self.assertEqual(store.pending_commands(), [])
         store.close()
 
 

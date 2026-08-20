@@ -325,6 +325,9 @@ export interface TradingTradeRow {
   open_pnl: number
   remaining_downside_risk: number
   stop_revised: boolean
+  tick_size?: number
+  auto_trail_enabled?: boolean
+  auto_trail_ticks?: number | null
 }
 
 export interface TradingEngineSnapshot {
@@ -343,6 +346,7 @@ export interface TradingEngineSnapshot {
   remaining_capital: number
   buying_power: number
   last_error?: string | null
+  accepting_triggers?: boolean
   active: TradingTradeRow[]
   closed: TradingTradeRow[]
   skipped: TradingTradeRow[]

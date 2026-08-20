@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   fetchTradingEngineSnapshot,
   fetchTradingEngineStatus,
+  postAutoTrail,
   postStartTradingEngine,
   postStopTradingEngine,
   postTradingCapital,
@@ -10,6 +11,7 @@ import {
 import type { TradingEngineSnapshot, TradingEngineStatus } from '../api/types'
 
 const POLL_MS = 2000
+const TRANSITION_POLL_MS = 1000
 
 export function useTradingEngine(sessionDate: string, enabled: boolean) {
   const [status, setStatus] = useState<TradingEngineStatus | null>(null)
@@ -43,12 +45,27 @@ export function useTradingEngine(sessionDate: string, enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) return
+    const ms = starting || stopping ? TRANSITION_POLL_MS : POLL_MS
     const id = window.setInterval(() => {
       if (document.hidden) return
       void refresh()
-    }, POLL_MS)
+    }, ms)
     return () => window.clearInterval(id)
-  }, [enabled, refresh])
+  }, [enabled, refresh, starting, stopping])
+
+  useEffect(() => {
+    if (!starting || !status) return
+    if (status.engine_running && status.state !== 'starting') {
+      setStarting(false)
+    }
+  }, [starting, status])
+
+  useEffect(() => {
+    if (!stopping || !status) return
+    if (!status.engine_running) {
+      setStopping(false)
+    }
+  }, [stopping, status])
 
   const start = useCallback(
     async (confirmLiveOrders: boolean, totalCapital: number) => {
@@ -62,10 +79,9 @@ export function useTradingEngine(sessionDate: string, enabled: boolean) {
         })
         await refresh()
       } catch (err) {
+        setStarting(false)
         setError(err instanceof Error ? err.message : 'Failed to start trading engine')
         throw err
-      } finally {
-        setStarting(false)
       }
     },
     [refresh, sessionDate],
@@ -78,9 +94,8 @@ export function useTradingEngine(sessionDate: string, enabled: boolean) {
       await postStopTradingEngine()
       await refresh()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to stop trading engine')
-    } finally {
       setStopping(false)
+      setError(err instanceof Error ? err.message : 'Failed to stop trading engine')
     }
   }, [refresh])
 
@@ -100,6 +115,14 @@ export function useTradingEngine(sessionDate: string, enabled: boolean) {
     [refresh],
   )
 
+  const autoTrail = useCallback(
+    async (tradeId: string, enabled: boolean) => {
+      await postAutoTrail(tradeId, enabled)
+      await refresh()
+    },
+    [refresh],
+  )
+
   return {
     status,
     snapshot,
@@ -112,5 +135,6 @@ export function useTradingEngine(sessionDate: string, enabled: boolean) {
     stop,
     setCapital,
     trailStop,
+    autoTrail,
   }
 }

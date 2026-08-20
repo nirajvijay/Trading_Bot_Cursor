@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS trades (
     close_time TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    auto_trail_enabled INTEGER NOT NULL DEFAULT 0,
+    auto_trail_ticks INTEGER,
+    auto_trail_extreme REAL,
     UNIQUE (setup_id, continuation_rule_version)
 );
 """
@@ -142,7 +145,37 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         close_time=None if row["close_time"] is None else str(row["close_time"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        auto_trail_enabled=_row_bool(row, "auto_trail_enabled", False),
+        auto_trail_ticks=_row_optional_int(row, "auto_trail_ticks"),
+        auto_trail_extreme=_row_optional_float(row, "auto_trail_extreme"),
     )
+
+
+def _row_keys(row: sqlite3.Row) -> set[str]:
+    return set(row.keys())
+
+
+def _row_bool(row: sqlite3.Row, key: str, default: bool) -> bool:
+    if key not in _row_keys(row):
+        return default
+    val = row[key]
+    if val is None:
+        return default
+    return bool(int(val))
+
+
+def _row_optional_int(row: sqlite3.Row, key: str) -> Optional[int]:
+    if key not in _row_keys(row):
+        return None
+    val = row[key]
+    return None if val is None else int(val)
+
+
+def _row_optional_float(row: sqlite3.Row, key: str) -> Optional[float]:
+    if key not in _row_keys(row):
+        return None
+    val = row[key]
+    return None if val is None else float(val)
 
 
 class TradingEngineStore:
@@ -159,7 +192,16 @@ class TradingEngineStore:
         self._conn.executescript(
             CREATE_RUNS_SQL + CREATE_TRADES_SQL + CREATE_EVENTS_SQL + CREATE_COMMANDS_SQL
         )
+        self._ensure_column("trades", "auto_trail_enabled", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("trades", "auto_trail_ticks", "INTEGER")
+        self._ensure_column("trades", "auto_trail_extreme", "REAL")
         self._conn.commit()
+
+    def _ensure_column(self, table: str, name: str, ddl: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {str(r[1]) for r in rows}
+        if name not in existing:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -431,3 +473,15 @@ class TradingEngineStore:
             (_utc_now(), command_id),
         )
         self._conn.commit()
+
+    def ack_pending_commands(self, kind: str) -> int:
+        cur = self._conn.execute(
+            """
+            UPDATE engine_commands
+            SET processed_at = ?
+            WHERE processed_at IS NULL AND kind = ?
+            """,
+            (_utc_now(), kind),
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0)
