@@ -54,7 +54,8 @@ class TradingEngineApiTests(unittest.TestCase):
         self.assertEqual(body["state"], "stopped")
         self.assertEqual(body["total_capital"], DEFAULT_TOTAL_CAPITAL)
         self.assertFalse(body["engine_running"])
-        self.assertFalse(body["can_confirm_live"])
+        self.assertTrue(body["can_confirm_live"])
+        self.assertFalse(body["accepting_triggers"])
 
     def test_snapshot_empty_buckets(self) -> None:
         res = self.client.get("/api/v1/trading-engine/snapshot?session_date=2026-08-17")
@@ -75,13 +76,46 @@ class TradingEngineApiTests(unittest.TestCase):
         self.assertTrue(res.json()["success"])
         self.assertEqual(res.json()["pid"], 4242)
 
-    def test_live_start_rejected_when_env_false(self) -> None:
-        res = self.client.post(
-            "/api/v1/trading-engine/start",
-            json={"confirm_live_orders": True, "session_date": "2026-08-17"},
-        )
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("Live orders are disabled", res.json()["detail"])
+    def test_start_acks_leftover_stop_engine(self) -> None:
+        store = TradingEngineStore(self.db)
+        store.enqueue_command("stop_engine")
+        self.assertEqual(len(store.pending_commands()), 1)
+        store.close()
+        with patch("api.services.trading_engine_runner.subprocess.Popen") as popen:
+            popen.return_value.pid = 4244
+            res = self.client.post(
+                "/api/v1/trading-engine/start",
+                json={"confirm_live_orders": False, "session_date": "2026-08-17"},
+            )
+        self.assertEqual(res.status_code, 200)
+        store = TradingEngineStore(self.db)
+        self.assertEqual(store.pending_commands(), [])
+        store.close()
+
+    def test_unchecked_start_omits_live_flag_even_if_env_true(self) -> None:
+        os.environ["TRADING_ENGINE_LIVE_ORDERS"] = "true"
+        with patch("api.services.trading_engine_runner.subprocess.Popen") as popen:
+            popen.return_value.pid = 4245
+            res = self.client.post(
+                "/api/v1/trading-engine/start",
+                json={"confirm_live_orders": False, "session_date": "2026-08-17"},
+            )
+        self.assertEqual(res.status_code, 200)
+        cmd = popen.call_args[0][0]
+        self.assertNotIn("--live-orders", cmd)
+
+    def test_live_start_follows_ui_checkbox_not_env(self) -> None:
+        os.environ["TRADING_ENGINE_LIVE_ORDERS"] = "false"
+        with patch("api.services.trading_engine_runner.subprocess.Popen") as popen:
+            popen.return_value.pid = 4243
+            res = self.client.post(
+                "/api/v1/trading-engine/start",
+                json={"confirm_live_orders": True, "session_date": "2026-08-17"},
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["success"])
+        cmd = popen.call_args[0][0]
+        self.assertIn("--live-orders", cmd)
 
     def test_capital_and_trail(self) -> None:
         cap = self.client.post("/api/v1/trading-engine/capital", json={"total_capital": 250000})
@@ -122,11 +156,46 @@ class TradingEngineApiTests(unittest.TestCase):
         self.assertEqual(len(body["active"]), 1)
         self.assertEqual(body["closed"], [])
         self.assertEqual(body["skipped"], [])
+        self.assertIn("tick_size", body["active"][0])
+
+        auto = self.client.post(
+            f"/api/v1/trading-engine/trades/{trade.trade_id}/auto-trail",
+            json={"enabled": True},
+        )
+        self.assertEqual(auto.status_code, 200)
+        store = TradingEngineStore(self.db)
+        kinds = [c.kind for c in store.pending_commands()]
+        self.assertIn("set_auto_trail", kinds)
+        store.close()
 
     def test_stop_writes_file(self) -> None:
         res = self.client.post("/api/v1/trading-engine/stop")
         self.assertEqual(res.status_code, 200)
         self.assertTrue((self.root / "te.stop").exists())
+        store = TradingEngineStore(self.db)
+        self.assertEqual([c.kind for c in store.pending_commands()], [])
+        store.close()
+
+    def test_heartbeat_running_false_is_not_engine_running(self) -> None:
+        import json
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from api.services.trading_engine_runner import is_engine_running
+
+        now = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds")
+        Path(os.environ["TRADING_ENGINE_STATUS_FILE"]).write_text(
+            json.dumps(
+                {
+                    "updated_at": now,
+                    "running": False,
+                    "state": "stopped",
+                    "session_date": "2026-08-17",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertFalse(is_engine_running(session_date="2026-08-17"))
 
 
 if __name__ == "__main__":

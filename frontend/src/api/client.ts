@@ -237,3 +237,12 @@ export function postTrailStop(
     last_price: lastPrice ?? null,
   })
 }
+
+export function postAutoTrail(
+  tradeId: string,
+  enabled: boolean,
+): Promise<{ success: boolean; message: string }> {
+  return postJson(`/trading-engine/trades/${encodeURIComponent(tradeId)}/auto-trail`, {
+    enabled,
+  })
+}

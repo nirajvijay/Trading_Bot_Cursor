@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from api import config
 from api.auth.deps import (
-    WebAuthContext,
-    require_step_up,
     require_web_session,
     require_web_session_mutating,
 )
 from api.queries.trading import load_snapshot
 from api.schemas.trading import (
+    TradingAutoTrailRequest,
     TradingCapitalRequest,
     TradingSnapshotResponse,
     TradingStartRequest,
@@ -24,10 +23,12 @@ from api.schemas.trading import (
     TradingTrailRequest,
 )
 from api.services.trading_engine_runner import (
+    heartbeat_indicates_running,
     is_engine_running,
     start_trading_engine,
     stop_trading_engine,
 )
+from api.services.trading_engine_start_lock import is_start_lease_active
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
 
@@ -55,8 +56,15 @@ def trading_status(
     running = is_engine_running(session_date=date)
     snap = load_snapshot(config.trading_engine_db_path(), date, running=running)
     env_live = config.trading_engine_live_orders_enabled()
+    state = str(snap["state"])
+    if (
+        is_start_lease_active(date)
+        and not heartbeat_indicates_running(expected_session_date=date)
+        and state not in {"error", "critical"}
+    ):
+        state = "starting"
     return TradingStatusResponse(
-        state=str(snap["state"]),
+        state=state,
         session_date=str(snap["session_date"]),
         live_orders_enabled=bool(snap["live_orders_enabled"]),
         live_orders_env_enabled=env_live,
@@ -73,7 +81,8 @@ def trading_status(
         buying_power=float(snap["buying_power"]),
         last_error=snap.get("last_error"),
         engine_running=running,
-        can_confirm_live=env_live,
+        can_confirm_live=True,
+        accepting_triggers=bool(snap.get("accepting_triggers")),
     )
 
 
@@ -91,14 +100,14 @@ def trading_snapshot(
     return TradingSnapshotResponse(**snap)
 
 
-@router.post("/start", response_model=TradingStartResponse)
+@router.post(
+    "/start",
+    response_model=TradingStartResponse,
+    dependencies=[Depends(require_web_session_mutating)],
+)
 def trading_start(
-    request: Request,
     body: TradingStartRequest = Body(default_factory=TradingStartRequest),
-    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> TradingStartResponse:
-    if body.confirm_live_orders:
-        require_step_up(request, ctx)
     success, message, pid = start_trading_engine(
         body.session_date,
         confirm_live_orders=body.confirm_live_orders,
@@ -153,9 +162,7 @@ def trading_capital(body: TradingCapitalRequest) -> dict:
 )
 def trading_trail(
     trade_id: str,
-    request: Request,
     body: TradingTrailRequest,
-    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> dict:
     db = config.trading_engine_db_path()
     store = TradingEngineStore(db)
@@ -163,9 +170,6 @@ def trading_trail(
         trade = store.get_trade(trade_id)
         if trade is None:
             raise HTTPException(status_code=404, detail="trade_not_found")
-        run = store.latest_run()
-        if run is not None and int(run["live_orders_enabled"] or 0):
-            require_step_up(request, ctx)
         store.enqueue_command(
             "trail_stop",
             trade_id=trade_id,
@@ -174,3 +178,27 @@ def trading_trail(
     finally:
         store.close()
     return {"success": True, "message": "Trail requested"}
+
+
+@router.post(
+    "/trades/{trade_id}/auto-trail",
+    dependencies=[Depends(require_web_session_mutating)],
+)
+def trading_auto_trail(
+    trade_id: str,
+    body: TradingAutoTrailRequest,
+) -> dict:
+    db = config.trading_engine_db_path()
+    store = TradingEngineStore(db)
+    try:
+        trade = store.get_trade(trade_id)
+        if trade is None:
+            raise HTTPException(status_code=404, detail="trade_not_found")
+        store.enqueue_command(
+            "set_auto_trail",
+            trade_id=trade_id,
+            payload={"enabled": body.enabled},
+        )
+    finally:
+        store.close()
+    return {"success": True, "message": "Auto-trail updated"}

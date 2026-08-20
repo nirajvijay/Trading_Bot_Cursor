@@ -38,7 +38,9 @@ SKIPPED_STATES: FrozenSet[str] = frozenset({"skipped", "rejected"})
 
 EngineState = Literal["stopped", "starting", "running", "error", "critical"]
 
-CommandKind = Literal["trail_stop", "stop_engine"]
+CommandKind = Literal["trail_stop", "stop_engine", "set_auto_trail"]
+
+STOP_ORDER_TYPES: FrozenSet[str] = frozenset({"SL", "SL-M"})
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,9 @@ class TradeRecord:
     close_time: Optional[str]
     created_at: str
     updated_at: str
+    auto_trail_enabled: bool = False
+    auto_trail_ticks: Optional[int] = None
+    auto_trail_extreme: Optional[float] = None
 
 
 @dataclass
@@ -139,6 +144,7 @@ class BrokerOrder:
     status: str
     average_price: Optional[float] = None
     trigger_price: Optional[float] = None
+    price: Optional[float] = None
     product: str = "MIS"
     variety: str = "regular"
     exchange: str = "NSE"

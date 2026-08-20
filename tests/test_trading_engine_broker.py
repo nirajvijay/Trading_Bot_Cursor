@@ -59,7 +59,22 @@ class FakeBrokerTests(unittest.TestCase):
         )
         updated = broker.modify_slm(sl.order_id, 105)
         self.assertEqual(updated.trigger_price, 105)
+        self.assertEqual(updated.price, 105)
         self.assertEqual(broker.modify_count, 1)
+
+    def test_sl_limit_price_matches_trigger(self) -> None:
+        broker = FakeBroker(last_prices={"AAA": 110})
+        sl = broker.place_slm(
+            tradingsymbol="AAA",
+            transaction_type="SELL",
+            quantity=10,
+            trigger_price=99,
+            tag="te1",
+            tick_size=1,
+        )
+        self.assertEqual(sl.order_type, "SL")
+        self.assertEqual(sl.trigger_price, 99)
+        self.assertEqual(sl.price, 99)
 
 
 class KiteBrokerTests(unittest.TestCase):
@@ -103,6 +118,24 @@ class KiteBrokerTests(unittest.TestCase):
         )
         self.assertEqual(order.order_id, "oid1")
         kite.place_order.assert_not_called()
+
+    def test_place_sl_equal_trigger_and_price(self) -> None:
+        kite = MagicMock()
+        kite.place_order.return_value = {"order_id": "sl1"}
+        kite.orders.return_value = []
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        broker.place_slm(
+            tradingsymbol="AAA",
+            transaction_type="SELL",
+            quantity=10,
+            trigger_price=99,
+            tag="te1",
+            tick_size=1,
+        )
+        kwargs = kite.place_order.call_args.kwargs
+        self.assertEqual(kwargs["order_type"], "SL")
+        self.assertEqual(kwargs["trigger_price"], 99)
+        self.assertEqual(kwargs["price"], 99)
 
 
 if __name__ == "__main__":

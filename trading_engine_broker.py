@@ -9,13 +9,18 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol
 from uuid import uuid4
 
-from trading_engine_types import BrokerOrder, MarginQuote
+from continuation_features import price_to_ticks, ticks_to_price
+
+from trading_engine_types import STOP_ORDER_TYPES, BrokerOrder, MarginQuote
 
 LIVE_ORDERS_DISABLED_REASON = "live_orders_disabled"
+SL_CANCELLED = {"CANCELLED", "REJECTED"}
 
 
 class BrokerPort(Protocol):
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]: ...
+
+    def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]: ...
 
     def place_market_mis(
         self,
@@ -34,11 +39,23 @@ class BrokerPort(Protocol):
         quantity: int,
         trigger_price: float,
         tag: str,
+        tick_size: float = 0.05,
     ) -> BrokerOrder: ...
 
-    def modify_slm(self, order_id: str, trigger_price: float) -> BrokerOrder: ...
+    def modify_slm(
+        self,
+        order_id: str,
+        trigger_price: float,
+        *,
+        tick_size: float = 0.05,
+        transaction_type: Optional[str] = None,
+    ) -> BrokerOrder: ...
+
+    def cancel_order(self, order_id: str) -> Optional[BrokerOrder]: ...
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]: ...
+
+    def net_position_qty(self, tradingsymbol: str) -> int: ...
 
     def order_margins(
         self,
@@ -55,9 +72,54 @@ def _new_order_id() -> str:
     return uuid4().hex[:16]
 
 
+def _is_stop_order(order: BrokerOrder) -> bool:
+    return str(order.order_type) in STOP_ORDER_TYPES
+
+
+def _limit_price_for_stop(
+    *,
+    transaction_type: str,
+    trigger_price: float,
+    tick_size: float,
+    worse_ticks: int = 0,
+) -> float:
+    aligned = ticks_to_price(price_to_ticks(trigger_price, tick_size), tick_size)
+    if worse_ticks <= 0:
+        return aligned
+    ticks = price_to_ticks(aligned, tick_size)
+    side = str(transaction_type).upper()
+    if side == "SELL":
+        ticks -= int(worse_ticks)
+    else:
+        ticks += int(worse_ticks)
+    if ticks < 0:
+        ticks = 0
+    return ticks_to_price(ticks, tick_size)
+
+
+def _copy_order(order: BrokerOrder, **changes: object) -> BrokerOrder:
+    data = {
+        "order_id": order.order_id,
+        "tag": order.tag,
+        "tradingsymbol": order.tradingsymbol,
+        "transaction_type": order.transaction_type,
+        "order_type": order.order_type,
+        "quantity": order.quantity,
+        "status": order.status,
+        "average_price": order.average_price,
+        "trigger_price": order.trigger_price,
+        "price": order.price,
+        "product": order.product,
+        "variety": order.variety,
+        "exchange": order.exchange,
+    }
+    data.update(changes)
+    return BrokerOrder(**data)  # type: ignore[arg-type]
+
+
 @dataclass
 class FakeBroker:
-    """In-memory MIS/SL-M simulator. 5x margin is a demo heuristic only."""
+    """In-memory MIS/SL simulator. 5x margin is a demo heuristic only."""
 
     auto_fill_entry: bool = True
     auto_confirm_sl: bool = True
@@ -69,9 +131,13 @@ class FakeBroker:
     slm_place_count: int = 0
     modify_count: int = 0
     live_orders_enabled: bool = False
+    reject_equal_sl_price: bool = False
 
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]:
         return [o for o in self.orders.values() if o.tag == tag]
+
+    def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]:
+        return [o for o in self.orders.values() if o.tradingsymbol == tradingsymbol]
 
     def place_market_mis(
         self,
@@ -112,49 +178,87 @@ class FakeBroker:
         quantity: int,
         trigger_price: float,
         tag: str,
+        tick_size: float = 0.05,
     ) -> BrokerOrder:
         existing = [
             o
             for o in self.orders_by_tag(tag)
-            if o.order_type == "SL-M"
+            if _is_stop_order(o)
             and o.status in {"TRIGGER PENDING", "OPEN", "COMPLETE"}
         ]
         if existing:
             return existing[0]
         self.slm_place_count += 1
         status = "TRIGGER PENDING" if self.auto_confirm_sl else "OPEN"
+        price = _limit_price_for_stop(
+            transaction_type=transaction_type,
+            trigger_price=trigger_price,
+            tick_size=tick_size,
+            worse_ticks=1 if self.reject_equal_sl_price else 0,
+        )
         order = BrokerOrder(
             order_id=_new_order_id(),
             tag=tag,
             tradingsymbol=tradingsymbol,
             transaction_type=transaction_type,
-            order_type="SL-M",
+            order_type="SL",
             quantity=quantity,
             status=status,
             trigger_price=trigger_price,
+            price=price,
         )
         self.orders[order.order_id] = order
         return order
 
-    def modify_slm(self, order_id: str, trigger_price: float) -> BrokerOrder:
+    def modify_slm(
+        self,
+        order_id: str,
+        trigger_price: float,
+        *,
+        tick_size: float = 0.05,
+        transaction_type: Optional[str] = None,
+    ) -> BrokerOrder:
         order = self.orders[order_id]
         self.modify_count += 1
-        updated = BrokerOrder(
-            order_id=order.order_id,
-            tag=order.tag,
-            tradingsymbol=order.tradingsymbol,
-            transaction_type=order.transaction_type,
-            order_type=order.order_type,
-            quantity=order.quantity,
-            status=order.status,
-            average_price=order.average_price,
+        side = transaction_type or order.transaction_type
+        price = _limit_price_for_stop(
+            transaction_type=side,
             trigger_price=trigger_price,
+            tick_size=tick_size,
+            worse_ticks=1 if self.reject_equal_sl_price else 0,
         )
+        updated = _copy_order(
+            order,
+            trigger_price=trigger_price,
+            price=price,
+            order_type="SL",
+        )
+        self.orders[order_id] = updated
+        return updated
+
+    def cancel_order(self, order_id: str) -> Optional[BrokerOrder]:
+        order = self.orders.get(order_id)
+        if order is None:
+            return None
+        updated = _copy_order(order, status="CANCELLED")
         self.orders[order_id] = updated
         return updated
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
         return self.orders.get(order_id)
+
+    def net_position_qty(self, tradingsymbol: str) -> int:
+        qty = 0
+        for order in self.orders.values():
+            if order.tradingsymbol != tradingsymbol:
+                continue
+            if str(order.status).upper() != "COMPLETE":
+                continue
+            if str(order.product or "MIS") != "MIS":
+                continue
+            signed = order.quantity if str(order.transaction_type).upper() == "BUY" else -order.quantity
+            qty += signed
+        return qty
 
     def order_margins(
         self,
@@ -174,56 +278,49 @@ class FakeBroker:
 
     def fill_entry(self, order_id: str, price: float) -> BrokerOrder:
         order = self.orders[order_id]
-        filled = BrokerOrder(
-            order_id=order.order_id,
-            tag=order.tag,
-            tradingsymbol=order.tradingsymbol,
-            transaction_type=order.transaction_type,
-            order_type=order.order_type,
-            quantity=order.quantity,
-            status="COMPLETE",
-            average_price=price,
-            trigger_price=order.trigger_price,
-        )
+        filled = _copy_order(order, status="COMPLETE", average_price=price)
         self.orders[order_id] = filled
         self.last_prices[order.tradingsymbol] = price
         return filled
 
     def confirm_sl(self, order_id: str) -> BrokerOrder:
         order = self.orders[order_id]
-        confirmed = BrokerOrder(
-            order_id=order.order_id,
-            tag=order.tag,
-            tradingsymbol=order.tradingsymbol,
-            transaction_type=order.transaction_type,
-            order_type=order.order_type,
-            quantity=order.quantity,
-            status="TRIGGER PENDING",
-            average_price=order.average_price,
-            trigger_price=order.trigger_price,
-        )
+        confirmed = _copy_order(order, status="TRIGGER PENDING")
         self.orders[order_id] = confirmed
         return confirmed
 
     def fill_sl(self, order_id: str, price: float) -> BrokerOrder:
         order = self.orders[order_id]
-        filled = BrokerOrder(
-            order_id=order.order_id,
-            tag=order.tag,
-            tradingsymbol=order.tradingsymbol,
-            transaction_type=order.transaction_type,
-            order_type=order.order_type,
-            quantity=order.quantity,
-            status="COMPLETE",
-            average_price=price,
-            trigger_price=order.trigger_price,
-        )
+        filled = _copy_order(order, status="COMPLETE", average_price=price)
         self.orders[order_id] = filled
         self.last_prices[order.tradingsymbol] = price
         return filled
 
+    def flatten_mis(self, tradingsymbol: str, price: float) -> BrokerOrder:
+        net = self.net_position_qty(tradingsymbol)
+        if net == 0:
+            raise ValueError("no_position")
+        side = "SELL" if net > 0 else "BUY"
+        order = BrokerOrder(
+            order_id=_new_order_id(),
+            tag="",
+            tradingsymbol=tradingsymbol,
+            transaction_type=side,
+            order_type="MARKET",
+            quantity=abs(net),
+            status="COMPLETE",
+            average_price=price,
+        )
+        self.orders[order.order_id] = order
+        self.last_prices[tradingsymbol] = price
+        return order
+
 
 def _kite_order_to_broker(raw: dict) -> BrokerOrder:
+    price_raw = raw.get("price")
+    price = None
+    if price_raw not in (None, 0, 0.0, "0"):
+        price = float(price_raw)
     return BrokerOrder(
         order_id=str(raw.get("order_id") or ""),
         tag=str(raw.get("tag") or ""),
@@ -240,6 +337,7 @@ def _kite_order_to_broker(raw: dict) -> BrokerOrder:
         trigger_price=(
             float(raw["trigger_price"]) if raw.get("trigger_price") else None
         ),
+        price=price,
         product=str(raw.get("product") or "MIS"),
         variety=str(raw.get("variety") or "regular"),
         exchange=str(raw.get("exchange") or "NSE"),
@@ -260,6 +358,14 @@ class KiteBroker:
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]:
         raw = self._kite.orders()  # type: ignore[attr-defined]
         return [_kite_order_to_broker(o) for o in raw if str(o.get("tag") or "") == tag]
+
+    def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]:
+        raw = self._kite.orders()  # type: ignore[attr-defined]
+        return [
+            _kite_order_to_broker(o)
+            for o in raw
+            if str(o.get("tradingsymbol") or "") == tradingsymbol
+        ]
 
     def place_market_mis(
         self,
@@ -299,6 +405,30 @@ class KiteBroker:
             status="OPEN",
         )
 
+    def _place_sl_limit(
+        self,
+        *,
+        tradingsymbol: str,
+        transaction_type: str,
+        quantity: int,
+        trigger_price: float,
+        price: float,
+        tag: str,
+    ) -> object:
+        return self._kite.place_order(  # type: ignore[attr-defined]
+            variety="regular",
+            exchange="NSE",
+            tradingsymbol=tradingsymbol,
+            transaction_type=transaction_type,
+            quantity=quantity,
+            product="MIS",
+            order_type="SL",
+            trigger_price=trigger_price,
+            price=price,
+            validity="DAY",
+            tag=tag,
+        )
+
     def place_slm(
         self,
         *,
@@ -307,29 +437,46 @@ class KiteBroker:
         quantity: int,
         trigger_price: float,
         tag: str,
+        tick_size: float = 0.05,
     ) -> BrokerOrder:
         self._require_live()
         existing = [
             o
             for o in self.orders_by_tag(tag)
-            if o.order_type == "SL-M"
-            and o.status.upper() not in {"CANCELLED", "REJECTED"}
+            if _is_stop_order(o) and o.status.upper() not in SL_CANCELLED
         ]
         if existing:
             return existing[0]
-        result = self._kite.place_order(  # type: ignore[attr-defined]
-            variety="regular",
-            exchange="NSE",
-            tradingsymbol=tradingsymbol,
+        equal = _limit_price_for_stop(
             transaction_type=transaction_type,
-            quantity=quantity,
-            product="MIS",
-            order_type="SL-M",
             trigger_price=trigger_price,
-            validity="DAY",
-            tag=tag,
-            market_protection=-1,
+            tick_size=tick_size,
+            worse_ticks=0,
         )
+        try:
+            result = self._place_sl_limit(
+                tradingsymbol=tradingsymbol,
+                transaction_type=transaction_type,
+                quantity=quantity,
+                trigger_price=equal,
+                price=equal,
+                tag=tag,
+            )
+        except Exception:  # noqa: BLE001
+            worse = _limit_price_for_stop(
+                transaction_type=transaction_type,
+                trigger_price=trigger_price,
+                tick_size=tick_size,
+                worse_ticks=1,
+            )
+            result = self._place_sl_limit(
+                tradingsymbol=tradingsymbol,
+                transaction_type=transaction_type,
+                quantity=quantity,
+                trigger_price=equal,
+                price=worse,
+                tag=tag,
+            )
         order_id = result["order_id"] if isinstance(result, dict) else str(result)
         polled = self.poll_order(str(order_id))
         if polled is not None:
@@ -339,19 +486,54 @@ class KiteBroker:
             tag=tag,
             tradingsymbol=tradingsymbol,
             transaction_type=transaction_type,
-            order_type="SL-M",
+            order_type="SL",
             quantity=quantity,
             status="OPEN",
-            trigger_price=trigger_price,
+            trigger_price=equal,
+            price=equal,
         )
 
-    def modify_slm(self, order_id: str, trigger_price: float) -> BrokerOrder:
+    def modify_slm(
+        self,
+        order_id: str,
+        trigger_price: float,
+        *,
+        tick_size: float = 0.05,
+        transaction_type: Optional[str] = None,
+    ) -> BrokerOrder:
         self._require_live()
-        self._kite.modify_order(  # type: ignore[attr-defined]
-            variety="regular",
-            order_id=order_id,
+        side = transaction_type
+        if side is None:
+            existing = self.poll_order(order_id)
+            side = existing.transaction_type if existing is not None else "SELL"
+        equal = _limit_price_for_stop(
+            transaction_type=side,
             trigger_price=trigger_price,
+            tick_size=tick_size,
+            worse_ticks=0,
         )
+        try:
+            self._kite.modify_order(  # type: ignore[attr-defined]
+                variety="regular",
+                order_id=order_id,
+                order_type="SL",
+                trigger_price=equal,
+                price=equal,
+            )
+        except Exception:  # noqa: BLE001
+            worse = _limit_price_for_stop(
+                transaction_type=side,
+                trigger_price=trigger_price,
+                tick_size=tick_size,
+                worse_ticks=1,
+            )
+            self._kite.modify_order(  # type: ignore[attr-defined]
+                variety="regular",
+                order_id=order_id,
+                order_type="SL",
+                trigger_price=equal,
+                price=worse,
+            )
         polled = self.poll_order(order_id)
         if polled is not None:
             return polled
@@ -359,12 +541,18 @@ class KiteBroker:
             order_id=order_id,
             tag="",
             tradingsymbol="",
-            transaction_type="",
-            order_type="SL-M",
+            transaction_type=side or "",
+            order_type="SL",
             quantity=0,
             status="OPEN",
-            trigger_price=trigger_price,
+            trigger_price=equal,
+            price=equal,
         )
+
+    def cancel_order(self, order_id: str) -> Optional[BrokerOrder]:
+        self._require_live()
+        self._kite.cancel_order(variety="regular", order_id=order_id)  # type: ignore[attr-defined]
+        return self.poll_order(order_id)
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
         raw = self._kite.orders()  # type: ignore[attr-defined]
@@ -372,6 +560,19 @@ class KiteBroker:
             if str(item.get("order_id")) == str(order_id):
                 return _kite_order_to_broker(item)
         return None
+
+    def net_position_qty(self, tradingsymbol: str) -> int:
+        data = self._kite.positions()  # type: ignore[attr-defined]
+        if not isinstance(data, dict):
+            return 0
+        for bucket in ("day", "net"):
+            for item in data.get(bucket) or []:
+                if str(item.get("tradingsymbol") or "") != tradingsymbol:
+                    continue
+                if str(item.get("product") or "MIS") != "MIS":
+                    continue
+                return int(item.get("quantity") or 0)
+        return 0
 
     def order_margins(
         self,

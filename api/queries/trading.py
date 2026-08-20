@@ -27,6 +27,7 @@ def empty_snapshot(session_date: str) -> dict[str, Any]:
         "remaining_capital": DEFAULT_TOTAL_CAPITAL,
         "buying_power": DEFAULT_TOTAL_CAPITAL * DEMO_LEVERAGE_FACTOR,
         "last_error": None,
+        "accepting_triggers": False,
         "active": [],
         "closed": [],
         "skipped": [],
@@ -42,6 +43,7 @@ def load_snapshot(db_path: Path, session_date: str, *, running: bool) -> dict[st
         if run is None:
             return empty_snapshot(session_date)
         date = session_date
+        consume = bool(run["consume_new_triggers"]) if "consume_new_triggers" in run.keys() else True
         return snapshot_dict(
             store,
             session_date=date,
@@ -50,6 +52,7 @@ def load_snapshot(db_path: Path, session_date: str, *, running: bool) -> dict[st
             live_orders_enabled=bool(run["live_orders_enabled"]),
             running=running,
             last_error=None if run["last_error"] is None else str(run["last_error"]),
+            accepting_triggers=bool(running and consume),
         )
     finally:
         store.close()

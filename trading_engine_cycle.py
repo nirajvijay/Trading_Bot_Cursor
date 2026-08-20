@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from continuation_features import price_to_ticks, ticks_to_price
 
-from trading_engine_broker import BrokerPort, FakeBroker
+from trading_engine_broker import BrokerPort, FakeBroker, _is_stop_order
 from trading_engine_handoff import fetch_triggered_since
 from trading_engine_risk import (
     blocks_new_entries,
@@ -39,6 +39,7 @@ ENTRY_COMPLETE = {"COMPLETE"}
 ENTRY_REJECTED = {"REJECTED", "CANCELLED"}
 SL_WORKING = {"TRIGGER PENDING"}
 SL_FILLED = {"COMPLETE"}
+SL_CANCELLED = {"CANCELLED", "REJECTED"}
 
 
 def _now() -> str:
@@ -84,6 +85,7 @@ def snapshot_dict(
     live_orders_enabled: bool,
     running: bool,
     last_error: Optional[str] = None,
+    accepting_triggers: Optional[bool] = None,
 ) -> dict[str, Any]:
     trades = store.list_trades(session_date)
     risk = risk_snapshot(trades)
@@ -123,6 +125,9 @@ def snapshot_dict(
             "realised_pnl": t.realised_pnl,
             "open_pnl": t.open_pnl,
             "remaining_downside_risk": remaining(t),
+            "tick_size": t.tick_size,
+            "auto_trail_enabled": bool(t.auto_trail_enabled),
+            "auto_trail_ticks": t.auto_trail_ticks,
             "stop_revised": (
                 t.initial_stop is not None
                 and t.current_stop is not None
@@ -133,10 +138,12 @@ def snapshot_dict(
     active = [trade_json(t) for t in trades if t.status in ACTIVE_STATES]
     closed = [trade_json(t) for t in trades if t.status == "closed"]
     skipped = [trade_json(t) for t in trades if t.status in SKIPPED_STATES]
+    accepting = running if accepting_triggers is None else bool(accepting_triggers)
     return {
         "state": state,
         "session_date": session_date,
         "live_orders_enabled": live_orders_enabled,
+        "accepting_triggers": accepting,
         "unprotected_count": risk.unprotected_count,
         "limits_protected": risk.limits_protected,
         "closed_loss_today": risk.closed_loss_today,
@@ -190,6 +197,7 @@ class TradingEngineCycle:
             self.ingest_triggers()
         self.drive_open()
         self.process_commands()
+        self.apply_auto_trails()
         self.mark_to_market()
         self.write_status()
 
@@ -348,7 +356,9 @@ class TradingEngineCycle:
             )
             return
         existing = [
-            o for o in self.broker.orders_by_tag(trade.broker_tag) if o.order_type == "SL-M"
+            o
+            for o in self.broker.orders_by_tag(trade.broker_tag)
+            if _is_stop_order(o) and str(o.status).upper() not in SL_CANCELLED
         ]
         if existing:
             self._apply_sl_order(trade, existing[0])
@@ -359,6 +369,7 @@ class TradingEngineCycle:
             quantity=trade.qty,
             trigger_price=trade.current_stop,
             tag=trade.broker_tag,
+            tick_size=trade.tick_size,
         )
         self.store.append_event(
             trade.trade_id, "sl_placed", payload={"order_id": order.order_id}
@@ -390,7 +401,13 @@ class TradingEngineCycle:
                         self._apply_entry_order(trade, polled)
                 else:
                     self._submit_entry(trade)
-            elif trade.status == "entry_filled":
+                continue
+            if trade.status in {"entry_filled", "stop_pending", "protected_open"}:
+                if self._reconcile_external_exit(trade):
+                    continue
+                refreshed = self.store.get_trade(trade.trade_id)
+                trade = refreshed if refreshed is not None else trade
+            if trade.status == "entry_filled":
                 self._place_stop(trade)
             elif trade.status == "stop_pending":
                 if trade.sl_order_id:
@@ -400,14 +417,84 @@ class TradingEngineCycle:
                 else:
                     self._place_stop(trade)
             elif trade.status == "protected_open":
-                if trade.sl_order_id:
-                    polled = self.broker.poll_order(trade.sl_order_id)
-                    if polled and str(polled.status).upper() in SL_FILLED:
-                        self._close_trade(
-                            trade,
-                            float(polled.average_price or trade.current_stop or 0),
-                            "sl_hit",
-                        )
+                self._drive_protected(trade)
+
+    def _reconcile_external_exit(self, trade: TradeRecord) -> bool:
+        if trade.entry_fill is None or trade.qty <= 0:
+            return False
+        net = self.broker.net_position_qty(trade.symbol)
+        if abs(net) not in {0, trade.qty} and net != 0:
+            self.store.append_event(
+                trade.trade_id,
+                "qty_mismatch",
+                payload={"net": net, "engine_qty": trade.qty},
+            )
+        if net != 0:
+            return False
+        if trade.sl_order_id:
+            sl = self.broker.poll_order(trade.sl_order_id)
+            if sl is not None and str(sl.status).upper() in SL_FILLED:
+                self._close_trade(
+                    trade,
+                    float(sl.average_price or trade.current_stop or 0),
+                    "sl_hit",
+                )
+                return True
+            if sl is not None and str(sl.status).upper() not in SL_CANCELLED | SL_FILLED:
+                self.broker.cancel_order(trade.sl_order_id)
+        exit_px = self._exit_fill_from_broker(trade)
+        self._close_trade(trade, exit_px, "external_exit")
+        return True
+
+    def _exit_fill_from_broker(self, trade: TradeRecord) -> float:
+        side = _stop_side(trade.direction)
+        fills = [
+            o
+            for o in self.broker.orders_for_symbol(trade.symbol)
+            if str(o.transaction_type).upper() == side
+            and str(o.status).upper() in SL_FILLED
+            and o.average_price is not None
+        ]
+        if fills:
+            return float(fills[-1].average_price or 0)
+        mark = self.broker.ltp(trade.symbol)
+        if mark is not None:
+            return float(mark)
+        return float(trade.current_stop or trade.entry_fill or trade.entry_estimate)
+
+    def _drive_protected(self, trade: TradeRecord) -> None:
+        if not trade.sl_order_id:
+            self._place_stop(trade)
+            return
+        polled = self.broker.poll_order(trade.sl_order_id)
+        if polled is None:
+            return
+        status = str(polled.status).upper()
+        if status in SL_FILLED:
+            self._close_trade(
+                trade,
+                float(polled.average_price or trade.current_stop or 0),
+                "sl_hit",
+            )
+            return
+        if status in SL_CANCELLED:
+            self.store.update_trade(trade.trade_id, status="stop_pending")
+            self.store.append_event(
+                trade.trade_id, "stop_pending", payload={"reason": "sl_cancelled"}
+            )
+            return
+        if status in SL_WORKING and polled.trigger_price is not None:
+            aligned = _align_stop(float(polled.trigger_price), trade.tick_size)
+            if trade.current_stop is None or abs(aligned - trade.current_stop) > 1e-9:
+                old = trade.current_stop
+                self.store.update_trade(trade.trade_id, current_stop=aligned)
+                self.store.append_event(
+                    trade.trade_id,
+                    "stop_adopted",
+                    old_stop=old,
+                    new_stop=aligned,
+                    payload={"source": "broker"},
+                )
 
     def _close_trade(self, trade: TradeRecord, exit_fill: float, reason: str) -> None:
         if trade.status == "closed":
@@ -429,12 +516,17 @@ class TradingEngineCycle:
             margin_blocked=0.0,
         )
         self.store.append_event(
-            trade.trade_id, "sl_filled", payload={"exit": exit_fill, "pnl": pnl}
+            trade.trade_id,
+            "sl_filled" if reason == "sl_hit" else "closed",
+            payload={"exit": exit_fill, "pnl": pnl, "reason": reason},
         )
 
     def process_commands(self) -> None:
         for command in self.store.pending_commands():
             if command.kind == "stop_engine":
+                if command.created_at < self.started_at:
+                    self.store.mark_command_processed(command.command_id)
+                    continue
                 self.consume_new_triggers = False
                 self.store.set_consume_triggers(self.run_id, False)
                 self.store.mark_command_processed(command.command_id)
@@ -447,6 +539,21 @@ class TradingEngineCycle:
                         float(payload["new_stop"]),
                         last_price=payload.get("last_price"),
                         actor="user",
+                    )
+                except ValueError as exc:
+                    self.store.append_event(
+                        command.trade_id,
+                        "error",
+                        actor="user",
+                        payload={"reason": str(exc)},
+                    )
+                self.store.mark_command_processed(command.command_id)
+                continue
+            if command.kind == "set_auto_trail" and command.trade_id:
+                payload = json.loads(command.payload_json or "{}")
+                try:
+                    self.set_auto_trail(
+                        command.trade_id, enabled=bool(payload.get("enabled"))
                     )
                 except ValueError as exc:
                     self.store.append_event(
@@ -492,8 +599,25 @@ class TradingEngineCycle:
             old_stop=old,
             new_stop=aligned,
         )
-        self.broker.modify_slm(trade.sl_order_id, aligned)
-        updated = self.store.update_trade(trade.trade_id, current_stop=aligned)
+        self.broker.modify_slm(
+            trade.sl_order_id,
+            aligned,
+            tick_size=trade.tick_size,
+            transaction_type=_stop_side(trade.direction),
+        )
+        fields: dict[str, Any] = {"current_stop": aligned}
+        if actor == "user" and trade.auto_trail_enabled:
+            mark_for_trail = mark if mark is not None else self.broker.ltp(trade.symbol)
+            if mark_for_trail is not None:
+                fields["auto_trail_ticks"] = max(
+                    1,
+                    abs(
+                        price_to_ticks(float(mark_for_trail), trade.tick_size)
+                        - price_to_ticks(aligned, trade.tick_size)
+                    ),
+                )
+                fields["auto_trail_extreme"] = float(mark_for_trail)
+        updated = self.store.update_trade(trade.trade_id, **fields)
         self.store.append_event(
             trade.trade_id,
             "sl_modified",
@@ -502,6 +626,80 @@ class TradingEngineCycle:
             new_stop=aligned,
         )
         return updated
+
+    def set_auto_trail(self, trade_id: str, *, enabled: bool) -> TradeRecord:
+        trade = self.store.get_trade(trade_id)
+        if trade is None:
+            raise ValueError("trade_not_found")
+        if not enabled:
+            updated = self.store.update_trade(trade_id, auto_trail_enabled=0)
+            self.store.append_event(trade_id, "auto_trail_off", actor="user")
+            return updated
+        if trade.status != "protected_open":
+            raise ValueError("trail_only_protected_open")
+        if trade.current_stop is None:
+            raise ValueError("missing_stop")
+        mark = self.broker.ltp(trade.symbol)
+        ticks = 1
+        extreme = mark
+        if mark is not None:
+            ticks = max(
+                1,
+                abs(
+                    price_to_ticks(float(mark), trade.tick_size)
+                    - price_to_ticks(trade.current_stop, trade.tick_size)
+                ),
+            )
+        updated = self.store.update_trade(
+            trade_id,
+            auto_trail_enabled=1,
+            auto_trail_ticks=ticks,
+            auto_trail_extreme=extreme,
+        )
+        self.store.append_event(
+            trade_id,
+            "auto_trail_on",
+            actor="user",
+            payload={"ticks": ticks},
+        )
+        return updated
+
+    def apply_auto_trails(self) -> None:
+        for trade in self.store.list_trades(self.session_date):
+            if not trade.auto_trail_enabled or trade.status != "protected_open":
+                continue
+            if trade.current_stop is None or not trade.auto_trail_ticks:
+                continue
+            mark = self.broker.ltp(trade.symbol)
+            if mark is None:
+                continue
+            tick_size = trade.tick_size
+            if trade.direction == "UP":
+                extreme = mark if trade.auto_trail_extreme is None else max(trade.auto_trail_extreme, mark)
+                proposed = ticks_to_price(
+                    price_to_ticks(extreme, tick_size) - int(trade.auto_trail_ticks),
+                    tick_size,
+                )
+            else:
+                extreme = mark if trade.auto_trail_extreme is None else min(trade.auto_trail_extreme, mark)
+                proposed = ticks_to_price(
+                    price_to_ticks(extreme, tick_size) + int(trade.auto_trail_ticks),
+                    tick_size,
+                )
+            if trade.auto_trail_extreme is None or abs(extreme - trade.auto_trail_extreme) > 1e-9:
+                self.store.update_trade(trade.trade_id, auto_trail_extreme=extreme)
+            aligned = _align_stop(proposed, tick_size)
+            if abs(aligned - trade.current_stop) < 1e-9:
+                continue
+            try:
+                self.apply_trail(
+                    trade.trade_id,
+                    aligned,
+                    last_price=mark,
+                    actor="engine",
+                )
+            except ValueError:
+                continue
 
     def mark_to_market(self) -> None:
         for trade in self.store.list_trades(self.session_date):
@@ -528,6 +726,9 @@ class TradingEngineCycle:
             live_orders_enabled=self.live_orders_enabled,
             running=self.running,
             last_error=self.last_error,
+            accepting_triggers=bool(self.running and self.consume_new_triggers),
         )
         snap["updated_at"] = _now()
+        snap["running"] = self.running
+        snap["consume_new_triggers"] = self.consume_new_triggers
         write_heartbeat(self.status_file, snap)

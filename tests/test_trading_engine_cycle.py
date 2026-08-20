@@ -277,6 +277,72 @@ class CycleTests(unittest.TestCase):
         self.assertLess(snap["closed"][0]["realised_pnl"], 0)
         store.close()
 
+    def test_stale_stop_engine_does_not_pause_new_run(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        store._conn.execute(
+            """
+            INSERT INTO engine_commands (kind, payload_json, created_at)
+            VALUES ('stop_engine', '{}', '2026-08-17T04:00:00+00:00')
+            """
+        )
+        store._conn.commit()
+        cycle.tick()
+        self.assertTrue(cycle.consume_new_triggers)
+        self.assertEqual(len(store.list_trades("2026-08-17")), 1)
+        self.assertEqual(store.pending_commands(), [])
+        store.close()
+
+    def test_external_flatten_closes_active_trade(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        self.assertEqual(trade.status, "protected_open")
+        broker.flatten_mis("AAA", 112.0)
+        cycle.tick()
+        closed = store.get_trade(trade.trade_id)
+        assert closed is not None
+        self.assertEqual(closed.status, "closed")
+        self.assertEqual(closed.close_reason, "external_exit")
+        self.assertGreater(closed.realised_pnl, 0)
+        sl = broker.poll_order(trade.sl_order_id or "")
+        self.assertIsNotNone(sl)
+        assert sl is not None
+        self.assertEqual(str(sl.status).upper(), "CANCELLED")
+        store.close()
+
+    def test_cancelled_sl_becomes_unprotected(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        broker.cancel_order(trade.sl_order_id or "")
+        cycle.tick()
+        updated = store.get_trade(trade.trade_id)
+        assert updated is not None
+        self.assertEqual(updated.status, "stop_pending")
+        store.close()
+
+    def test_auto_trail_tightens_with_price(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        broker.last_prices["AAA"] = 120
+        cycle.set_auto_trail(trade.trade_id, enabled=True)
+        broker.last_prices["AAA"] = 125
+        cycle.apply_auto_trails()
+        updated = store.get_trade(trade.trade_id)
+        assert updated is not None
+        self.assertTrue(updated.auto_trail_enabled)
+        self.assertGreater(updated.current_stop or 0, trade.current_stop or 0)
+        store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

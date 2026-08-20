@@ -36,11 +36,6 @@ def _today_ist() -> str:
     return datetime.now(IST).strftime("%Y-%m-%d")
 
 
-def _live_orders_enabled() -> bool:
-    raw = os.environ.get("TRADING_ENGINE_LIVE_ORDERS", "false").strip().lower()
-    return raw in {"1", "true", "yes"}
-
-
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NIFTY RADAR trading engine (V1)")
     parser.add_argument("--status-file", default=None)
@@ -81,7 +76,7 @@ def _make_broker(live: bool, total_capital: float):
 
 def run(args: argparse.Namespace) -> int:
     session_date = args.session_date or _today_ist()
-    live = bool(args.live_orders) or _live_orders_enabled()
+    live = bool(args.live_orders)
     status_file = Path(args.status_file or config.trading_engine_status_file())
     stop_file = Path(args.stop_file or config.trading_engine_stop_file())
     trading_db = Path(args.trading_db or config.trading_engine_db_path())
@@ -137,6 +132,7 @@ def run(args: argparse.Namespace) -> int:
         cycle.running = False
         cycle.consume_new_triggers = False
         store.set_consume_triggers(run_id, False)
+        store.ack_pending_commands("stop_engine")
         store.set_run_status(run_id, "stopped", stopped=True)
         cycle.write_status()
         store.close()
