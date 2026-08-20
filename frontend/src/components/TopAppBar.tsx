@@ -1,7 +1,7 @@
 import { marketStatusNow } from '../lib/format'
 import type { RunnerStatus, SessionCoverage } from '../api/types'
 
-export type AppTab = 'radar' | 'checklist' | 'auth'
+export type AppTab = 'radar' | 'checklist' | 'auth' | 'trading'
 
 interface Props {
   activeTab: AppTab
@@ -59,7 +59,9 @@ export function TopAppBar({
             ? 'kite token'
             : activeTab === 'checklist'
               ? 'pre-market checks'
-              : 'observation only'}
+              : activeTab === 'trading'
+                ? 'trading engine'
+                : 'observation only'}
         </span>
         {username && (
           <span className="label-caps text-on-surface-variant hidden md:inline truncate max-w-[8rem]">
@@ -89,6 +91,22 @@ export function TopAppBar({
                 ))}
             </select>
           </>
+        )}
+        {activeTab === 'trading' && (
+          <select
+            className="bg-surface-container-low border border-outline-variant text-[10px] px-2 py-1 label-caps"
+            value={sessionDate}
+            onChange={(e) => onSessionChange(e.target.value)}
+          >
+            <option value={sessionDate}>{sessionDate}</option>
+            {sessions
+              .filter((s) => s !== sessionDate)
+              .map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+          </select>
         )}
         {onLogout && (
           <button

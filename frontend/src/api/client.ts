@@ -7,6 +7,9 @@ import type {
   MfaSetupResponse,
   ObservationReadiness,
   ObservationStartResponse,
+  TradingEngineSnapshot,
+  TradingEngineStatus,
+  TradingStartResponse,
   PreMarketChecklistResponse,
   GenerateResponse,
   RadarResponse,
@@ -196,4 +199,41 @@ export function fetchObservationReadiness(sessionDate?: string): Promise<Observa
 export function postStartObservation(sessionDate?: string): Promise<ObservationStartResponse> {
   const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
   return postJson<ObservationStartResponse>(`/observation/start${query}`)
+}
+
+export function fetchTradingEngineStatus(sessionDate?: string): Promise<TradingEngineStatus> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson<TradingEngineStatus>(`/trading-engine/status${query}`)
+}
+
+export function fetchTradingEngineSnapshot(sessionDate?: string): Promise<TradingEngineSnapshot> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson<TradingEngineSnapshot>(`/trading-engine/snapshot${query}`)
+}
+
+export function postStartTradingEngine(body: {
+  confirm_live_orders?: boolean
+  session_date?: string
+  total_capital?: number
+}): Promise<TradingStartResponse> {
+  return postJson<TradingStartResponse>('/trading-engine/start', body)
+}
+
+export function postStopTradingEngine(): Promise<{ success: boolean; message: string }> {
+  return postJson('/trading-engine/stop')
+}
+
+export function postTradingCapital(totalCapital: number): Promise<{ success: boolean; total_capital: number }> {
+  return postJson('/trading-engine/capital', { total_capital: totalCapital })
+}
+
+export function postTrailStop(
+  tradeId: string,
+  newStop: number,
+  lastPrice?: number | null,
+): Promise<{ success: boolean; message: string }> {
+  return postJson(`/trading-engine/trades/${encodeURIComponent(tradeId)}/trail-stop`, {
+    new_stop: newStop,
+    last_price: lastPrice ?? null,
+  })
 }

@@ -79,6 +79,31 @@ RUNNER_STATUS_FILE = Path(
     os.environ.get("RUNNER_STATUS_FILE", "/tmp/runner_status.json")
 )
 
+def trading_engine_status_file() -> Path:
+    return Path(
+        os.environ.get("TRADING_ENGINE_STATUS_FILE", "/tmp/trading_engine_status.json")
+    )
+
+
+def trading_engine_db_path() -> Path:
+    override = os.environ.get("TRADING_ENGINE_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+    return local_data_dir() / "trading_engine.db"
+
+
+def trading_engine_stop_file() -> Path:
+    override = os.environ.get("TRADING_ENGINE_STOP_FILE")
+    if override:
+        return Path(override).expanduser()
+    return runtime_cache_dir() / "trading_engine.stop"
+
+
+def trading_engine_live_orders_enabled() -> bool:
+    raw = os.environ.get("TRADING_ENGINE_LIVE_ORDERS", "false").strip().lower()
+    return raw in {"1", "true", "yes"}
+
+
 # Backward-compatible aliases (same paths as above).
 LOCAL_INSTRUMENTS_DB_PATH = INSTRUMENTS_DB_PATH
 LOCAL_HISTORICAL_DB_PATH = HISTORICAL_DB_PATH

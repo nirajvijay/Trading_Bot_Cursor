@@ -11,6 +11,7 @@ import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarTable } from './components/RadarTable'
+import { TradingEnginePage } from './components/TradingEnginePage'
 import { StatusStrip } from './components/StatusStrip'
 import { TopAppBar, type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
@@ -276,6 +277,8 @@ export default function App() {
               tokenChecking={tokenChecking}
               onCheckToken={checkToken}
             />
+          ) : activeTab === 'trading' ? (
+            <TradingEnginePage sessionDate={sessionDate} />
           ) : (
             <KiteAuthPage />
           )}
