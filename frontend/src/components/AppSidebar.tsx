@@ -9,6 +9,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { id: 'radar', icon: 'grid_view', label: 'Radar Board' },
   { id: 'checklist', icon: 'fact_check', label: 'Pre-Market Checklist' },
+  { id: 'trading', icon: 'monitoring', label: 'Trading Engine' },
   { id: 'auth', icon: 'link', label: 'Kite Auth' },
 ]
 

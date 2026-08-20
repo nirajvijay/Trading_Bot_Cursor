@@ -17,6 +17,24 @@ export function AppFooter({
   const now = formatTimeIst(new Date().toISOString())
   const feed = resolveFeedStatus(status, runnerPresence)
 
+  if (activeTab === 'trading') {
+    return (
+      <footer className="h-8 px-4 flex items-center justify-between border-t border-outline-variant bg-white text-[10px] text-on-surface-variant shrink-0">
+        <div className="flex items-center gap-4 font-data">
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+            TRADING ENGINE V1
+          </span>
+        </div>
+        <span className="label-caps tracking-wider">Demo 5x · live orders gated</span>
+        <div className="flex items-center gap-1.5 font-data">
+          <span className="material-symbols-outlined text-[14px]">schedule</span>
+          <span>{now} IST</span>
+        </div>
+      </footer>
+    )
+  }
+
   if (activeTab === 'auth') {
     return (
       <footer className="h-8 px-4 flex items-center justify-between border-t border-outline-variant bg-white text-[10px] text-on-surface-variant shrink-0">
