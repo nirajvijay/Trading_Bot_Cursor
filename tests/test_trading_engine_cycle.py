@@ -52,6 +52,74 @@ CREATE TABLE live_continuation_decisions (
 """
 
 
+def _seed_vwap(
+    path: Path,
+    setup_id: str,
+    *,
+    classification: str = "ACCEPT",
+    session_date: str = "2026-08-17",
+    continuation_rule_version: str = "v1",
+    vwap_rule_version: str = "vwap_qualifier_v1",
+) -> None:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS live_vwap_qualifications (
+            setup_id TEXT NOT NULL,
+            continuation_rule_version TEXT NOT NULL,
+            vwap_rule_version TEXT NOT NULL,
+            instrument_token INTEGER NOT NULL,
+            tradingsymbol TEXT NOT NULL,
+            session_date TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            trigger_price REAL NOT NULL,
+            last_price REAL NOT NULL,
+            trigger_tick_sequence INTEGER NOT NULL,
+            trigger_exchange_ts TEXT NOT NULL,
+            vwap REAL,
+            gap REAL,
+            classification TEXT NOT NULL,
+            quality_ok INTEGER NOT NULL,
+            quality_reason TEXT,
+            vwap_provenance TEXT,
+            bootstrap_cutoff_exchange_ts TEXT,
+            completed_5m_count INTEGER NOT NULL,
+            in_progress_bucket_start TEXT,
+            in_progress_volume INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (session_date, setup_id, continuation_rule_version, vwap_rule_version)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO live_vwap_qualifications (
+            setup_id, continuation_rule_version, vwap_rule_version,
+            instrument_token, tradingsymbol, session_date, direction,
+            trigger_price, last_price, trigger_tick_sequence, trigger_exchange_ts,
+            vwap, gap, classification, quality_ok, quality_reason, vwap_provenance,
+            bootstrap_cutoff_exchange_ts, completed_5m_count, in_progress_bucket_start,
+            in_progress_volume, payload_json, created_at
+        ) VALUES (?, ?, ?, 1, 'AAA', ?, 'UP', 110, 110, 1, 't',
+                  110, 0.001, ?, 1, NULL, 'live', NULL, 1, NULL, 0, '{}', 'c')
+        """,
+        (setup_id, continuation_rule_version, vwap_rule_version, session_date, classification),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _ensure_vwap_table(path: Path) -> None:
+    _seed_vwap(path, "__ensure__", session_date="1999-01-01")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "DELETE FROM live_vwap_qualifications WHERE setup_id='__ensure__'"
+    )
+    conn.commit()
+    conn.close()
+
+
 def _seed_live(
     path: Path,
     setup_id: str,
@@ -59,6 +127,7 @@ def _seed_live(
     *,
     swing_low: float | None = 100.0,
     symbol: str = "AAA",
+    vwap: str | None = "ACCEPT",
 ) -> None:
     conn = sqlite3.connect(path)
     if not conn.execute(
@@ -91,6 +160,8 @@ def _seed_live(
     )
     conn.commit()
     conn.close()
+    if vwap is not None:
+        _seed_vwap(path, setup_id, classification=vwap)
 
 
 class CycleTests(unittest.TestCase):
@@ -106,11 +177,24 @@ class CycleTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _cycle(self, broker: FakeBroker, started_at: str = "2026-08-17T04:30:00+00:00"):
+    def _cycle(
+        self,
+        broker: FakeBroker,
+        started_at: str = "2026-08-17T04:30:00+00:00",
+        *,
+        require_vwap_accept: bool = True,
+        monotonic_fn=None,
+    ):
         store = TradingEngineStore(self.te)
         run_id = store.start_run(
-            session_date="2026-08-17", live_orders_enabled=False, pid=1
+            session_date="2026-08-17",
+            live_orders_enabled=False,
+            pid=1,
+            require_vwap_accept=require_vwap_accept,
         )
+        kwargs = {}
+        if monotonic_fn is not None:
+            kwargs["monotonic_fn"] = monotonic_fn
         cycle = TradingEngineCycle(
             store,
             broker,
@@ -119,6 +203,8 @@ class CycleTests(unittest.TestCase):
             started_at=started_at,
             run_id=run_id,
             live_orders_enabled=False,
+            require_vwap_accept=require_vwap_accept,
+            **kwargs,
         )
         return store, cycle
 
@@ -336,11 +422,385 @@ class CycleTests(unittest.TestCase):
         broker.last_prices["AAA"] = 120
         cycle.set_auto_trail(trade.trade_id, enabled=True)
         broker.last_prices["AAA"] = 125
+        cycle._reset_quote_cache()
         cycle.apply_auto_trails()
         updated = store.get_trade(trade.trade_id)
         assert updated is not None
         self.assertTrue(updated.auto_trail_enabled)
         self.assertGreater(updated.current_stop or 0, trade.current_stop or 0)
+        store.close()
+
+    def test_auto_trail_follows_last_price_tick_for_tick(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        self.assertEqual(trade.current_stop, 99.0)
+        cycle.set_auto_trail(trade.trade_id, enabled=True)
+        enabled = store.get_trade(trade.trade_id)
+        assert enabled is not None
+        self.assertEqual(enabled.auto_trail_ticks, 11)
+        broker.last_prices["AAA"] = 111
+        cycle._reset_quote_cache()
+        cycle.apply_auto_trails()
+        moved = store.get_trade(trade.trade_id)
+        assert moved is not None
+        self.assertEqual(moved.current_stop, 100.0)
+        broker.last_prices["AAA"] = 110
+        cycle._reset_quote_cache()
+        cycle.apply_auto_trails()
+        chopped = store.get_trade(trade.trade_id)
+        assert chopped is not None
+        self.assertEqual(chopped.current_stop, 100.0)
+        store.close()
+
+    def test_live_open_pnl_uses_kite_position_pnl(self) -> None:
+        from trading_engine_cycle import snapshot_dict
+        from trading_engine_types import PositionQuote
+
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 200})
+        store, cycle = self._cycle(broker)
+        cycle.live_orders_enabled = True
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        broker.position_quotes["AAA"] = PositionQuote(
+            quantity=trade.qty,
+            average_price=111.0,
+            last_price=115.0,
+            pnl=55.5,
+            unrealised=55.5,
+        )
+        cycle._reset_quote_cache()
+        cycle.mark_to_market()
+        updated = store.get_trade(trade.trade_id)
+        assert updated is not None
+        self.assertAlmostEqual(updated.open_pnl, 55.5)
+        self.assertAlmostEqual(updated.entry_fill or 0, 111.0)
+        snap = snapshot_dict(
+            store,
+            session_date="2026-08-17",
+            total_capital=300000,
+            leverage_factor=5,
+            live_orders_enabled=True,
+            running=True,
+        )
+        self.assertAlmostEqual(snap["live_pnl"], 55.5)
+        self.assertAlmostEqual(snap["active"][0]["open_pnl"], 55.5)
+        store.close()
+
+    def test_missing_ltp_does_not_zero_open_pnl(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        store.update_trade(trade.trade_id, open_pnl=12.0)
+        broker.last_prices.pop("AAA")
+        cycle._reset_quote_cache()
+        cycle.mark_to_market()
+        updated = store.get_trade(trade.trade_id)
+        assert updated is not None
+        self.assertAlmostEqual(updated.open_pnl, 12.0)
+        store.close()
+
+    def test_positions_failure_does_not_zero_open_pnl(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.live_orders_enabled = True
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        store.update_trade(trade.trade_id, open_pnl=12.0)
+        broker.positions_error = True
+        cycle._reset_quote_cache()
+        cycle.mark_to_market()
+        updated = store.get_trade(trade.trade_id)
+        assert updated is not None
+        self.assertAlmostEqual(updated.open_pnl, 12.0)
+        store.close()
+
+    def test_auto_trail_modify_failure_still_marks_to_market(self) -> None:
+        from trading_engine_types import PositionQuote
+
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.live_orders_enabled = True
+        cycle.tick()
+        trade = store.list_trades("2026-08-17")[0]
+        cycle.set_auto_trail(trade.trade_id, enabled=True)
+        broker.last_prices["AAA"] = 120
+        broker.modify_error = "kite_modify_rejected"
+        broker.position_quotes["AAA"] = PositionQuote(
+            quantity=trade.qty,
+            average_price=110.0,
+            last_price=120.0,
+            unrealised=80.0,
+            pnl=80.0,
+        )
+        cycle.tick()
+        updated = store.get_trade(trade.trade_id)
+        assert updated is not None
+        self.assertAlmostEqual(updated.open_pnl, 80.0)
+        store.close()
+
+
+class _Clock:
+    def __init__(self, t: float = 0.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class VwapGateCycleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.live = Path(self.tmp.name) / "live.db"
+        self.te = Path(self.tmp.name) / "te.db"
+        conn = sqlite3.connect(self.live)
+        conn.executescript(SCHEMA)
+        conn.close()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _cycle(self, broker: FakeBroker, *, require_vwap_accept: bool = True, monotonic_fn=None):
+        store = TradingEngineStore(self.te)
+        run_id = store.start_run(
+            session_date="2026-08-17",
+            live_orders_enabled=False,
+            pid=1,
+            require_vwap_accept=require_vwap_accept,
+        )
+        kwargs = {}
+        if monotonic_fn is not None:
+            kwargs["monotonic_fn"] = monotonic_fn
+        cycle = TradingEngineCycle(
+            store,
+            broker,
+            live_db=self.live,
+            session_date="2026-08-17",
+            started_at="2026-08-17T04:30:00+00:00",
+            run_id=run_id,
+            live_orders_enabled=False,
+            require_vwap_accept=require_vwap_accept,
+            **kwargs,
+        )
+        return store, cycle
+
+    def test_accept_at_first_ingest_places(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        self.assertEqual(store.list_trades("2026-08-17")[0].status, "protected_open")
+        self.assertFalse(cycle.has_pending_vwap())
+        self.assertEqual(broker.market_place_count, 1)
+        store.close()
+
+    def test_accept_arrives_at_250ms(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00", vwap=None)
+        _ensure_vwap_table(self.live)
+        clock = _Clock(0.0)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, monotonic_fn=clock)
+        cycle.tick()
+        self.assertEqual(store.list_trades("2026-08-17"), [])
+        self.assertTrue(cycle.has_pending_vwap())
+        _seed_vwap(self.live, "ok1")
+        clock.t = 0.25
+        cycle.poll_pending_vwap()
+        self.assertEqual(len(store.list_trades("2026-08-17")), 1)
+        self.assertEqual(store.list_trades("2026-08-17")[0].status, "protected_open")
+        self.assertFalse(cycle.has_pending_vwap())
+        store.close()
+
+    def test_accept_arrives_at_1_5s(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00", vwap=None)
+        _ensure_vwap_table(self.live)
+        clock = _Clock(0.0)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, monotonic_fn=clock)
+        cycle.tick()
+        _seed_vwap(self.live, "ok1")
+        clock.t = 1.5
+        cycle.poll_pending_vwap()
+        self.assertEqual(store.list_trades("2026-08-17")[0].status, "protected_open")
+        store.close()
+
+    def test_timeout_at_2s_skips_unavailable(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00", vwap=None)
+        _ensure_vwap_table(self.live)
+        clock = _Clock(0.0)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, monotonic_fn=clock)
+        cycle.tick()
+        clock.t = 2.0
+        cycle.poll_pending_vwap()
+        trades = store.list_trades("2026-08-17")
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0].status, "skipped")
+        self.assertEqual(trades[0].skip_reason, "vwap_unavailable")
+        self.assertFalse(cycle.has_pending_vwap())
+        self.assertEqual(broker.market_place_count, 0)
+        store.close()
+
+    def test_no_trade_row_while_pending(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00", vwap=None)
+        _ensure_vwap_table(self.live)
+        clock = _Clock(0.0)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, monotonic_fn=clock)
+        cycle.tick()
+        cycle.tick()
+        clock.t = 0.5
+        cycle.poll_pending_vwap()
+        self.assertEqual(store.list_trades("2026-08-17"), [])
+        self.assertTrue(cycle.has_pending_vwap())
+        store.close()
+
+    def test_no_late_order_after_timeout(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00", vwap=None)
+        _ensure_vwap_table(self.live)
+        clock = _Clock(0.0)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, monotonic_fn=clock)
+        cycle.tick()
+        clock.t = 2.0
+        cycle.poll_pending_vwap()
+        _seed_vwap(self.live, "ok1")
+        clock.t = 2.5
+        cycle.tick()
+        cycle.poll_pending_vwap()
+        trades = store.list_trades("2026-08-17")
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0].skip_reason, "vwap_unavailable")
+        self.assertEqual(broker.market_place_count, 0)
+        store.close()
+
+    def test_limited_reject_unavailable_skip(self) -> None:
+        for setup_id, klass, reason in (
+            ("lim", "LIMITED", "vwap_limited"),
+            ("rej", "REJECT", "vwap_reject"),
+            ("unav", "UNAVAILABLE", "vwap_unavailable"),
+        ):
+            with self.subTest(klass=klass):
+                live = Path(self.tmp.name) / f"{setup_id}.db"
+                te = Path(self.tmp.name) / f"{setup_id}-te.db"
+                conn = sqlite3.connect(live)
+                conn.executescript(SCHEMA)
+                conn.close()
+                _seed_live(live, setup_id, "2026-08-17T04:40:00+00:00", vwap=klass)
+                broker = FakeBroker(last_prices={"AAA": 110})
+                store = TradingEngineStore(te)
+                run_id = store.start_run(
+                    session_date="2026-08-17", live_orders_enabled=False, pid=1
+                )
+                cycle = TradingEngineCycle(
+                    store,
+                    broker,
+                    live_db=live,
+                    session_date="2026-08-17",
+                    started_at="2026-08-17T04:30:00+00:00",
+                    run_id=run_id,
+                    live_orders_enabled=False,
+                )
+                cycle.tick()
+                trades = store.list_trades("2026-08-17")
+                self.assertEqual(trades[0].status, "skipped")
+                self.assertEqual(trades[0].skip_reason, reason)
+                self.assertEqual(broker.market_place_count, 0)
+                store.close()
+
+    def test_malformed_and_missing_table_unavailable(self) -> None:
+        _seed_live(self.live, "bad", "2026-08-17T04:40:00+00:00", vwap="NOT_A_CLASS")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        self.assertEqual(store.list_trades("2026-08-17")[0].skip_reason, "vwap_unavailable")
+        store.close()
+
+        live2 = Path(self.tmp.name) / "notable.db"
+        te2 = Path(self.tmp.name) / "notable-te.db"
+        conn = sqlite3.connect(live2)
+        conn.executescript(SCHEMA)
+        conn.close()
+        _seed_live(live2, "miss", "2026-08-17T04:40:00+00:00", vwap=None)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store = TradingEngineStore(te2)
+        run_id = store.start_run(session_date="2026-08-17", live_orders_enabled=False, pid=1)
+        cycle = TradingEngineCycle(
+            store,
+            broker,
+            live_db=live2,
+            session_date="2026-08-17",
+            started_at="2026-08-17T04:30:00+00:00",
+            run_id=run_id,
+            live_orders_enabled=False,
+        )
+        cycle.tick()
+        self.assertEqual(store.list_trades("2026-08-17")[0].skip_reason, "vwap_unavailable")
+        store.close()
+
+    def test_wrong_identity_cannot_place(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00", vwap=None)
+        _seed_vwap(self.live, "ok1", session_date="2026-08-16")
+        clock = _Clock(0.0)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, monotonic_fn=clock)
+        cycle.tick()
+        self.assertEqual(store.list_trades("2026-08-17"), [])
+        clock.t = 2.0
+        cycle.poll_pending_vwap()
+        self.assertEqual(store.list_trades("2026-08-17")[0].skip_reason, "vwap_unavailable")
+        store.close()
+
+        live = Path(self.tmp.name) / "ver.db"
+        conn = sqlite3.connect(live)
+        conn.executescript(SCHEMA)
+        conn.close()
+        _seed_live(live, "ok2", "2026-08-17T04:40:00+00:00", vwap=None)
+        _seed_vwap(live, "ok2", continuation_rule_version="other")
+        _seed_vwap(live, "ok2", vwap_rule_version="vwap_qualifier_v2")
+        store = TradingEngineStore(Path(self.tmp.name) / "ver-te.db")
+        run_id = store.start_run(session_date="2026-08-17", live_orders_enabled=False, pid=1)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        clock = _Clock(0.0)
+        cycle = TradingEngineCycle(
+            store,
+            broker,
+            live_db=live,
+            session_date="2026-08-17",
+            started_at="2026-08-17T04:30:00+00:00",
+            run_id=run_id,
+            live_orders_enabled=False,
+            monotonic_fn=clock,
+        )
+        cycle.tick()
+        clock.t = 2.0
+        cycle.poll_pending_vwap()
+        self.assertEqual(store.list_trades("2026-08-17")[0].skip_reason, "vwap_unavailable")
+        store.close()
+
+    def test_flag_off_places_without_vwap(self) -> None:
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00", vwap=None)
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, require_vwap_accept=False)
+        cycle.tick()
+        self.assertEqual(store.list_trades("2026-08-17")[0].status, "protected_open")
+        snap = snapshot_dict(
+            store,
+            session_date="2026-08-17",
+            total_capital=300000,
+            leverage_factor=5,
+            live_orders_enabled=False,
+            running=True,
+            require_vwap_accept=False,
+        )
+        self.assertFalse(snap["require_vwap_accept"])
         store.close()
 
 

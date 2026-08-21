@@ -83,6 +83,7 @@ def trading_status(
         engine_running=running,
         can_confirm_live=True,
         accepting_triggers=bool(snap.get("accepting_triggers")),
+        require_vwap_accept=bool(snap.get("require_vwap_accept", True)),
     )
 
 

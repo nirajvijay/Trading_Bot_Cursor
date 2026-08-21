@@ -86,6 +86,22 @@ export interface SessionCoverage {
   continuation_failed: number
 }
 
+export interface VwapQualifierStatus {
+  state: 'bootstrapping' | 'ready' | 'repairing' | 'unavailable'
+  bootstrap_ready?: boolean
+  bootstrap_failed?: boolean
+  feed_stale?: boolean
+  repair_queued?: number
+  uncertain_bucket_count?: number
+  failed_token_count?: number
+  token_count?: number
+  accept?: number
+  limited?: number
+  reject?: number
+  unavailable?: number
+  reason?: string | null
+}
+
 export interface RunnerStatus {
   session_date?: string | null
   subscribed_tokens?: number | null
@@ -94,6 +110,7 @@ export interface RunnerStatus {
   updated_at?: string | null
   /** Server-derived from status file freshness; absent on older backends. */
   runner_state?: 'running' | 'stopped' | null
+  vwap_qualifier?: VwapQualifierStatus | null
 }
 
 export interface AuthStatusResponse {
@@ -347,6 +364,7 @@ export interface TradingEngineSnapshot {
   buying_power: number
   last_error?: string | null
   accepting_triggers?: boolean
+  require_vwap_accept?: boolean
   active: TradingTradeRow[]
   closed: TradingTradeRow[]
   skipped: TradingTradeRow[]

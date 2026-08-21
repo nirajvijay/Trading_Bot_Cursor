@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from continuation_features import price_to_ticks, ticks_to_price
 
 from trading_engine_broker import BrokerPort, FakeBroker, _is_stop_order
-from trading_engine_handoff import fetch_triggered_since
+from trading_engine_handoff import (
+    VWAP_RULE_VERSION,
+    VwapLookupError,
+    fetch_triggered_since,
+    fetch_vwap_classification,
+)
 from trading_engine_risk import (
     blocks_new_entries,
     capital_snapshot,
@@ -31,6 +38,7 @@ from trading_engine_types import (
     SKIPPED_STATES,
     UNPROTECTED_STATES,
     EngineState,
+    PositionQuote,
     TradeRecord,
     TriggerCandidate,
 )
@@ -40,6 +48,33 @@ ENTRY_REJECTED = {"REJECTED", "CANCELLED"}
 SL_WORKING = {"TRIGGER PENDING"}
 SL_FILLED = {"COMPLETE"}
 SL_CANCELLED = {"CANCELLED", "REJECTED"}
+
+VWAP_WAIT_SECONDS = 2.0
+VWAP_PENDING_RETRY_SECONDS = 0.25
+VWAP_SKIP_BY_CLASS = {
+    "LIMITED": "vwap_limited",
+    "REJECT": "vwap_reject",
+    "UNAVAILABLE": "vwap_unavailable",
+}
+
+
+@dataclass
+class _PendingVwap:
+    candidate: TriggerCandidate
+    first_seen_monotonic: float
+    vwap_rule_version: str
+
+
+def _vwap_pending_key(
+    candidate: TriggerCandidate,
+    vwap_rule_version: str = VWAP_RULE_VERSION,
+) -> tuple[str, str, str, str]:
+    return (
+        candidate.session_date,
+        candidate.setup_id,
+        candidate.continuation_rule_version,
+        vwap_rule_version,
+    )
 
 
 def _now() -> str:
@@ -86,6 +121,7 @@ def snapshot_dict(
     running: bool,
     last_error: Optional[str] = None,
     accepting_triggers: Optional[bool] = None,
+    require_vwap_accept: bool = True,
 ) -> dict[str, Any]:
     trades = store.list_trades(session_date)
     risk = risk_snapshot(trades)
@@ -156,6 +192,7 @@ def snapshot_dict(
         "remaining_capital": capital.remaining_capital,
         "buying_power": capital.buying_power,
         "last_error": last_error,
+        "require_vwap_accept": bool(require_vwap_accept),
         "active": active,
         "closed": closed,
         "skipped": skipped,
@@ -175,6 +212,9 @@ class TradingEngineCycle:
         live_orders_enabled: bool,
         leverage_factor: float = DEMO_LEVERAGE_FACTOR,
         status_file: Optional[Path] = None,
+        require_vwap_accept: bool = True,
+        monotonic_fn: Callable[[], float] = time.monotonic,
+        vwap_rule_version: str = VWAP_RULE_VERSION,
     ) -> None:
         self.store = store
         self.broker = broker
@@ -185,26 +225,121 @@ class TradingEngineCycle:
         self.live_orders_enabled = live_orders_enabled
         self.leverage_factor = leverage_factor
         self.status_file = status_file
+        self.require_vwap_accept = bool(require_vwap_accept)
+        self._monotonic = monotonic_fn
+        self._vwap_rule_version = vwap_rule_version
         self.consume_new_triggers = True
         self.last_error: Optional[str] = None
         self.running = True
+        self._ltp_cache: dict[str, Optional[float]] = {}
+        self._pos_cache: dict[str, Optional[PositionQuote]] = {}
+        self._pending_vwap: dict[tuple[str, str, str, str], _PendingVwap] = {}
 
     def total_capital(self) -> float:
         return self.store.get_total_capital(self.run_id)
 
+    def _reset_quote_cache(self) -> None:
+        self._ltp_cache = {}
+        self._pos_cache = {}
+        clearer = getattr(self.broker, "clear_quote_cache", None)
+        if callable(clearer):
+            clearer()
+
+    def _ltp(self, symbol: str) -> Optional[float]:
+        if symbol in self._ltp_cache:
+            return self._ltp_cache[symbol]
+        try:
+            mark = self.broker.ltp(symbol)
+        except Exception:  # noqa: BLE001
+            mark = None
+        self._ltp_cache[symbol] = mark
+        return mark
+
+    def _position_quote(self, symbol: str) -> Optional[PositionQuote]:
+        if symbol in self._pos_cache:
+            return self._pos_cache[symbol]
+        getter = getattr(self.broker, "position_quote", None)
+        if not callable(getter):
+            self._pos_cache[symbol] = None
+            return None
+        try:
+            quote = getter(symbol)
+        except Exception:  # noqa: BLE001
+            quote = None
+        self._pos_cache[symbol] = quote
+        return quote
+
+    def _last_price(self, symbol: str) -> Optional[float]:
+        quote = self._position_quote(symbol) if self.live_orders_enabled else None
+        if quote is not None and quote.last_price is not None:
+            return float(quote.last_price)
+        return self._ltp(symbol)
+
     def tick(self) -> None:
+        self._reset_quote_cache()
         if self.consume_new_triggers:
-            self.ingest_triggers()
-        self.drive_open()
-        self.process_commands()
-        self.apply_auto_trails()
-        self.mark_to_market()
+            try:
+                self.ingest_triggers()
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = str(exc)
+        try:
+            self.drive_open()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+        try:
+            self.process_commands()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+        try:
+            self.apply_auto_trails()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+        try:
+            self.mark_to_market()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
         self.write_status()
+
+    def has_pending_vwap(self) -> bool:
+        return bool(self._pending_vwap)
 
     def ingest_triggers(self) -> None:
         candidates = fetch_triggered_since(self.live_db, created_at_gte=self.started_at)
         for candidate in candidates:
             self._handle_candidate(candidate)
+
+    def poll_pending_vwap(self) -> None:
+        for pending in list(self._pending_vwap.values()):
+            existing = self.store.find_trade(
+                pending.candidate.setup_id, pending.candidate.continuation_rule_version
+            )
+            if existing is not None:
+                key = _vwap_pending_key(pending.candidate, pending.vwap_rule_version)
+                self._pending_vwap.pop(key, None)
+                continue
+            expired = (
+                self._monotonic() - pending.first_seen_monotonic
+            ) >= VWAP_WAIT_SECONDS
+            self._apply_vwap_gate(
+                pending.candidate,
+                first_seen=pending.first_seen_monotonic,
+                deadline_expired=expired,
+            )
+
+    def drain_pending_vwap(self) -> None:
+        for pending in list(self._pending_vwap.values()):
+            existing = self.store.find_trade(
+                pending.candidate.setup_id, pending.candidate.continuation_rule_version
+            )
+            if existing is not None:
+                key = _vwap_pending_key(pending.candidate, pending.vwap_rule_version)
+                self._pending_vwap.pop(key, None)
+                continue
+            self._apply_vwap_gate(
+                pending.candidate,
+                first_seen=pending.first_seen_monotonic,
+                deadline_expired=True,
+            )
 
     def _handle_candidate(self, candidate: TriggerCandidate) -> None:
         existing = self.store.find_trade(
@@ -212,6 +347,77 @@ class TradingEngineCycle:
         )
         if existing is not None:
             return
+        if not self.require_vwap_accept:
+            self._place_candidate(candidate)
+            return
+        key = _vwap_pending_key(candidate, self._vwap_rule_version)
+        if key in self._pending_vwap:
+            return
+        self._apply_vwap_gate(candidate, first_seen=self._monotonic())
+
+    def _apply_vwap_gate(
+        self,
+        candidate: TriggerCandidate,
+        *,
+        first_seen: float,
+        deadline_expired: bool = False,
+    ) -> None:
+        key = _vwap_pending_key(candidate, self._vwap_rule_version)
+        try:
+            classification = fetch_vwap_classification(
+                self.live_db,
+                session_date=candidate.session_date,
+                setup_id=candidate.setup_id,
+                continuation_rule_version=candidate.continuation_rule_version,
+                vwap_rule_version=self._vwap_rule_version,
+            )
+        except VwapLookupError:
+            self._pending_vwap.pop(key, None)
+            self._skip_vwap(candidate, "vwap_unavailable")
+            return
+        if classification is None:
+            if deadline_expired or (self._monotonic() - first_seen) >= VWAP_WAIT_SECONDS:
+                self._pending_vwap.pop(key, None)
+                self._skip_vwap(candidate, "vwap_unavailable")
+                return
+            self._pending_vwap.setdefault(
+                key,
+                _PendingVwap(
+                    candidate=candidate,
+                    first_seen_monotonic=first_seen,
+                    vwap_rule_version=self._vwap_rule_version,
+                ),
+            )
+            return
+        if classification == "ACCEPT":
+            self._pending_vwap.pop(key, None)
+            self._place_candidate(candidate)
+            return
+        reason = VWAP_SKIP_BY_CLASS.get(classification, "vwap_unavailable")
+        self._pending_vwap.pop(key, None)
+        self._skip_vwap(candidate, reason)
+
+    def _skip_vwap(self, candidate: TriggerCandidate, reason: str) -> None:
+        trade = self.store.insert_candidate(
+            setup_id=candidate.setup_id,
+            continuation_rule_version=candidate.continuation_rule_version,
+            session_date=candidate.session_date,
+            symbol=candidate.tradingsymbol,
+            instrument_token=candidate.instrument_token,
+            direction=candidate.direction,
+            entry_estimate=candidate.trigger_price,
+            tick_size=candidate.tick_size,
+            trigger_time=candidate.trigger_exchange_ts,
+        )
+        if trade is None:
+            return
+        self.store.append_event(
+            trade.trade_id, "candidate", payload={"setup_id": candidate.setup_id}
+        )
+        self.store.update_trade(trade.trade_id, status="skipped", skip_reason=reason)
+        self.store.append_event(trade.trade_id, "skipped", payload={"reason": reason})
+
+    def _place_candidate(self, candidate: TriggerCandidate) -> None:
         trade = self.store.insert_candidate(
             setup_id=candidate.setup_id,
             continuation_rule_version=candidate.continuation_rule_version,
@@ -423,6 +629,8 @@ class TradingEngineCycle:
         if trade.entry_fill is None or trade.qty <= 0:
             return False
         net = self.broker.net_position_qty(trade.symbol)
+        if net is None:
+            return False
         if abs(net) not in {0, trade.qty} and net != 0:
             self.store.append_event(
                 trade.trade_id,
@@ -457,7 +665,7 @@ class TradingEngineCycle:
         ]
         if fills:
             return float(fills[-1].average_price or 0)
-        mark = self.broker.ltp(trade.symbol)
+        mark = self._ltp(trade.symbol)
         if mark is not None:
             return float(mark)
         return float(trade.current_stop or trade.entry_fill or trade.entry_estimate)
@@ -484,42 +692,31 @@ class TradingEngineCycle:
             )
             return
         if status in SL_WORKING and polled.trigger_price is not None:
-            aligned = _align_stop(float(polled.trigger_price), trade.tick_size)
-            if trade.current_stop is None or abs(aligned - trade.current_stop) > 1e-9:
-                old = trade.current_stop
+            try:
+                aligned = _align_stop(float(polled.trigger_price), trade.tick_size)
+            except ValueError:
+                return
+            if trade.current_stop is None:
                 self.store.update_trade(trade.trade_id, current_stop=aligned)
-                self.store.append_event(
-                    trade.trade_id,
-                    "stop_adopted",
-                    old_stop=old,
-                    new_stop=aligned,
-                    payload={"source": "broker"},
-                )
-
-    def _close_trade(self, trade: TradeRecord, exit_fill: float, reason: str) -> None:
-        if trade.status == "closed":
-            return
-        entry = trade.entry_fill if trade.entry_fill is not None else trade.entry_estimate
-        pnl = realised_pnl(
-            direction=trade.direction, qty=trade.qty, entry_fill=entry, exit_fill=exit_fill
-        )
-        loss = abs(pnl) if pnl < 0 else 0.0
-        self.store.update_trade(
-            trade.trade_id,
-            status="closed",
-            exit_fill=exit_fill,
-            close_reason=reason,
-            close_time=_now(),
-            realised_pnl=pnl,
-            open_pnl=0.0,
-            closed_loss_contribution=loss,
-            margin_blocked=0.0,
-        )
-        self.store.append_event(
-            trade.trade_id,
-            "sl_filled" if reason == "sl_hit" else "closed",
-            payload={"exit": exit_fill, "pnl": pnl, "reason": reason},
-        )
+                return
+            if abs(aligned - trade.current_stop) <= 1e-9:
+                return
+            tighter = trail_is_tighten_only(
+                direction=trade.direction,
+                current_stop=trade.current_stop,
+                new_stop=aligned,
+            )
+            if not tighter:
+                return
+            old = trade.current_stop
+            self.store.update_trade(trade.trade_id, current_stop=aligned)
+            self.store.append_event(
+                trade.trade_id,
+                "stop_adopted",
+                old_stop=old,
+                new_stop=aligned,
+                payload={"source": "broker"},
+            )
 
     def process_commands(self) -> None:
         for command in self.store.pending_commands():
@@ -530,6 +727,7 @@ class TradingEngineCycle:
                 self.consume_new_triggers = False
                 self.store.set_consume_triggers(self.run_id, False)
                 self.store.mark_command_processed(command.command_id)
+                self.drain_pending_vwap()
                 continue
             if command.kind == "trail_stop" and command.trade_id:
                 payload = json.loads(command.payload_json or "{}")
@@ -586,7 +784,7 @@ class TradingEngineCycle:
             new_stop=aligned,
         ):
             raise ValueError("widen_blocked")
-        mark = last_price if last_price is not None else self.broker.ltp(trade.symbol)
+        mark = last_price if last_price is not None else self._last_price(trade.symbol)
         if trail_crosses_last_price(
             direction=trade.direction, new_stop=aligned, last_price=mark
         ):
@@ -599,15 +797,24 @@ class TradingEngineCycle:
             old_stop=old,
             new_stop=aligned,
         )
-        self.broker.modify_slm(
-            trade.sl_order_id,
-            aligned,
-            tick_size=trade.tick_size,
-            transaction_type=_stop_side(trade.direction),
-        )
+        try:
+            self.broker.modify_slm(
+                trade.sl_order_id,
+                aligned,
+                tick_size=trade.tick_size,
+                transaction_type=_stop_side(trade.direction),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.store.append_event(
+                trade.trade_id,
+                "error",
+                actor=actor,
+                payload={"reason": f"modify_failed:{exc}"},
+            )
+            raise ValueError(f"modify_failed:{exc}") from exc
         fields: dict[str, Any] = {"current_stop": aligned}
         if actor == "user" and trade.auto_trail_enabled:
-            mark_for_trail = mark if mark is not None else self.broker.ltp(trade.symbol)
+            mark_for_trail = mark if mark is not None else self._last_price(trade.symbol)
             if mark_for_trail is not None:
                 fields["auto_trail_ticks"] = max(
                     1,
@@ -639,22 +846,21 @@ class TradingEngineCycle:
             raise ValueError("trail_only_protected_open")
         if trade.current_stop is None:
             raise ValueError("missing_stop")
-        mark = self.broker.ltp(trade.symbol)
-        ticks = 1
-        extreme = mark
-        if mark is not None:
-            ticks = max(
-                1,
-                abs(
-                    price_to_ticks(float(mark), trade.tick_size)
-                    - price_to_ticks(trade.current_stop, trade.tick_size)
-                ),
-            )
+        mark = self._last_price(trade.symbol)
+        if mark is None:
+            raise ValueError("ltp_unavailable")
+        ticks = max(
+            1,
+            abs(
+                price_to_ticks(float(mark), trade.tick_size)
+                - price_to_ticks(trade.current_stop, trade.tick_size)
+            ),
+        )
         updated = self.store.update_trade(
             trade_id,
             auto_trail_enabled=1,
             auto_trail_ticks=ticks,
-            auto_trail_extreme=extreme,
+            auto_trail_extreme=float(mark),
         )
         self.store.append_event(
             trade_id,
@@ -670,25 +876,26 @@ class TradingEngineCycle:
                 continue
             if trade.current_stop is None or not trade.auto_trail_ticks:
                 continue
-            mark = self.broker.ltp(trade.symbol)
+            mark = self._last_price(trade.symbol)
             if mark is None:
                 continue
             tick_size = trade.tick_size
+            gap = int(trade.auto_trail_ticks)
             if trade.direction == "UP":
-                extreme = mark if trade.auto_trail_extreme is None else max(trade.auto_trail_extreme, mark)
-                proposed = ticks_to_price(
-                    price_to_ticks(extreme, tick_size) - int(trade.auto_trail_ticks),
-                    tick_size,
-                )
+                proposed = ticks_to_price(price_to_ticks(mark, tick_size) - gap, tick_size)
             else:
-                extreme = mark if trade.auto_trail_extreme is None else min(trade.auto_trail_extreme, mark)
-                proposed = ticks_to_price(
-                    price_to_ticks(extreme, tick_size) + int(trade.auto_trail_ticks),
-                    tick_size,
-                )
-            if trade.auto_trail_extreme is None or abs(extreme - trade.auto_trail_extreme) > 1e-9:
-                self.store.update_trade(trade.trade_id, auto_trail_extreme=extreme)
+                proposed = ticks_to_price(price_to_ticks(mark, tick_size) + gap, tick_size)
             aligned = _align_stop(proposed, tick_size)
+            if trail_crosses_last_price(
+                direction=trade.direction, new_stop=aligned, last_price=mark
+            ):
+                continue
+            if not trail_is_tighten_only(
+                direction=trade.direction,
+                current_stop=trade.current_stop,
+                new_stop=aligned,
+            ):
+                continue
             if abs(aligned - trade.current_stop) < 1e-9:
                 continue
             try:
@@ -700,12 +907,23 @@ class TradingEngineCycle:
                 )
             except ValueError:
                 continue
+            except Exception as exc:  # noqa: BLE001
+                self.store.append_event(
+                    trade.trade_id,
+                    "error",
+                    payload={"reason": f"auto_trail:{exc}"},
+                )
 
     def mark_to_market(self) -> None:
         for trade in self.store.list_trades(self.session_date):
             if trade.status not in ACTIVE_STATES:
                 continue
-            mark = self.broker.ltp(trade.symbol)
+            if self.live_orders_enabled:
+                self._mark_live_trade(trade)
+                continue
+            mark = self._ltp(trade.symbol)
+            if mark is None:
+                continue
             pnl = open_pnl(
                 direction=trade.direction,
                 qty=trade.qty,
@@ -714,6 +932,71 @@ class TradingEngineCycle:
             )
             if abs(pnl - trade.open_pnl) > 1e-9:
                 self.store.update_trade(trade.trade_id, open_pnl=pnl)
+
+    def _mark_live_trade(self, trade: TradeRecord) -> None:
+        quote = self._position_quote(trade.symbol)
+        if quote is None:
+            return
+        pnl = quote.unrealised
+        if pnl is None:
+            pnl = quote.pnl
+        if pnl is None and quote.average_price is not None and quote.last_price is not None:
+            pnl = float(quote.quantity) * (float(quote.last_price) - float(quote.average_price))
+        if pnl is None:
+            return
+        fields: dict[str, Any] = {"open_pnl": float(pnl)}
+        if quote.average_price is not None and (
+            trade.entry_fill is None or abs(float(quote.average_price) - float(trade.entry_fill)) > 1e-9
+        ):
+            fields["entry_fill"] = float(quote.average_price)
+        if quote.quantity != 0 and abs(int(quote.quantity)) != int(trade.qty):
+            self.store.append_event(
+                trade.trade_id,
+                "qty_mismatch",
+                payload={"net": quote.quantity, "engine_qty": trade.qty},
+            )
+        current = self.store.get_trade(trade.trade_id)
+        if current is None:
+            return
+        if abs(float(pnl) - current.open_pnl) > 1e-9 or "entry_fill" in fields:
+            self.store.update_trade(trade.trade_id, **fields)
+
+    def _close_trade(self, trade: TradeRecord, exit_fill: float, reason: str) -> None:
+        if trade.status == "closed":
+            return
+        entry = trade.entry_fill if trade.entry_fill is not None else trade.entry_estimate
+        pnl = realised_pnl(
+            direction=trade.direction, qty=trade.qty, entry_fill=entry, exit_fill=exit_fill
+        )
+        if reason in {"sl_hit", "external_exit"} and self.live_orders_enabled:
+            quote = self._position_quote(trade.symbol)
+            if quote is not None and quote.quantity == 0 and quote.realised is not None:
+                others = [
+                    t
+                    for t in self.store.list_trades(self.session_date)
+                    if t.symbol == trade.symbol and t.status == "closed"
+                ]
+                if not others:
+                    pnl = float(quote.realised)
+                    if quote.average_price is not None:
+                        entry = float(quote.average_price)
+        loss = abs(pnl) if pnl < 0 else 0.0
+        self.store.update_trade(
+            trade.trade_id,
+            status="closed",
+            exit_fill=exit_fill,
+            close_reason=reason,
+            close_time=_now(),
+            realised_pnl=pnl,
+            open_pnl=0.0,
+            closed_loss_contribution=loss,
+            margin_blocked=0.0,
+        )
+        self.store.append_event(
+            trade.trade_id,
+            "sl_filled" if reason == "sl_hit" else "closed",
+            payload={"exit": exit_fill, "pnl": pnl, "reason": reason},
+        )
 
     def write_status(self) -> None:
         if self.status_file is None:
@@ -727,6 +1010,7 @@ class TradingEngineCycle:
             running=self.running,
             last_error=self.last_error,
             accepting_triggers=bool(self.running and self.consume_new_triggers),
+            require_vwap_accept=self.require_vwap_accept,
         )
         snap["updated_at"] = _now()
         snap["running"] = self.running

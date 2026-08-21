@@ -158,6 +158,16 @@ class MarginQuote:
 
 
 @dataclass
+class PositionQuote:
+    quantity: int
+    average_price: Optional[float] = None
+    last_price: Optional[float] = None
+    pnl: Optional[float] = None
+    unrealised: Optional[float] = None
+    realised: Optional[float] = None
+
+
+@dataclass
 class EngineCommand:
     command_id: int
     kind: str

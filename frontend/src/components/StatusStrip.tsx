@@ -1,7 +1,9 @@
 import type { ObservationReadiness, RunnerStatus, SessionCoverage } from '../api/types'
 import { resolveFeedStatus, type RunnerPresence } from '../lib/feedStatus'
+import { resolveVwapQualifierView } from '../lib/vwapQualifierStatus'
 import { formatTimeIst } from '../lib/format'
 import { FeedStatusBadge } from './FeedStatusBadge'
+import { VwapQualifierBadge } from './VwapQualifierBadge'
 
 interface Props {
   coverage: SessionCoverage | null
@@ -28,11 +30,13 @@ export function StatusStrip({
   const canStart = observationReadiness?.can_start ?? false
   const disabledReason = observationReadiness?.reason ?? 'Loading readiness…'
   const feed = resolveFeedStatus(status, runnerPresence)
+  const vwap = resolveVwapQualifierView(status, runnerPresence)
 
   return (
     <div className="bg-surface-container-low px-4 py-2 flex justify-between items-center border-b border-outline-variant shrink-0 gap-4 flex-wrap">
       <div className="flex gap-4 flex-wrap items-center text-sm">
         <FeedStatusBadge feed={feed} />
+        <VwapQualifierBadge view={vwap} />
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
             <span className="label-caps text-on-surface-variant">Successful:</span>

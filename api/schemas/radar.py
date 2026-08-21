@@ -46,6 +46,22 @@ class SessionCoverage(BaseModel):
     continuation_failed: int = 0
 
 
+class VwapQualifierStatus(BaseModel):
+    state: Literal["bootstrapping", "ready", "repairing", "unavailable"]
+    bootstrap_ready: bool = False
+    bootstrap_failed: bool = False
+    feed_stale: bool = False
+    repair_queued: int = 0
+    uncertain_bucket_count: int = 0
+    failed_token_count: int = 0
+    token_count: int = 0
+    accept: int = 0
+    limited: int = 0
+    reject: int = 0
+    unavailable: int = 0
+    reason: Optional[str] = None
+
+
 class RunnerStatus(BaseModel):
     session_date: Optional[str] = None
     subscribed_tokens: Optional[int] = None
@@ -53,6 +69,7 @@ class RunnerStatus(BaseModel):
     last_tick_time: Optional[str] = None
     updated_at: Optional[str] = None
     runner_state: RunnerState = "stopped"
+    vwap_qualifier: Optional[VwapQualifierStatus] = None
 
 
 class HealthResponse(BaseModel):

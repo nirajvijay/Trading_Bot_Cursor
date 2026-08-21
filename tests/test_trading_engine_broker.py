@@ -137,6 +137,37 @@ class KiteBrokerTests(unittest.TestCase):
         self.assertEqual(kwargs["trigger_price"], 99)
         self.assertEqual(kwargs["price"], 99)
 
+    def test_position_quote_prefers_net_mis_pnl(self) -> None:
+        kite = MagicMock()
+        kite.positions.return_value = {
+            "net": [
+                {
+                    "tradingsymbol": "AAA",
+                    "product": "MIS",
+                    "quantity": 10,
+                    "average_price": 100,
+                    "last_price": 105,
+                    "pnl": 50,
+                    "unrealised": 50,
+                    "realised": 0,
+                }
+            ],
+            "day": [],
+        }
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        quote = broker.position_quote("AAA")
+        assert quote is not None
+        self.assertEqual(quote.quantity, 10)
+        self.assertEqual(quote.unrealised, 50)
+        self.assertEqual(broker.net_position_qty("AAA"), 10)
+
+    def test_position_quote_failure_is_unknown_not_zero(self) -> None:
+        kite = MagicMock()
+        kite.positions.side_effect = RuntimeError("down")
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        self.assertIsNone(broker.position_quote("AAA"))
+        self.assertIsNone(broker.net_position_qty("AAA"))
+
 
 if __name__ == "__main__":
     unittest.main()

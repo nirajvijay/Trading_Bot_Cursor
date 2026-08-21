@@ -8,6 +8,8 @@ from typing import List, Optional
 
 from trading_engine_types import TriggerCandidate
 
+VWAP_RULE_VERSION = "vwap_qualifier_v1"
+
 TRIGGER_SQL = """
 SELECT
     d.setup_id,
@@ -32,6 +34,19 @@ WHERE d.decision_type = 'TRIGGERED'
   AND d.created_at >= ?
 ORDER BY d.created_at ASC
 """
+
+VWAP_CLASS_SQL = """
+SELECT classification
+FROM live_vwap_qualifications
+WHERE session_date = ?
+  AND setup_id = ?
+  AND continuation_rule_version = ?
+  AND vwap_rule_version = ?
+"""
+
+
+class VwapLookupError(Exception):
+    """Hard SQLite failure reading live_vwap_qualifications."""
 
 
 def fetch_triggered_since(
@@ -85,3 +100,35 @@ def fetch_triggered_since(
             )
         )
     return out
+
+
+def fetch_vwap_classification(
+    live_db: Path,
+    *,
+    session_date: str,
+    setup_id: str,
+    continuation_rule_version: str,
+    vwap_rule_version: str = VWAP_RULE_VERSION,
+) -> Optional[str]:
+    """Return classification for the four-field identity, or None if absent.
+
+    Raises VwapLookupError on missing table or SQLite read errors.
+    """
+    if not live_db.exists():
+        raise VwapLookupError("live db missing")
+    conn = sqlite3.connect(f"file:{live_db}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            VWAP_CLASS_SQL,
+            (session_date, setup_id, continuation_rule_version, vwap_rule_version),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise VwapLookupError("vwap qualification lookup failed: %s" % exc) from exc
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    value = row[0]
+    if value is None:
+        return None
+    return str(value)

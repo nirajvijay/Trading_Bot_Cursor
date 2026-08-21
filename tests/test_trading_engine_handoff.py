@@ -7,7 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from trading_engine_handoff import fetch_triggered_since
+from trading_engine_handoff import (
+    VWAP_RULE_VERSION,
+    VwapLookupError,
+    fetch_triggered_since,
+    fetch_vwap_classification,
+)
 from trading_engine_risk import size_new_trade
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, TriggerCandidate
@@ -155,6 +160,97 @@ class HandoffTests(unittest.TestCase):
         )
         decision = size_new_trade(cand, [], total_capital=DEFAULT_TOTAL_CAPITAL)
         self.assertEqual(decision.reason, "missing_stop")
+
+    def test_vwap_classification_four_field_identity(self) -> None:
+        conn = sqlite3.connect(self.live)
+        conn.execute(
+            """
+            CREATE TABLE live_vwap_qualifications (
+                setup_id TEXT NOT NULL,
+                continuation_rule_version TEXT NOT NULL,
+                vwap_rule_version TEXT NOT NULL,
+                instrument_token INTEGER NOT NULL,
+                tradingsymbol TEXT NOT NULL,
+                session_date TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                trigger_price REAL NOT NULL,
+                last_price REAL NOT NULL,
+                trigger_tick_sequence INTEGER NOT NULL,
+                trigger_exchange_ts TEXT NOT NULL,
+                vwap REAL,
+                gap REAL,
+                classification TEXT NOT NULL,
+                quality_ok INTEGER NOT NULL,
+                quality_reason TEXT,
+                vwap_provenance TEXT,
+                bootstrap_cutoff_exchange_ts TEXT,
+                completed_5m_count INTEGER NOT NULL,
+                in_progress_bucket_start TEXT,
+                in_progress_volume INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (session_date, setup_id, continuation_rule_version, vwap_rule_version)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO live_vwap_qualifications (
+                setup_id, continuation_rule_version, vwap_rule_version,
+                instrument_token, tradingsymbol, session_date, direction,
+                trigger_price, last_price, trigger_tick_sequence, trigger_exchange_ts,
+                vwap, gap, classification, quality_ok, quality_reason, vwap_provenance,
+                bootstrap_cutoff_exchange_ts, completed_5m_count, in_progress_bucket_start,
+                in_progress_volume, payload_json, created_at
+            ) VALUES ('fresh', 'v1', ?, 1, 'AAA', '2026-08-17', 'UP',
+                      110, 110, 1, 't', 110, 0.001, 'ACCEPT', 1, NULL, 'live',
+                      NULL, 1, NULL, 0, '{}', 'c')
+            """,
+            (VWAP_RULE_VERSION,),
+        )
+        conn.commit()
+        conn.close()
+        hit = fetch_vwap_classification(
+            self.live,
+            session_date="2026-08-17",
+            setup_id="fresh",
+            continuation_rule_version="v1",
+        )
+        self.assertEqual(hit, "ACCEPT")
+        self.assertIsNone(
+            fetch_vwap_classification(
+                self.live,
+                session_date="2026-08-16",
+                setup_id="fresh",
+                continuation_rule_version="v1",
+            )
+        )
+        self.assertIsNone(
+            fetch_vwap_classification(
+                self.live,
+                session_date="2026-08-17",
+                setup_id="fresh",
+                continuation_rule_version="other",
+            )
+        )
+        self.assertIsNone(
+            fetch_vwap_classification(
+                self.live,
+                session_date="2026-08-17",
+                setup_id="fresh",
+                continuation_rule_version="v1",
+                vwap_rule_version="vwap_qualifier_v2",
+            )
+        )
+
+    def test_vwap_missing_table_is_hard_error(self) -> None:
+        with self.assertRaises(VwapLookupError):
+            fetch_vwap_classification(
+                self.live,
+                session_date="2026-08-17",
+                setup_id="fresh",
+                continuation_rule_version="v1",
+            )
 
 
 if __name__ == "__main__":

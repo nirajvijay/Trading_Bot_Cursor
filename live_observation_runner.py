@@ -48,6 +48,8 @@ from pullback_indicators import Ema20State
 from spike_types import IntradaySpikeEvent
 from tick_event import IST
 from tick_receiver import TickReceiver
+from vwap_qualifier_engine import VwapQualifierEngine
+from vwap_qualifier_writer import VwapQualifierWriter
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST)
@@ -448,6 +450,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     pullback_writer = IntradayPullbackWriter(db_path=args.db)
     continuation_writer = IntradayContinuationWriter(db_path=args.db)
+    vwap_writer = VwapQualifierWriter(db_path=args.db)
+    vwap_engine = VwapQualifierEngine(
+        tokens=tokens,
+        token_to_symbol=token_to_symbol,
+        session_date=session_date,
+        writer=vwap_writer,
+        manual_start=True,
+        start_workers=False,
+    )
 
     try:
         tick_sizes = preflight_tick_sizes(args.instruments_db, tokens)
@@ -504,6 +515,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             ),
             flush=True,
         )
+        try:
+            qualification = vwap_engine.on_raw_trigger(event)
+        except Exception:  # noqa: BLE001
+            logger.exception("vwap qualifier on_raw_trigger failed")
+            return
+        if qualification is not None:
+            print(
+                "VWAP_QUALIFIED %s setup=%s class=%s gap=%s reason=%s"
+                % (
+                    event.tradingsymbol,
+                    event.setup_id,
+                    qualification.classification,
+                    "%.4f" % qualification.gap if qualification.gap is not None else "-",
+                    qualification.quality_reason or "-",
+                ),
+                flush=True,
+            )
 
     def on_rejected(event: ContinuationRejectedEvent) -> None:
         state.continuation_rejected += 1
@@ -596,23 +624,32 @@ def main(argv: Optional[list[str]] = None) -> int:
         five_minute_builder=five_builder,
         five_minute_writer=five_writer,
         five_minute_consumers=[track_5m],
-        closeables=[spike_writer, pullback_writer, continuation_writer],
+        closeables=[spike_writer, pullback_writer, continuation_writer, vwap_engine, vwap_writer],
     )
     pipeline = LiveCandlePipeline(
         coordinator=coordinator,
-        tick_consumers=[continuation.on_tick],
+        tick_consumers=[vwap_engine.on_tick, continuation.on_tick],
     )
+
+    def on_feed_ready(restored_at) -> None:
+        pipeline.builder.mark_feed_restored(restored_at)
+        vwap_engine.mark_feed_restored(restored_at)
+
+    def on_feed_interrupted(interrupted_at) -> None:
+        pipeline.builder.mark_feed_interrupted(interrupted_at)
+        vwap_engine.mark_feed_interrupted(interrupted_at)
 
     receiver = TickReceiver(
         on_tick=pipeline.on_tick,
-        on_feed_ready=pipeline.builder.mark_feed_restored,
-        on_feed_interrupted=pipeline.builder.mark_feed_interrupted,
+        on_feed_ready=on_feed_ready,
+        on_feed_interrupted=on_feed_interrupted,
         instruments_db=args.instruments_db,
         queue_maxsize=args.queue_maxsize,
         stale_seconds=args.stale_seconds,
         health_interval=args.health_interval,
     )
     pipeline.attach_receiver(receiver)
+    vwap_engine.start()
 
     stop_reason = {"value": "unknown"}
 
@@ -649,10 +686,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             sm = detector.metrics.snapshot()
             pm = engine.metrics.snapshot()
             cm = continuation.metrics.snapshot()
+            vm = vwap_engine.metrics
             print(
                 "METRICS 1m_tokens=%d 5m_tokens=%d spikes_acc=%d pb_recv=%d "
                 "setups=%d ready_ema=%d ready_shallow=%d inv=%d exp=%d "
                 "cont_trig=%d cont_rej=%d "
+                "vwap_acc=%d vwap_lim=%d vwap_rej=%d vwap_unav=%d "
                 "writer_fail=%d strat_fail=%d degraded=%d 5m_incomplete=%d"
                 % (
                     len(state.tokens_with_1m),
@@ -668,6 +707,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     cm.rejected_volume
                     + cm.rejected_insufficient_history
                     + cm.rejected_unreliable_volume,
+                    vm.accept,
+                    vm.limited,
+                    vm.reject,
+                    vm.unavailable,
                     pm.writer_failure + sm.writer_failures + cm.writer_failures,
                     pm.strategy_failure + cm.strategy_failure,
                     pm.subsystem_degraded + cm.degraded,
@@ -683,12 +726,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                     feed_status = "STALE"
                 else:
                     feed_status = "STABLE"
+                vwap_payload = None
+                try:
+                    vwap_payload = vwap_engine.status_snapshot()
+                except Exception:  # noqa: BLE001
+                    logger.exception("vwap qualifier status snapshot failed")
                 write_runner_status(
                     args.status_file,
                     session_date=session_date,
                     subscribed_tokens=len(tokens),
                     feed_status=feed_status,
                     last_tick_time=last_tick.isoformat() if last_tick else None,
+                    vwap_qualifier=vwap_payload,
                 )
 
     metrics_thread = threading.Thread(
@@ -812,6 +861,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             cm.disarmed_pullback_structural,
             cm.audit_sync_failures,
             cm.degraded,
+        ),
+        flush=True,
+    )
+    vm = vwap_engine.metrics
+    print("=== VWAP qualifier metrics ===", flush=True)
+    print(
+        "  classified=%d accept=%d limited=%d reject=%d unavailable=%d "
+        "reconstruct_ok=%d reconstruct_fail=%d overflow=%d"
+        % (
+            vm.classified,
+            vm.accept,
+            vm.limited,
+            vm.reject,
+            vm.unavailable,
+            vm.reconstruct_ok,
+            vm.reconstruct_fail,
+            vm.buffer_overflows,
         ),
         flush=True,
     )

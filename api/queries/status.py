@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from api.schemas.radar import RunnerStatus
+from pydantic import ValidationError
+
+from api.schemas.radar import RunnerStatus, VwapQualifierStatus
 
 IST = ZoneInfo("Asia/Kolkata")
 RUNNER_STALE_SECONDS = 30
@@ -59,6 +61,13 @@ def read_runner_status(
             return RunnerStatus(runner_state="stopped")
 
     state = _runner_state_from_payload(data, expected_session_date=expected_session_date)
+    vwap = None
+    raw_vwap = data.get("vwap_qualifier")
+    if isinstance(raw_vwap, dict):
+        try:
+            vwap = VwapQualifierStatus.model_validate(raw_vwap)
+        except ValidationError:
+            vwap = None
     return RunnerStatus(
         session_date=data.get("session_date"),
         subscribed_tokens=data.get("subscribed_tokens"),
@@ -66,4 +75,5 @@ def read_runner_status(
         last_tick_time=data.get("last_tick_time"),
         updated_at=data.get("updated_at"),
         runner_state=state,
+        vwap_qualifier=vwap,
     )

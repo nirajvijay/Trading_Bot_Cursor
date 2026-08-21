@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from api import config
 from api.services.observation_runner import seconds_until_session_close
 from trading_engine_broker import FakeBroker, KiteBroker
-from trading_engine_cycle import TradingEngineCycle
+from trading_engine_cycle import TradingEngineCycle, VWAP_PENDING_RETRY_SECONDS
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
 
@@ -61,6 +61,27 @@ def _stop_requested(stop_file: Optional[Path]) -> bool:
     return bool(stop_file and stop_file.exists())
 
 
+def _require_vwap_accept_from_env() -> bool:
+    raw = os.environ.get("TRADING_ENGINE_REQUIRE_VWAP_ACCEPT", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def next_loop_sleep_seconds(
+    *,
+    has_pending: bool,
+    poll_seconds: float,
+    elapsed_since_full: float,
+    pending_retry: float = VWAP_PENDING_RETRY_SECONDS,
+) -> float:
+    poll_seconds = max(0.2, float(poll_seconds))
+    until_full = max(0.0, poll_seconds - elapsed_since_full)
+    if has_pending:
+        if until_full <= 0.0:
+            return 0.0
+        return min(pending_retry, until_full)
+    return until_full
+
+
 def _make_broker(live: bool, total_capital: float):
     if not live:
         return FakeBroker(
@@ -88,6 +109,7 @@ def run(args: argparse.Namespace) -> int:
         except OSError:
             pass
 
+    require_vwap = _require_vwap_accept_from_env()
     store = TradingEngineStore(trading_db)
     started_at = _utc_now()
     run_id = store.start_run(
@@ -95,6 +117,7 @@ def run(args: argparse.Namespace) -> int:
         live_orders_enabled=live,
         pid=os.getpid(),
         total_capital=float(args.total_capital),
+        require_vwap_accept=require_vwap,
     )
     broker = _make_broker(live, float(args.total_capital))
     cycle = TradingEngineCycle(
@@ -107,6 +130,7 @@ def run(args: argparse.Namespace) -> int:
         live_orders_enabled=live,
         leverage_factor=DEMO_LEVERAGE_FACTOR,
         status_file=status_file,
+        require_vwap_accept=require_vwap,
     )
 
     signal.signal(signal.SIGINT, _request_stop)
@@ -116,19 +140,35 @@ def run(args: argparse.Namespace) -> int:
     if args.until_session_close:
         deadline = time.monotonic() + seconds_until_session_close()
 
+    poll_seconds = max(0.2, float(args.poll_seconds))
+    last_full: Optional[float] = None
     try:
         while not _stop_requested(stop_file):
-            if deadline is not None and time.monotonic() >= deadline:
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
                 break
+            do_full = last_full is None or (now - last_full) >= poll_seconds
             try:
-                cycle.tick()
+                if do_full:
+                    cycle.tick()
+                    last_full = time.monotonic()
+                elif cycle.has_pending_vwap():
+                    cycle.poll_pending_vwap()
             except Exception as exc:  # noqa: BLE001
                 cycle.last_error = str(exc)
                 store.set_run_status(run_id, "error", last_error=str(exc))
                 cycle.write_status()
                 raise
-            time.sleep(max(0.2, float(args.poll_seconds)))
+            elapsed = time.monotonic() - (last_full or time.monotonic())
+            sleep_for = next_loop_sleep_seconds(
+                has_pending=cycle.has_pending_vwap(),
+                poll_seconds=poll_seconds,
+                elapsed_since_full=elapsed,
+            )
+            if sleep_for > 0:
+                time.sleep(sleep_for)
     finally:
+        cycle.drain_pending_vwap()
         cycle.running = False
         cycle.consume_new_triggers = False
         store.set_consume_triggers(run_id, False)

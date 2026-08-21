@@ -57,6 +57,7 @@ class TradingStatusResponse(BaseModel):
     engine_running: bool
     can_confirm_live: bool
     accepting_triggers: bool = False
+    require_vwap_accept: bool = True
 
 
 class TradingSnapshotResponse(BaseModel):
@@ -79,3 +80,4 @@ class TradingSnapshotResponse(BaseModel):
     active: List[dict[str, Any]]
     closed: List[dict[str, Any]]
     skipped: List[dict[str, Any]]
+    require_vwap_accept: bool = True

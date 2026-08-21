@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from continuation_features import price_to_ticks, ticks_to_price
 
-from trading_engine_types import STOP_ORDER_TYPES, BrokerOrder, MarginQuote
+from trading_engine_types import STOP_ORDER_TYPES, BrokerOrder, MarginQuote, PositionQuote
 
 LIVE_ORDERS_DISABLED_REASON = "live_orders_disabled"
 SL_CANCELLED = {"CANCELLED", "REJECTED"}
@@ -55,7 +55,11 @@ class BrokerPort(Protocol):
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]: ...
 
-    def net_position_qty(self, tradingsymbol: str) -> int: ...
+    def net_position_qty(self, tradingsymbol: str) -> Optional[int]: ...
+
+    def position_quote(self, tradingsymbol: str) -> Optional[PositionQuote]: ...
+
+    def clear_quote_cache(self) -> None: ...
 
     def order_margins(
         self,
@@ -132,6 +136,12 @@ class FakeBroker:
     modify_count: int = 0
     live_orders_enabled: bool = False
     reject_equal_sl_price: bool = False
+    position_quotes: Dict[str, PositionQuote] = field(default_factory=dict)
+    positions_error: bool = False
+    modify_error: Optional[str] = None
+
+    def clear_quote_cache(self) -> None:
+        return
 
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]:
         return [o for o in self.orders.values() if o.tag == tag]
@@ -218,6 +228,8 @@ class FakeBroker:
         tick_size: float = 0.05,
         transaction_type: Optional[str] = None,
     ) -> BrokerOrder:
+        if self.modify_error:
+            raise RuntimeError(self.modify_error)
         order = self.orders[order_id]
         self.modify_count += 1
         side = transaction_type or order.transaction_type
@@ -247,8 +259,22 @@ class FakeBroker:
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
         return self.orders.get(order_id)
 
-    def net_position_qty(self, tradingsymbol: str) -> int:
+    def net_position_qty(self, tradingsymbol: str) -> Optional[int]:
+        try:
+            quote = self.position_quote(tradingsymbol)
+        except Exception:  # noqa: BLE001
+            return None
+        if quote is not None:
+            return int(quote.quantity)
+        return 0
+
+    def position_quote(self, tradingsymbol: str) -> Optional[PositionQuote]:
+        if self.positions_error:
+            raise RuntimeError("positions_down")
+        if tradingsymbol in self.position_quotes:
+            return self.position_quotes[tradingsymbol]
         qty = 0
+        avg = None
         for order in self.orders.values():
             if order.tradingsymbol != tradingsymbol:
                 continue
@@ -258,7 +284,19 @@ class FakeBroker:
                 continue
             signed = order.quantity if str(order.transaction_type).upper() == "BUY" else -order.quantity
             qty += signed
-        return qty
+            if order.average_price is not None and avg is None:
+                avg = float(order.average_price)
+        last = self.last_prices.get(tradingsymbol)
+        pnl = None
+        if avg is not None and last is not None:
+            pnl = float(qty) * (float(last) - float(avg))
+        return PositionQuote(
+            quantity=qty,
+            average_price=avg,
+            last_price=last,
+            pnl=pnl,
+            unrealised=pnl,
+        )
 
     def order_margins(
         self,
@@ -298,7 +336,7 @@ class FakeBroker:
 
     def flatten_mis(self, tradingsymbol: str, price: float) -> BrokerOrder:
         net = self.net_position_qty(tradingsymbol)
-        if net == 0:
+        if net is None or net == 0:
             raise ValueError("no_position")
         side = "SELL" if net > 0 else "BUY"
         order = BrokerOrder(
@@ -344,12 +382,38 @@ def _kite_order_to_broker(raw: dict) -> BrokerOrder:
     )
 
 
+def _optional_float(value: object) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_mis_position(data: dict, tradingsymbol: str) -> Optional[dict]:
+    for bucket in ("net", "day"):
+        for item in data.get(bucket) or []:
+            if str(item.get("tradingsymbol") or "") != tradingsymbol:
+                continue
+            if str(item.get("product") or "MIS") != "MIS":
+                continue
+            return item
+    return None
+
+
 class KiteBroker:
     """Live Kite Connect adapter. Must not run unless live_orders_enabled."""
 
     def __init__(self, kite: object, *, live_orders_enabled: bool) -> None:
         self._kite = kite
         self.live_orders_enabled = live_orders_enabled
+        self._positions_payload: Optional[object] = None
+        self._positions_failed = False
+
+    def clear_quote_cache(self) -> None:
+        self._positions_payload = None
+        self._positions_failed = False
 
     def _require_live(self) -> None:
         if not self.live_orders_enabled:
@@ -561,18 +625,46 @@ class KiteBroker:
                 return _kite_order_to_broker(item)
         return None
 
-    def net_position_qty(self, tradingsymbol: str) -> int:
-        data = self._kite.positions()  # type: ignore[attr-defined]
-        if not isinstance(data, dict):
-            return 0
-        for bucket in ("day", "net"):
-            for item in data.get(bucket) or []:
-                if str(item.get("tradingsymbol") or "") != tradingsymbol:
-                    continue
-                if str(item.get("product") or "MIS") != "MIS":
-                    continue
-                return int(item.get("quantity") or 0)
-        return 0
+    def net_position_qty(self, tradingsymbol: str) -> Optional[int]:
+        quote = self.position_quote(tradingsymbol)
+        if quote is None:
+            return None
+        return int(quote.quantity)
+
+    def position_quote(self, tradingsymbol: str) -> Optional[PositionQuote]:
+        data = self._positions()
+        if data is None:
+            return None
+        item = _find_mis_position(data, tradingsymbol)
+        if item is None:
+            return PositionQuote(quantity=0)
+        qty = int(item.get("quantity") or 0)
+        avg = item.get("average_price")
+        last = item.get("last_price")
+        pnl = item.get("pnl")
+        unrealised = item.get("unrealised")
+        realised = item.get("realised")
+        return PositionQuote(
+            quantity=qty,
+            average_price=float(avg) if avg not in (None, "", 0, 0.0) else None,
+            last_price=float(last) if last not in (None, "", 0, 0.0) else None,
+            pnl=_optional_float(pnl),
+            unrealised=_optional_float(unrealised),
+            realised=_optional_float(realised),
+        )
+
+    def _positions(self) -> Optional[dict]:
+        if self._positions_failed:
+            return None
+        if self._positions_payload is not None:
+            return self._positions_payload if isinstance(self._positions_payload, dict) else None
+        try:
+            data = self._kite.positions()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            self._positions_failed = True
+            return None
+        self._positions_payload = data
+        return data if isinstance(data, dict) else None
 
     def order_margins(
         self,

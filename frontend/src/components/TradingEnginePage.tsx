@@ -39,6 +39,13 @@ function statusClass(state: string): string {
   return 'bg-surface-container text-on-surface-variant border-outline-variant'
 }
 
+function skipReasonLabel(reason: string | null | undefined): string {
+  if (reason === 'vwap_limited') return 'VWAP LIMITED'
+  if (reason === 'vwap_reject') return 'VWAP REJECT'
+  if (reason === 'vwap_unavailable') return 'VWAP UNAVAILABLE'
+  return reason || '—'
+}
+
 function tradeStatusLabel(status: string): string {
   if (status === 'entry_submitting') return 'Pending entry'
   if (status === 'entry_filled') return 'Entry filled'
@@ -137,8 +144,11 @@ function TrailControls({
           est != null && est < 0 ? 'text-negative' : 'text-positive'
         }`}
       >
-        Est. if hit {inr(est)}
+        Est. if hit (stop) {inr(est)}
       </span>
+      {row.auto_trail_enabled && row.auto_trail_ticks != null && (
+        <span className="text-[10px] text-on-surface-variant">gap {row.auto_trail_ticks}t</span>
+      )}
     </form>
   )
 }
@@ -250,7 +260,7 @@ function TradeTable({
                 )}
                 {kind === 'skipped' && (
                   <td className="px-2 py-1.5">
-                    {row.skip_reason || row.reject_reason || '—'}
+                    {skipReasonLabel(row.skip_reason || row.reject_reason)}
                   </td>
                 )}
                 {kind === 'active' && onTrail && (
@@ -333,6 +343,11 @@ export function TradingEnginePage({ sessionDate }: { sessionDate: string }) {
             <h1 className="text-sm font-extrabold uppercase tracking-tight">Trading Engine</h1>
             <span className={`label-caps font-extrabold px-2.5 py-1 border rounded ${statusClass(displayState)}`}>
               {statusLabel(displayState)}
+            </span>
+            <span className="text-[11px] text-on-surface-variant">
+              {(status?.require_vwap_accept ?? snap?.require_vwap_accept) === false
+                ? 'VWAP gate: OFF — filter bypassed'
+                : 'VWAP gate: ON — ACCEPT only'}
             </span>
           </div>
           <div className="flex items-center gap-2">

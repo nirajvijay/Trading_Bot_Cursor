@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS engine_runs (
     last_error TEXT,
     total_capital REAL NOT NULL DEFAULT 300000,
     leverage REAL NOT NULL DEFAULT 5,
-    consume_new_triggers INTEGER NOT NULL DEFAULT 1
+    consume_new_triggers INTEGER NOT NULL DEFAULT 1,
+    require_vwap_accept INTEGER NOT NULL DEFAULT 1
 );
 """
 
@@ -195,6 +196,9 @@ class TradingEngineStore:
         self._ensure_column("trades", "auto_trail_enabled", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("trades", "auto_trail_ticks", "INTEGER")
         self._ensure_column("trades", "auto_trail_extreme", "REAL")
+        self._ensure_column(
+            "engine_runs", "require_vwap_accept", "INTEGER NOT NULL DEFAULT 1"
+        )
         self._conn.commit()
 
     def _ensure_column(self, table: str, name: str, ddl: str) -> None:
@@ -215,6 +219,7 @@ class TradingEngineStore:
         total_capital: float = DEFAULT_TOTAL_CAPITAL,
         leverage: float = DEMO_LEVERAGE_FACTOR,
         status: str = "running",
+        require_vwap_accept: bool = True,
     ) -> str:
         run_id = uuid.uuid4().hex
         now = _utc_now()
@@ -222,8 +227,8 @@ class TradingEngineStore:
             """
             INSERT INTO engine_runs (
                 run_id, session_date, started_at, status, live_orders_enabled,
-                pid, total_capital, leverage, consume_new_triggers
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                pid, total_capital, leverage, consume_new_triggers, require_vwap_accept
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
             """,
             (
                 run_id,
@@ -234,6 +239,7 @@ class TradingEngineStore:
                 pid,
                 float(total_capital),
                 float(leverage),
+                1 if require_vwap_accept else 0,
             ),
         )
         self._conn.commit()

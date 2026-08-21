@@ -56,6 +56,7 @@ class TradingEngineApiTests(unittest.TestCase):
         self.assertFalse(body["engine_running"])
         self.assertTrue(body["can_confirm_live"])
         self.assertFalse(body["accepting_triggers"])
+        self.assertTrue(body["require_vwap_accept"])
 
     def test_snapshot_empty_buckets(self) -> None:
         res = self.client.get("/api/v1/trading-engine/snapshot?session_date=2026-08-17")
