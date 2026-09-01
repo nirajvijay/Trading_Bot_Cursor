@@ -147,6 +147,7 @@ def size_new_trade(
     *,
     total_capital: float,
     leverage_factor: float = DEMO_LEVERAGE_FACTOR,
+    per_trade_risk_cap: float = PER_TRADE_RISK_CAP,
 ) -> SizeDecision:
     stop = structural_stop_price(
         direction=candidate.direction,
@@ -197,7 +198,10 @@ def size_new_trade(
         )
 
     snap = risk_snapshot(trades)
-    allowed = min(PER_TRADE_RISK_CAP, DAILY_LOSS_CAP - snap.closed_loss_today - snap.committed_risk)
+    allowed = min(
+        per_trade_risk_cap,
+        DAILY_LOSS_CAP - snap.closed_loss_today - snap.committed_risk,
+    )
     if allowed < risk_per_share:
         return SizeDecision(
             allow=False,

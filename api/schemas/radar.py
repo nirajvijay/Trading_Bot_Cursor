@@ -59,6 +59,7 @@ class VwapQualifierStatus(BaseModel):
     limited: int = 0
     reject: int = 0
     unavailable: int = 0
+    persist_failures: int = 0
     reason: Optional[str] = None
 
 

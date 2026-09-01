@@ -154,6 +154,21 @@ class SizeAndCapsTests(unittest.TestCase):
         self.assertEqual(decision.qty, 81)  # floor(900/11)
         self.assertLessEqual(decision.proposed_risk, 900.0 + 1e-9)
 
+    def test_limited_cap_uses_450_not_halved_accept_qty(self) -> None:
+        from trading_engine_types import LIMITED_PER_TRADE_RISK_CAP
+
+        accept = size_new_trade(_candidate(), [], total_capital=DEFAULT_TOTAL_CAPITAL)
+        limited = size_new_trade(
+            _candidate(),
+            [],
+            total_capital=DEFAULT_TOTAL_CAPITAL,
+            per_trade_risk_cap=LIMITED_PER_TRADE_RISK_CAP,
+        )
+        self.assertTrue(limited.allow)
+        self.assertEqual(limited.qty, 40)  # floor(450/11)
+        self.assertLessEqual(limited.proposed_risk, 450.0 + 1e-9)
+        self.assertGreater(accept.qty, limited.qty)
+
     def test_missing_stop_skipped(self) -> None:
         decision = size_new_trade(
             _candidate(pullback_swing_low=None),

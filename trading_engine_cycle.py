@@ -35,6 +35,8 @@ from trading_engine_store import TradingEngineStore
 from trading_engine_types import (
     ACTIVE_STATES,
     DEMO_LEVERAGE_FACTOR,
+    LIMITED_PER_TRADE_RISK_CAP,
+    PER_TRADE_RISK_CAP,
     SKIPPED_STATES,
     UNPROTECTED_STATES,
     EngineState,
@@ -362,6 +364,7 @@ class TradingEngineCycle:
         first_seen: float,
         deadline_expired: bool = False,
     ) -> None:
+        """When require_vwap_accept is set, placement requires ACCEPT or LIMITED."""
         key = _vwap_pending_key(candidate, self._vwap_rule_version)
         try:
             classification = fetch_vwap_classification(
@@ -391,7 +394,11 @@ class TradingEngineCycle:
             return
         if classification == "ACCEPT":
             self._pending_vwap.pop(key, None)
-            self._place_candidate(candidate)
+            self._place_candidate(candidate, per_trade_risk_cap=PER_TRADE_RISK_CAP)
+            return
+        if classification == "LIMITED":
+            self._pending_vwap.pop(key, None)
+            self._place_candidate(candidate, per_trade_risk_cap=LIMITED_PER_TRADE_RISK_CAP)
             return
         reason = VWAP_SKIP_BY_CLASS.get(classification, "vwap_unavailable")
         self._pending_vwap.pop(key, None)
@@ -417,7 +424,12 @@ class TradingEngineCycle:
         self.store.update_trade(trade.trade_id, status="skipped", skip_reason=reason)
         self.store.append_event(trade.trade_id, "skipped", payload={"reason": reason})
 
-    def _place_candidate(self, candidate: TriggerCandidate) -> None:
+    def _place_candidate(
+        self,
+        candidate: TriggerCandidate,
+        *,
+        per_trade_risk_cap: float = PER_TRADE_RISK_CAP,
+    ) -> None:
         trade = self.store.insert_candidate(
             setup_id=candidate.setup_id,
             continuation_rule_version=candidate.continuation_rule_version,
@@ -440,6 +452,7 @@ class TradingEngineCycle:
             peers,
             total_capital=self.total_capital(),
             leverage_factor=self.leverage_factor,
+            per_trade_risk_cap=per_trade_risk_cap,
         )
         self.store.append_event(
             trade.trade_id,

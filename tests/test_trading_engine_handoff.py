@@ -239,7 +239,7 @@ class HandoffTests(unittest.TestCase):
                 session_date="2026-08-17",
                 setup_id="fresh",
                 continuation_rule_version="v1",
-                vwap_rule_version="vwap_qualifier_v2",
+                vwap_rule_version="vwap_qualifier_v1",
             )
         )
 

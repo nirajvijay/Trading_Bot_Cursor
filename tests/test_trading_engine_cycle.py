@@ -59,7 +59,7 @@ def _seed_vwap(
     classification: str = "ACCEPT",
     session_date: str = "2026-08-17",
     continuation_rule_version: str = "v1",
-    vwap_rule_version: str = "vwap_qualifier_v1",
+    vwap_rule_version: str = "vwap_qualifier_v2",
 ) -> None:
     conn = sqlite3.connect(path)
     conn.execute(
@@ -681,9 +681,18 @@ class VwapGateCycleTests(unittest.TestCase):
         self.assertEqual(broker.market_place_count, 0)
         store.close()
 
-    def test_limited_reject_unavailable_skip(self) -> None:
+    def test_limited_places_with_reduced_cap(self) -> None:
+        _seed_live(self.live, "lim", "2026-08-17T04:40:00+00:00", vwap="LIMITED")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker)
+        cycle.tick()
+        trades = store.list_trades("2026-08-17")
+        self.assertEqual(trades[0].status, "protected_open")
+        self.assertEqual(broker.market_place_count, 1)
+        store.close()
+
+    def test_reject_unavailable_skip(self) -> None:
         for setup_id, klass, reason in (
-            ("lim", "LIMITED", "vwap_limited"),
             ("rej", "REJECT", "vwap_reject"),
             ("unav", "UNAVAILABLE", "vwap_unavailable"),
         ):
@@ -764,7 +773,7 @@ class VwapGateCycleTests(unittest.TestCase):
         conn.close()
         _seed_live(live, "ok2", "2026-08-17T04:40:00+00:00", vwap=None)
         _seed_vwap(live, "ok2", continuation_rule_version="other")
-        _seed_vwap(live, "ok2", vwap_rule_version="vwap_qualifier_v2")
+        _seed_vwap(live, "ok2", vwap_rule_version="vwap_qualifier_v1")
         store = TradingEngineStore(Path(self.tmp.name) / "ver-te.db")
         run_id = store.start_run(session_date="2026-08-17", live_orders_enabled=False, pid=1)
         broker = FakeBroker(last_prices={"AAA": 110})

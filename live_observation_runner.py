@@ -29,7 +29,12 @@ from baseline_store import BaselineStore, DEFAULT_BASELINES_DB_PATH
 from candle_aggregation import CompletedOneMinuteCandle
 from candle_emission import CandleEmissionError
 from continuation_tick_size import TickSizePreflightError, preflight_tick_sizes
-from continuation_types import ContinuationRejectedEvent, ContinuationTriggeredEvent
+from continuation_types import (
+    ContinuationArmedEvent,
+    ContinuationDisarmedEvent,
+    ContinuationRejectedEvent,
+    ContinuationTriggeredEvent,
+)
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
 from intraday_continuation_engine import IntradayContinuationEngine
 from intraday_continuation_writer import IntradayContinuationWriter
@@ -48,8 +53,8 @@ from pullback_indicators import Ema20State
 from spike_types import IntradaySpikeEvent
 from tick_event import IST
 from tick_receiver import TickReceiver
-from vwap_qualifier_engine import VwapQualifierEngine
-from vwap_qualifier_writer import VwapQualifierWriter
+from vwap_qualifier_v2 import VwapQualifierV2
+from vwap_qualifier_v2_writer import VwapQualifierV2Writer
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST)
@@ -450,14 +455,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     pullback_writer = IntradayPullbackWriter(db_path=args.db)
     continuation_writer = IntradayContinuationWriter(db_path=args.db)
-    vwap_writer = VwapQualifierWriter(db_path=args.db)
-    vwap_engine = VwapQualifierEngine(
-        tokens=tokens,
-        token_to_symbol=token_to_symbol,
+    vwap_writer = VwapQualifierV2Writer(db_path=args.db)
+    vwap_engine = VwapQualifierV2(
         session_date=session_date,
+        token_to_symbol=token_to_symbol,
         writer=vwap_writer,
-        manual_start=True,
-        start_workers=False,
+        start_scheduler=True,
     )
 
     try:
@@ -516,7 +519,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             flush=True,
         )
         try:
-            qualification = vwap_engine.on_raw_trigger(event)
+            qualification = vwap_engine.on_triggered(event)
         except Exception:  # noqa: BLE001
             logger.exception("vwap qualifier on_raw_trigger failed")
             return
@@ -532,6 +535,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                 ),
                 flush=True,
             )
+
+    def on_armed(event: ContinuationArmedEvent) -> None:
+        try:
+            vwap_engine.on_armed(event)
+        except Exception:  # noqa: BLE001
+            logger.exception("vwap v2 on_armed failed")
+
+    def on_disarmed(event: ContinuationDisarmedEvent) -> None:
+        try:
+            vwap_engine.on_disarmed(event.setup_id, event.instrument_token)
+        except Exception:  # noqa: BLE001
+            logger.exception("vwap v2 on_disarmed failed")
 
     def on_rejected(event: ContinuationRejectedEvent) -> None:
         state.continuation_rejected += 1
@@ -555,6 +570,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         pullback_closer=engine,
         on_triggered=on_triggered,
         on_rejected=on_rejected,
+        on_armed=on_armed,
+        on_disarmed=on_disarmed,
     )
     continuation_holder["engine"] = continuation
 
@@ -600,6 +617,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         detector.on_candle(candle)
         continuation.on_one_minute(candle)
+        vwap_engine.on_one_minute(candle)
 
     def track_5m(candle) -> None:
         state.tokens_with_5m.add(candle.instrument_token)
@@ -628,7 +646,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     pipeline = LiveCandlePipeline(
         coordinator=coordinator,
-        tick_consumers=[vwap_engine.on_tick, continuation.on_tick],
+        tick_consumers=[continuation.on_tick],
     )
 
     def on_feed_ready(restored_at) -> None:
@@ -649,7 +667,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         health_interval=args.health_interval,
     )
     pipeline.attach_receiver(receiver)
-    vwap_engine.start()
 
     stop_reason = {"value": "unknown"}
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import FrozenSet, Literal, Optional
 
 PER_TRADE_RISK_CAP = 900.0
+LIMITED_PER_TRADE_RISK_CAP = 450.0
 DAILY_LOSS_CAP = 3000.0
 DEFAULT_TOTAL_CAPITAL = 300_000.0
 DEMO_LEVERAGE_FACTOR = 5.0

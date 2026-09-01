@@ -62,6 +62,7 @@ def _stop_requested(stop_file: Optional[Path]) -> bool:
 
 
 def _require_vwap_accept_from_env() -> bool:
+    """VWAP qualification required (ACCEPT or LIMITED) when enabled (default on)."""
     raw = os.environ.get("TRADING_ENGINE_REQUIRE_VWAP_ACCEPT", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 

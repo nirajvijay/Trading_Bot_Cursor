@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from trading_engine_types import TriggerCandidate
 
-VWAP_RULE_VERSION = "vwap_qualifier_v1"
+VWAP_RULE_VERSION = "vwap_qualifier_v2"
 
 TRIGGER_SQL = """
 SELECT
