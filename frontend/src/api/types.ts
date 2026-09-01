@@ -381,3 +381,54 @@ export interface TradingStartResponse {
   message: string
   pid?: number | null
 }
+
+export interface AdminConfigValues {
+  per_trade_risk_cap_inr: number
+  limited_per_trade_risk_cap_inr: number
+  daily_loss_cap_inr: number
+  vwap_accept_gap_exclusive_max: number
+  vwap_limited_gap_inclusive_max: number
+}
+
+export interface AdminConfigResponse {
+  version_id: string
+  entries_paused: boolean
+  values: AdminConfigValues
+  vwap_accept_gap_percent: number
+  vwap_limited_gap_percent: number
+  warnings: string[]
+  accepting_triggers: boolean
+  engine_running: boolean
+}
+
+export interface AdminConfigPatchRequest {
+  values: AdminConfigValues
+  expected_version_id?: string | null
+  comment?: string | null
+}
+
+export interface AdminAuditEntry {
+  id: number
+  at: string
+  actor_username: string
+  action: string
+  version_id?: string | null
+  from_version_id?: string | null
+  diff_json: string
+  result: string
+  detail?: string | null
+  step_up_verified: boolean
+}
+
+export interface AdminAuditResponse {
+  entries: AdminAuditEntry[]
+  limit: number
+  offset: number
+}
+
+export interface AdminActionResponse {
+  success: boolean
+  message: string
+  entries_paused?: boolean | null
+  detail?: string | null
+}

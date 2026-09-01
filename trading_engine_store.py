@@ -199,6 +199,15 @@ class TradingEngineStore:
         self._ensure_column(
             "engine_runs", "require_vwap_accept", "INTEGER NOT NULL DEFAULT 1"
         )
+        for col, ddl in (
+            ("admin_config_version_id", "TEXT"),
+            ("risk_cap_used_inr", "REAL"),
+            ("daily_loss_cap_inr", "REAL"),
+            ("vwap_accept_gap_exclusive_max", "REAL"),
+            ("vwap_limited_gap_inclusive_max", "REAL"),
+            ("admin_config_read_at", "TEXT"),
+        ):
+            self._ensure_column("trades", col, ddl)
         self._conn.commit()
 
     def _ensure_column(self, table: str, name: str, ddl: str) -> None:

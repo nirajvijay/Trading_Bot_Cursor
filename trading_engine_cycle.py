@@ -11,6 +11,8 @@ from typing import Any, Callable, Optional
 
 from continuation_features import price_to_ticks, ticks_to_price
 
+from api import config
+from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import BrokerPort, FakeBroker, _is_stop_order
 from trading_engine_handoff import (
     VWAP_RULE_VERSION,
@@ -34,6 +36,7 @@ from trading_engine_risk import (
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import (
     ACTIVE_STATES,
+    DAILY_LOSS_CAP,
     DEMO_LEVERAGE_FACTOR,
     LIMITED_PER_TRADE_RISK_CAP,
     PER_TRADE_RISK_CAP,
@@ -58,6 +61,20 @@ VWAP_SKIP_BY_CLASS = {
     "REJECT": "vwap_reject",
     "UNAVAILABLE": "vwap_unavailable",
 }
+
+
+def _resolve_admin_config_db(
+    admin_config_db: Optional[Path],
+    trading_store_db: Path,
+) -> Path:
+    if admin_config_db is not None:
+        return Path(admin_config_db)
+    preferred = config.admin_config_db_path()
+    try:
+        preferred.parent.mkdir(parents=True, exist_ok=True)
+        return preferred
+    except OSError:
+        return Path(trading_store_db).parent / "admin_config.db"
 
 
 @dataclass
@@ -124,9 +141,15 @@ def snapshot_dict(
     last_error: Optional[str] = None,
     accepting_triggers: Optional[bool] = None,
     require_vwap_accept: bool = True,
+    daily_loss_cap: float = DAILY_LOSS_CAP,
+    per_trade_cap: float = PER_TRADE_RISK_CAP,
 ) -> dict[str, Any]:
     trades = store.list_trades(session_date)
-    risk = risk_snapshot(trades)
+    risk = risk_snapshot(
+        trades,
+        daily_loss_cap=daily_loss_cap,
+        per_trade_cap=per_trade_cap,
+    )
     capital = capital_snapshot(
         trades, total_capital=total_capital, leverage_factor=leverage_factor
     )
@@ -217,6 +240,7 @@ class TradingEngineCycle:
         require_vwap_accept: bool = True,
         monotonic_fn: Callable[[], float] = time.monotonic,
         vwap_rule_version: str = VWAP_RULE_VERSION,
+        admin_config_db: Optional[Path] = None,
     ) -> None:
         self.store = store
         self.broker = broker
@@ -230,6 +254,8 @@ class TradingEngineCycle:
         self.require_vwap_accept = bool(require_vwap_accept)
         self._monotonic = monotonic_fn
         self._vwap_rule_version = vwap_rule_version
+        db_path = _resolve_admin_config_db(admin_config_db, store.db_path)
+        self._admin_store = AdminConfigStore(db_path, read_only=True)
         self.consume_new_triggers = True
         self.last_error: Optional[str] = None
         self.running = True
@@ -239,6 +265,28 @@ class TradingEngineCycle:
 
     def total_capital(self) -> float:
         return self.store.get_total_capital(self.run_id)
+
+    def _active_admin_snapshot(self):
+        return self._admin_store.capture_snapshot()
+
+    def _sync_pause_from_canonical(self) -> None:
+        paused = self._admin_store.read_entries_paused()
+        consume = not paused
+        if self.consume_new_triggers != consume:
+            self.consume_new_triggers = consume
+            self.store.set_consume_triggers(self.run_id, consume)
+
+    def _entries_paused(self) -> bool:
+        return self._admin_store.read_entries_paused()
+
+    def _cancel_pending_vwap_on_pause(self) -> None:
+        for pending in list(self._pending_vwap.values()):
+            key = _vwap_pending_key(pending.candidate, pending.vwap_rule_version)
+            self._skip_vwap(pending.candidate, "entries_paused")
+            self._pending_vwap.pop(key, None)
+
+    def close(self) -> None:
+        self._admin_store.close()
 
     def _reset_quote_cache(self) -> None:
         self._ltp_cache = {}
@@ -279,7 +327,8 @@ class TradingEngineCycle:
 
     def tick(self) -> None:
         self._reset_quote_cache()
-        if self.consume_new_triggers:
+        self._sync_pause_from_canonical()
+        if not self._entries_paused():
             try:
                 self.ingest_triggers()
             except Exception as exc:  # noqa: BLE001
@@ -344,6 +393,8 @@ class TradingEngineCycle:
             )
 
     def _handle_candidate(self, candidate: TriggerCandidate) -> None:
+        if self._entries_paused():
+            return
         existing = self.store.find_trade(
             candidate.setup_id, candidate.continuation_rule_version
         )
@@ -365,6 +416,8 @@ class TradingEngineCycle:
         deadline_expired: bool = False,
     ) -> None:
         """When require_vwap_accept is set, placement requires ACCEPT or LIMITED."""
+        if self._entries_paused():
+            return
         key = _vwap_pending_key(candidate, self._vwap_rule_version)
         try:
             classification = fetch_vwap_classification(
@@ -394,11 +447,19 @@ class TradingEngineCycle:
             return
         if classification == "ACCEPT":
             self._pending_vwap.pop(key, None)
-            self._place_candidate(candidate, per_trade_risk_cap=PER_TRADE_RISK_CAP)
+            admin = self._admin_store.load_active_payload()
+            self._place_candidate(
+                candidate,
+                per_trade_risk_cap=float(admin["per_trade_risk_cap_inr"]),
+            )
             return
         if classification == "LIMITED":
             self._pending_vwap.pop(key, None)
-            self._place_candidate(candidate, per_trade_risk_cap=LIMITED_PER_TRADE_RISK_CAP)
+            admin = self._admin_store.load_active_payload()
+            self._place_candidate(
+                candidate,
+                per_trade_risk_cap=float(admin["limited_per_trade_risk_cap_inr"]),
+            )
             return
         reason = VWAP_SKIP_BY_CLASS.get(classification, "vwap_unavailable")
         self._pending_vwap.pop(key, None)
@@ -430,6 +491,13 @@ class TradingEngineCycle:
         *,
         per_trade_risk_cap: float = PER_TRADE_RISK_CAP,
     ) -> None:
+        if self._entries_paused():
+            return
+        snapshot = self._admin_store.capture_snapshot(
+            risk_cap_used_inr=float(per_trade_risk_cap)
+        )
+        if self._entries_paused():
+            return
         trade = self.store.insert_candidate(
             setup_id=candidate.setup_id,
             continuation_rule_version=candidate.continuation_rule_version,
@@ -453,6 +521,7 @@ class TradingEngineCycle:
             total_capital=self.total_capital(),
             leverage_factor=self.leverage_factor,
             per_trade_risk_cap=per_trade_risk_cap,
+            daily_loss_cap=snapshot.daily_loss_cap_inr,
         )
         self.store.append_event(
             trade.trade_id,
@@ -485,11 +554,27 @@ class TradingEngineCycle:
             notional=decision.notional,
             margin_blocked=decision.margin_blocked,
             status="entry_submitting",
+            **snapshot.provenance_fields(),
         )
         self.store.append_event(trade.trade_id, "entry_submitting")
         self._submit_entry(trade)
 
     def _submit_entry(self, trade: TradeRecord) -> None:
+        if self._entries_paused():
+            self.store.update_trade(
+                trade.trade_id,
+                status="skipped",
+                skip_reason="entries_paused",
+                qty=0,
+                notional=0,
+                margin_blocked=0,
+            )
+            self.store.append_event(
+                trade.trade_id,
+                "skipped",
+                payload={"reason": "entries_paused"},
+            )
+            return
         existing = [
             o for o in self.broker.orders_by_tag(trade.broker_tag) if o.order_type == "MARKET"
         ]
@@ -740,7 +825,18 @@ class TradingEngineCycle:
                 self.consume_new_triggers = False
                 self.store.set_consume_triggers(self.run_id, False)
                 self.store.mark_command_processed(command.command_id)
-                self.drain_pending_vwap()
+                self._cancel_pending_vwap_on_pause()
+                continue
+            if command.kind == "pause_entries":
+                self.consume_new_triggers = False
+                self.store.set_consume_triggers(self.run_id, False)
+                self._cancel_pending_vwap_on_pause()
+                self.store.mark_command_processed(command.command_id)
+                continue
+            if command.kind == "resume_entries":
+                self.consume_new_triggers = True
+                self.store.set_consume_triggers(self.run_id, True)
+                self.store.mark_command_processed(command.command_id)
                 continue
             if command.kind == "trail_stop" and command.trade_id:
                 payload = json.loads(command.payload_json or "{}")
@@ -1014,6 +1110,7 @@ class TradingEngineCycle:
     def write_status(self) -> None:
         if self.status_file is None:
             return
+        admin = self._admin_store.load_active_payload()
         snap = snapshot_dict(
             self.store,
             session_date=self.session_date,
@@ -1022,8 +1119,10 @@ class TradingEngineCycle:
             live_orders_enabled=self.live_orders_enabled,
             running=self.running,
             last_error=self.last_error,
-            accepting_triggers=bool(self.running and self.consume_new_triggers),
+            accepting_triggers=bool(self.running and not self._entries_paused()),
             require_vwap_accept=self.require_vwap_accept,
+            daily_loss_cap=float(admin["daily_loss_cap_inr"]),
+            per_trade_cap=float(admin["per_trade_risk_cap_inr"]),
         )
         snap["updated_at"] = _now()
         snap["running"] = self.running

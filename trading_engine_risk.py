@@ -99,16 +99,23 @@ def blocks_new_entries(trades: Iterable[TradeRecord]) -> bool:
     return any(t.status in IN_FLIGHT_BLOCK_STATES for t in trades)
 
 
-def risk_snapshot(trades: Sequence[TradeRecord]) -> RiskSnapshot:
+def risk_snapshot(
+    trades: Sequence[TradeRecord],
+    *,
+    daily_loss_cap: float = DAILY_LOSS_CAP,
+    per_trade_cap: float = PER_TRADE_RISK_CAP,
+) -> RiskSnapshot:
     committed = sum(trade_remaining_risk(t) for t in trades)
     closed = closed_loss_today(trades)
     unprotected = sum(1 for t in trades if is_unprotected(t))
     in_flight = sum(1 for t in trades if t.status in IN_FLIGHT_BLOCK_STATES)
-    remaining = max(0.0, DAILY_LOSS_CAP - closed - committed)
+    remaining = max(0.0, float(daily_loss_cap) - closed - committed)
     return RiskSnapshot(
         closed_loss_today=closed,
         committed_risk=committed,
         remaining_daily=remaining,
+        per_trade_cap=float(per_trade_cap),
+        daily_cap=float(daily_loss_cap),
         unprotected_count=unprotected,
         in_flight_count=in_flight,
         limits_protected=unprotected == 0 and in_flight == 0,
@@ -148,6 +155,7 @@ def size_new_trade(
     total_capital: float,
     leverage_factor: float = DEMO_LEVERAGE_FACTOR,
     per_trade_risk_cap: float = PER_TRADE_RISK_CAP,
+    daily_loss_cap: float = DAILY_LOSS_CAP,
 ) -> SizeDecision:
     stop = structural_stop_price(
         direction=candidate.direction,
@@ -197,10 +205,14 @@ def size_new_trade(
             kind="rejected",
         )
 
-    snap = risk_snapshot(trades)
+    snap = risk_snapshot(
+        trades,
+        daily_loss_cap=daily_loss_cap,
+        per_trade_cap=per_trade_risk_cap,
+    )
     allowed = min(
         per_trade_risk_cap,
-        DAILY_LOSS_CAP - snap.closed_loss_today - snap.committed_risk,
+        daily_loss_cap - snap.closed_loss_today - snap.committed_risk,
     )
     if allowed < risk_per_share:
         return SizeDecision(
@@ -247,7 +259,7 @@ def size_new_trade(
         )
 
     proposed = qty * risk_per_share
-    if snap.closed_loss_today + snap.committed_risk + proposed > DAILY_LOSS_CAP + 1e-9:
+    if snap.closed_loss_today + snap.committed_risk + proposed > daily_loss_cap + 1e-9:
         return SizeDecision(
             allow=False,
             qty=0,

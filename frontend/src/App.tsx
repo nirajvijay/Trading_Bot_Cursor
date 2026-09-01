@@ -11,6 +11,7 @@ import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarTable } from './components/RadarTable'
+import { AdminConsolePage } from './components/admin/AdminConsolePage'
 import { TradingEnginePage } from './components/TradingEnginePage'
 import { StatusStrip } from './components/StatusStrip'
 import { TopAppBar, type AppTab } from './components/TopAppBar'
@@ -279,6 +280,8 @@ export default function App() {
             />
           ) : activeTab === 'trading' ? (
             <TradingEnginePage sessionDate={sessionDate} />
+          ) : activeTab === 'admin' ? (
+            <AdminConsolePage />
           ) : (
             <KiteAuthPage />
           )}

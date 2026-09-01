@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from api import config
+from api.admin_config.store import AdminConfigStore
 from trading_engine_cycle import snapshot_dict
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
@@ -44,7 +46,12 @@ def load_snapshot(db_path: Path, session_date: str, *, running: bool) -> dict[st
         if run is None:
             return empty_snapshot(session_date)
         date = session_date
-        consume = bool(run["consume_new_triggers"]) if "consume_new_triggers" in run.keys() else True
+        admin_store = AdminConfigStore(config.admin_config_db_path(), read_only=True)
+        try:
+            admin_payload = admin_store.load_active_payload()
+            entries_paused = admin_store.read_entries_paused()
+        finally:
+            admin_store.close()
         require_vwap = True
         if "require_vwap_accept" in run.keys() and run["require_vwap_accept"] is not None:
             require_vwap = bool(run["require_vwap_accept"])
@@ -56,8 +63,10 @@ def load_snapshot(db_path: Path, session_date: str, *, running: bool) -> dict[st
             live_orders_enabled=bool(run["live_orders_enabled"]),
             running=running,
             last_error=None if run["last_error"] is None else str(run["last_error"]),
-            accepting_triggers=bool(running and consume),
+            accepting_triggers=bool(running and not entries_paused),
             require_vwap_accept=require_vwap,
+            daily_loss_cap=float(admin_payload["daily_loss_cap_inr"]),
+            per_trade_cap=float(admin_payload["per_trade_risk_cap_inr"]),
         )
     finally:
         store.close()

@@ -11,7 +11,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from api.admin_config.snapshot import AdminConfigSnapshot
 
 SQLITE_BUSY = 5
 SQLITE_LOCKED = 6
@@ -122,7 +125,7 @@ def _dt_iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat(timespec="seconds")
 
 
-def _build_payload(row: VwapQualificationV2) -> str:
+def _build_payload(row: VwapQualificationV2, provenance: Optional["AdminConfigSnapshot"] = None) -> str:
     payload: dict[str, Any] = {
         "rule_version": row.vwap_rule_version,
         "classification": row.classification,
@@ -137,6 +140,12 @@ def _build_payload(row: VwapQualificationV2) -> str:
         "historical_minute_count": row.historical_minute_count,
         "live_minute_count": row.live_minute_count,
     }
+    if provenance is not None:
+        payload["admin_provenance"] = provenance.provenance_fields()
+        payload["admin_provenance"]["per_trade_risk_cap_inr"] = provenance.per_trade_risk_cap_inr
+        payload["admin_provenance"]["limited_per_trade_risk_cap_inr"] = (
+            provenance.limited_per_trade_risk_cap_inr
+        )
     return json.dumps(payload, sort_keys=True, default=str)
 
 
@@ -172,16 +181,33 @@ class VwapQualifierV2Writer:
         if not _table_exists(self._conn, TABLE_NAME):
             self._conn.execute(CREATE_SQL)
             self._conn.commit()
-            return
-        pk = qualification_pk_columns(self._conn)
-        if pk != NEW_PK_COLUMNS and pk != (
-            "setup_id",
-            "continuation_rule_version",
-            "vwap_rule_version",
+        else:
+            pk = qualification_pk_columns(self._conn)
+            if pk != NEW_PK_COLUMNS and pk != (
+                "setup_id",
+                "continuation_rule_version",
+                "vwap_rule_version",
+            ):
+                raise VwapQualifierMigrationError(
+                    "unexpected live_vwap_qualifications primary key: %s" % (pk,)
+                )
+        for col, ddl in (
+            ("admin_config_version_id", "TEXT"),
+            ("per_trade_risk_cap_inr", "REAL"),
+            ("limited_per_trade_risk_cap_inr", "REAL"),
+            ("daily_loss_cap_inr", "REAL"),
+            ("vwap_accept_gap_exclusive_max", "REAL"),
+            ("vwap_limited_gap_inclusive_max", "REAL"),
+            ("admin_config_read_at", "TEXT"),
         ):
-            raise VwapQualifierMigrationError(
-                "unexpected live_vwap_qualifications primary key: %s" % (pk,)
-            )
+            self._ensure_column(col, ddl)
+        self._conn.commit()
+
+    def _ensure_column(self, name: str, ddl: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({TABLE_NAME})").fetchall()
+        existing = {str(r[1]) for r in rows}
+        if name not in existing:
+            self._conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {name} {ddl}")
 
     @property
     def metrics(self) -> VwapV2WriterMetrics:
@@ -192,10 +218,24 @@ class VwapQualifierV2Writer:
             write_retries=self._write_retries,
         )
 
-    def insert_sync(self, row: VwapQualificationV2) -> bool:
+    def insert_sync(
+        self,
+        row: VwapQualificationV2,
+        *,
+        provenance: Optional["AdminConfigSnapshot"] = None,
+    ) -> bool:
         if row.classification not in VWAP_CLASSIFICATIONS:
             raise ValueError("invalid classification: %s" % row.classification)
-        payload = _build_payload(row)
+        payload = _build_payload(row, provenance)
+        prov_cols = (
+            provenance.admin_config_version_id if provenance else None,
+            provenance.per_trade_risk_cap_inr if provenance else None,
+            provenance.limited_per_trade_risk_cap_inr if provenance else None,
+            provenance.daily_loss_cap_inr if provenance else None,
+            provenance.vwap_accept_gap_exclusive_max if provenance else None,
+            provenance.vwap_limited_gap_inclusive_max if provenance else None,
+            provenance.admin_config_read_at if provenance else None,
+        )
         params = (
             row.setup_id,
             row.continuation_rule_version,
@@ -220,11 +260,25 @@ class VwapQualifierV2Writer:
             0,
             payload,
             _utc_now_iso(),
+            *prov_cols,
         )
+        sql = """
+        INSERT OR IGNORE INTO live_vwap_qualifications (
+            setup_id, continuation_rule_version, vwap_rule_version,
+            instrument_token, tradingsymbol, session_date, direction,
+            trigger_price, last_price, trigger_tick_sequence, trigger_exchange_ts,
+            vwap, gap, classification, quality_ok, quality_reason, vwap_provenance,
+            bootstrap_cutoff_exchange_ts, completed_5m_count, in_progress_bucket_start,
+            in_progress_volume, payload_json, created_at,
+            admin_config_version_id, per_trade_risk_cap_inr, limited_per_trade_risk_cap_inr,
+            daily_loss_cap_inr, vwap_accept_gap_exclusive_max, vwap_limited_gap_inclusive_max,
+            admin_config_read_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
         attempt = 0
         while True:
             try:
-                cur = self._conn.execute(INSERT_SQL, params)
+                cur = self._conn.execute(sql, params)
                 self._conn.commit()
                 if cur.rowcount == 1:
                     self._inserted += 1

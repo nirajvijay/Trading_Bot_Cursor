@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle, snapshot_dict
 from trading_engine_store import TradingEngineStore
@@ -184,6 +185,7 @@ class CycleTests(unittest.TestCase):
         *,
         require_vwap_accept: bool = True,
         monotonic_fn=None,
+        admin_config_db: Path | None = None,
     ):
         store = TradingEngineStore(self.te)
         run_id = store.start_run(
@@ -195,6 +197,8 @@ class CycleTests(unittest.TestCase):
         kwargs = {}
         if monotonic_fn is not None:
             kwargs["monotonic_fn"] = monotonic_fn
+        if admin_config_db is not None:
+            kwargs["admin_config_db"] = admin_config_db
         cycle = TradingEngineCycle(
             store,
             broker,
@@ -567,7 +571,7 @@ class VwapGateCycleTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _cycle(self, broker: FakeBroker, *, require_vwap_accept: bool = True, monotonic_fn=None):
+    def _cycle(self, broker: FakeBroker, *, require_vwap_accept: bool = True, monotonic_fn=None, admin_config_db: Path | None = None):
         store = TradingEngineStore(self.te)
         run_id = store.start_run(
             session_date="2026-08-17",
@@ -578,6 +582,8 @@ class VwapGateCycleTests(unittest.TestCase):
         kwargs = {}
         if monotonic_fn is not None:
             kwargs["monotonic_fn"] = monotonic_fn
+        if admin_config_db is not None:
+            kwargs["admin_config_db"] = admin_config_db
         cycle = TradingEngineCycle(
             store,
             broker,
@@ -810,6 +816,41 @@ class VwapGateCycleTests(unittest.TestCase):
             require_vwap_accept=False,
         )
         self.assertFalse(snap["require_vwap_accept"])
+        store.close()
+
+    def test_admin_pause_blocks_new_entries(self) -> None:
+        admin_db = Path(self.tmp.name) / "admin_config.db"
+        admin_store = AdminConfigStore(admin_db)
+        admin_store.set_entries_paused(True)
+        admin_store.close()
+
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, admin_config_db=admin_db)
+        cycle.tick()
+        trades = store.list_trades("2026-08-17")
+        self.assertEqual(len(trades), 0)
+        store.close()
+
+    def test_placement_stamps_admin_provenance(self) -> None:
+        admin_db = Path(self.tmp.name) / "admin_config.db"
+        admin_store = AdminConfigStore(admin_db)
+        version_id = admin_store.active_version_id()
+        admin_store.close()
+
+        _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
+        broker = FakeBroker(last_prices={"AAA": 110})
+        store, cycle = self._cycle(broker, admin_config_db=admin_db)
+        cycle.tick()
+        trade_id = store.list_trades("2026-08-17")[0].trade_id
+        conn = sqlite3.connect(self.te)
+        row = conn.execute(
+            "SELECT admin_config_version_id, daily_loss_cap_inr FROM trades WHERE trade_id = ?",
+            (trade_id,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row[0], version_id)
+        self.assertIsNotNone(row[1])
         store.close()
 
 

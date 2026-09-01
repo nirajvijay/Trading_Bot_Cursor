@@ -99,6 +99,14 @@ def trading_engine_stop_file() -> Path:
     return runtime_cache_dir() / "trading_engine.stop"
 
 
+def admin_config_db_path() -> Path:
+    """Admin Console V1 runtime configuration database."""
+    override = os.environ.get("ADMIN_CONFIG_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+    return data_root() / "config" / "admin_config.db"
+
+
 def trading_engine_live_orders_enabled() -> bool:
     raw = os.environ.get("TRADING_ENGINE_LIVE_ORDERS", "false").strip().lower()
     return raw in {"1", "true", "yes"}

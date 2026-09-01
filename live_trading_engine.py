@@ -18,6 +18,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from api import config
+from api.admin_config.store import AdminConfigStore
 from api.services.observation_runner import seconds_until_session_close
 from trading_engine_broker import FakeBroker, KiteBroker
 from trading_engine_cycle import TradingEngineCycle, VWAP_PENDING_RETRY_SECONDS
@@ -112,6 +113,9 @@ def run(args: argparse.Namespace) -> int:
 
     require_vwap = _require_vwap_accept_from_env()
     store = TradingEngineStore(trading_db)
+    admin_store = AdminConfigStore(config.admin_config_db_path(), read_only=True)
+    entries_paused = admin_store.read_entries_paused()
+    consume = not entries_paused
     started_at = _utc_now()
     run_id = store.start_run(
         session_date=session_date,
@@ -120,6 +124,7 @@ def run(args: argparse.Namespace) -> int:
         total_capital=float(args.total_capital),
         require_vwap_accept=require_vwap,
     )
+    store.set_consume_triggers(run_id, consume)
     broker = _make_broker(live, float(args.total_capital))
     cycle = TradingEngineCycle(
         store,
@@ -132,7 +137,9 @@ def run(args: argparse.Namespace) -> int:
         leverage_factor=DEMO_LEVERAGE_FACTOR,
         status_file=status_file,
         require_vwap_accept=require_vwap,
+        admin_config_db=config.admin_config_db_path(),
     )
+    cycle.consume_new_triggers = consume
 
     signal.signal(signal.SIGINT, _request_stop)
     signal.signal(signal.SIGTERM, _request_stop)
@@ -176,6 +183,8 @@ def run(args: argparse.Namespace) -> int:
         store.ack_pending_commands("stop_engine")
         store.set_run_status(run_id, "stopped", stopped=True)
         cycle.write_status()
+        cycle.close()
+        admin_store.close()
         store.close()
     return 0
 
