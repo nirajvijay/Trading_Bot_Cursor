@@ -22,7 +22,7 @@ export function AdminConsolePage() {
       await admin.resume()
     } else if (pendingAction === 'rollback' && rollbackTargetId) {
       await postAdminRollback(rollbackTargetId)
-      await admin.refresh()
+      await admin.refresh({ syncForm: true })
       setRollbackTargetId(null)
     }
     setPendingAction(null)
@@ -48,7 +48,7 @@ export function AdminConsolePage() {
         'rollback',
         async () => {
           await postAdminRollback(targetVersionId)
-          await admin.refresh()
+          await admin.refresh({ syncForm: true })
         },
         () => setRollbackTargetId(targetVersionId),
       )
@@ -200,26 +200,34 @@ export function AdminConsolePage() {
                 />
               </label>
 
+              {admin.dirty && (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  You have unsaved changes. Values are not saved until you press Save thresholds.
+                </p>
+              )}
+
               <div className="flex gap-2 pt-1">
                 <button
                   type="submit"
-                  disabled={admin.saving || admin.loading}
-                  className="px-3 py-1.5 text-xs bg-primary text-white rounded disabled:opacity-50"
+                  disabled={admin.saving || admin.initialLoading || !admin.dirty}
+                  className={`px-3 py-1.5 text-xs text-white rounded disabled:opacity-50 ${
+                    admin.dirty ? 'bg-primary ring-2 ring-primary/30' : 'bg-primary/60'
+                  }`}
                 >
                   {admin.saving ? 'Saving…' : 'Save thresholds'}
                 </button>
                 <button
                   type="button"
                   onClick={admin.resetForm}
-                  disabled={admin.saving}
-                  className="px-3 py-1.5 text-xs border border-outline-variant rounded"
+                  disabled={admin.saving || !admin.dirty}
+                  className="px-3 py-1.5 text-xs border border-outline-variant rounded disabled:opacity-50"
                 >
                   Reset
                 </button>
               </div>
             </form>
           ) : (
-            <p className="text-xs text-on-surface-variant">{admin.loading ? 'Loading…' : 'No config'}</p>
+            <p className="text-xs text-on-surface-variant">{admin.initialLoading ? 'Loading…' : 'No config'}</p>
           )}
         </section>
 

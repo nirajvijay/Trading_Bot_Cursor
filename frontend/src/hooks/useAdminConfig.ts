@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ApiError,
   fetchAdminConfig,
@@ -31,6 +31,19 @@ function configToForm(config: AdminConfigResponse): AdminFormState {
   }
 }
 
+export function isFormDirty(form: AdminFormState, config: AdminConfigResponse): boolean {
+  const v = config.values
+  if (form.comment.trim() !== '') return true
+  if (Number(form.per_trade_risk_cap_inr) !== v.per_trade_risk_cap_inr) return true
+  if (Number(form.limited_per_trade_risk_cap_inr) !== v.limited_per_trade_risk_cap_inr) return true
+  if (Number(form.daily_loss_cap_inr) !== v.daily_loss_cap_inr) return true
+  const acceptRatio = percentToRatio(Number(form.vwap_accept_gap_percent))
+  const limitedRatio = percentToRatio(Number(form.vwap_limited_gap_percent))
+  if (Math.abs(acceptRatio - v.vwap_accept_gap_exclusive_max) > 1e-9) return true
+  if (Math.abs(limitedRatio - v.vwap_limited_gap_inclusive_max) > 1e-9) return true
+  return false
+}
+
 function parseForm(form: AdminFormState): AdminConfigValues {
   const acceptPct = Number(form.vwap_accept_gap_percent)
   const limitedPct = Number(form.vwap_limited_gap_percent)
@@ -56,28 +69,40 @@ function isStepUpRequired(err: unknown): boolean {
   return false
 }
 
+interface RefreshOptions {
+  silent?: boolean
+  syncForm?: boolean
+}
+
 export function useAdminConfig(enabled: boolean) {
   const [config, setConfig] = useState<AdminConfigResponse | null>(null)
   const [form, setForm] = useState<AdminFormState | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [initialLoading, setInitialLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [pausing, setPausing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
-    if (!enabled) return
-    setLoading(true)
-    try {
-      const data = await fetchAdminConfig()
-      setConfig(data)
-      setForm((prev) => (prev === null ? configToForm(data) : prev))
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load admin config')
-    } finally {
-      setLoading(false)
-    }
-  }, [enabled])
+  const refresh = useCallback(
+    async (options: RefreshOptions = {}) => {
+      if (!enabled) return
+      const { silent = false, syncForm = false } = options
+      if (!silent) setInitialLoading(true)
+      try {
+        const data = await fetchAdminConfig()
+        setConfig(data)
+        setForm((prev) => {
+          if (syncForm || prev === null) return configToForm(data)
+          return prev
+        })
+        setError(null)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load admin config')
+      } finally {
+        if (!silent) setInitialLoading(false)
+      }
+    },
+    [enabled],
+  )
 
   useEffect(() => {
     if (!enabled) return
@@ -88,10 +113,15 @@ export function useAdminConfig(enabled: boolean) {
     if (!enabled) return
     const id = window.setInterval(() => {
       if (document.hidden) return
-      void refresh()
+      void refresh({ silent: true })
     }, POLL_MS)
     return () => window.clearInterval(id)
   }, [enabled, refresh])
+
+  const dirty = useMemo(() => {
+    if (!form || !config) return false
+    return isFormDirty(form, config)
+  }, [form, config])
 
   const resetForm = useCallback(() => {
     if (config) setForm(configToForm(config))
@@ -128,7 +158,7 @@ export function useAdminConfig(enabled: boolean) {
     setError(null)
     try {
       await postAdminPause()
-      await refresh()
+      await refresh({ silent: true })
     } catch (err) {
       if (isStepUpRequired(err)) throw err
       setError(err instanceof Error ? err.message : 'Failed to pause entries')
@@ -143,7 +173,7 @@ export function useAdminConfig(enabled: boolean) {
     setError(null)
     try {
       await postAdminResume()
-      await refresh()
+      await refresh({ silent: true })
     } catch (err) {
       if (isStepUpRequired(err)) throw err
       setError(err instanceof Error ? err.message : 'Failed to resume entries')
@@ -163,9 +193,10 @@ export function useAdminConfig(enabled: boolean) {
   return {
     config,
     form,
-    loading,
+    initialLoading,
     saving,
     pausing,
+    dirty,
     error,
     displayVwap,
     refresh,
