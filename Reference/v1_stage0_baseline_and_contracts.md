@@ -490,5 +490,40 @@ Mirror shorts; persist extreme; ≤1 modify / 2s / ≥2 ticks improvement; never
 |---|---|---|---|
 | 1.0 | 2026-09-08 | Cursor Stage 0 | Baseline + frozen contracts |
 | 1.1 | 2026-09-08 | Cursor | Owner review corrections: entry vs management split; independent partial protection; live auth path; ADANIPORTS provenance; test-claim labeling |
+| 1.2 | 2026-09-08 | Cursor | **WP-1.1 accepted** (dev checkpoint). See §7. |
 
 Astra remains product authority; this file is the Stage 0 evidence + implementation contract freeze for Cursor.
+
+---
+
+## 7. WP-1.1 development checkpoint (accepted)
+
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
+**Scope:** Durable trade lifecycle, independent qty/protection model, exit attribution, provisional vs confirmed P&L, Kite modify state machine, IST broker timestamp convention.  
+**Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes.
+
+### 7.1 Acceptance test command and results
+
+```text
+python3 -m unittest \
+  tests.test_trading_engine_wp11_lifecycle \
+  tests.test_trading_engine_cycle \
+  tests.test_trading_engine_broker \
+  tests.test_trading_engine_risk \
+  tests.test_trading_engine_store
+
+Ran 100 tests in 15.666s
+OK (expected failures=2)
+```
+
+### 7.2 Deferred expected-failure placeholders (not WP-1.1 safety claims)
+
+These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_lifecycle.py` (`PendingGapRegressionTests`) until later work packages:
+
+1. `test_close_all_command_kind_exists` — Close All / close-position command surface (WP-1.4).
+2. `test_square_off_helpers_present_in_cycle` — session square-off / cutoff helpers (WP-1.4).
+
+### 7.3 Preserve rule (unchanged)
+
+- Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
+- Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.

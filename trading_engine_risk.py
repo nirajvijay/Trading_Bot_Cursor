@@ -13,6 +13,7 @@ from trading_engine_types import (
     IN_FLIGHT_BLOCK_STATES,
     PER_TRADE_RISK_CAP,
     RISK_CONSUMING_STATES,
+    TERMINAL_FLAT_STATES,
     UNPROTECTED_STATES,
     CapitalSnapshot,
     RiskSnapshot,
@@ -71,11 +72,30 @@ def remaining_downside_risk(
 def trade_remaining_risk(trade: TradeRecord) -> float:
     if trade.status not in RISK_CONSUMING_STATES:
         return 0.0
+    if trade.status in TERMINAL_FLAT_STATES:
+        return 0.0
     entry = trade.entry_fill if trade.entry_fill is not None else trade.entry_estimate
     stop = trade.current_stop if trade.current_stop is not None else trade.initial_stop
+    pos = int(getattr(trade, "remaining_position_qty", 0) or 0)
+    filled = int(getattr(trade, "filled_qty", 0) or 0)
+    intended = int(getattr(trade, "intended_qty", 0) or trade.qty or 0)
+    remaining_entry = int(getattr(trade, "remaining_entry_qty", 0) or 0)
+    # Open downside on remaining position; while submitting with no fills, reserve intended.
+    if pos > 0:
+        qty = pos
+    elif filled > 0:
+        qty = filled
+    elif remaining_entry > 0 or trade.status in {
+        "entry_submitting",
+        "submission_unknown",
+        "reconciliation_required",
+    }:
+        qty = intended
+    else:
+        qty = 0
     return remaining_downside_risk(
         direction=trade.direction,
-        qty=trade.qty,
+        qty=qty,
         entry=entry,
         current_stop=stop,
     )
@@ -92,7 +112,28 @@ def closed_loss_today(trades: Sequence[TradeRecord]) -> float:
 
 
 def is_unprotected(trade: TradeRecord) -> bool:
-    return trade.status in UNPROTECTED_STATES
+    """True when open exposure is not fully covered by broker-confirmed protection."""
+    if trade.status in TERMINAL_FLAT_STATES:
+        return False
+    pos = int(getattr(trade, "remaining_position_qty", 0) or 0)
+    protected = int(getattr(trade, "protected_qty", 0) or 0)
+    if pos > 0:
+        return protected < pos
+    # Legacy / pre-position-qty path: filled but not yet flat and not terminal.
+    filled = int(getattr(trade, "filled_qty", 0) or 0)
+    if filled > 0 and trade.status in UNPROTECTED_STATES | {
+        "protection_pending",
+        "stop_pending",
+        "entry_filled",
+        "partial_entry",
+        "reconciliation_required",
+        "exit_pending",
+        "partial_exit",
+    }:
+        return protected < filled
+    if trade.status in {"entry_filled", "stop_pending", "protection_pending"} and filled <= 0:
+        return True
+    return False
 
 
 def blocks_new_entries(trades: Iterable[TradeRecord]) -> bool:
@@ -324,6 +365,23 @@ def realised_pnl(
     if direction == "UP":
         return float(qty) * (float(exit_fill) - float(entry_fill))
     return float(qty) * (float(entry_fill) - float(exit_fill))
+
+
+def realised_pnl_from_values(
+    *,
+    direction: str,
+    entry_value: float,
+    exit_value: float,
+    qty: int,
+) -> float:
+    """P&L from cumulative entry/exit notionals (handles multi-price executions)."""
+    if qty <= 0:
+        return 0.0
+    entry_avg = float(entry_value) / float(qty)
+    exit_avg = float(exit_value) / float(qty)
+    return realised_pnl(
+        direction=direction, qty=qty, entry_fill=entry_avg, exit_fill=exit_avg
+    )
 
 
 def open_pnl(

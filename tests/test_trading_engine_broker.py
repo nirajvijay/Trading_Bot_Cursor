@@ -9,6 +9,9 @@ from trading_engine_broker import (
     LIVE_ORDERS_DISABLED_REASON,
     FakeBroker,
     KiteBroker,
+    _kite_order_to_broker,
+    normalize_broker_timestamp,
+    parse_timestamp_text,
 )
 
 
@@ -75,6 +78,36 @@ class FakeBrokerTests(unittest.TestCase):
         self.assertEqual(sl.order_type, "SL")
         self.assertEqual(sl.trigger_price, 99)
         self.assertEqual(sl.price, 99)
+
+
+    def test_modify_partial_stop_preserves_fills_and_sets_remaining(self) -> None:
+        broker = FakeBroker(last_prices={"AAA": 110}, auto_confirm_sl=True)
+        sl = broker.place_slm(
+            tradingsymbol="AAA",
+            transaction_type="SELL",
+            quantity=10,
+            trigger_price=99,
+            tag="te1",
+        )
+        broker.fill_sl_partial(sl.order_id, 3, 99.0, complete=False)
+        updated = broker.modify_slm(sl.order_id, 98.0, quantity=9, transaction_type="SELL")
+        self.assertEqual(str(updated.status).upper(), "OPEN")
+        self.assertEqual(int(updated.filled_quantity or 0), 3)
+        self.assertEqual(int(updated.pending_quantity or 0), 9)
+        self.assertEqual(int(updated.quantity or 0), 12)
+
+    def test_fill_sl_partial_uses_open_not_trigger_pending(self) -> None:
+        broker = FakeBroker(last_prices={"AAA": 110}, auto_confirm_sl=True)
+        sl = broker.place_slm(
+            tradingsymbol="AAA",
+            transaction_type="SELL",
+            quantity=10,
+            trigger_price=99,
+            tag="te1",
+        )
+        partial = broker.fill_sl_partial(sl.order_id, 2, 99.0, complete=False)
+        self.assertEqual(str(partial.status).upper(), "OPEN")
+        self.assertEqual(int(partial.pending_quantity or 0), 8)
 
 
 class KiteBrokerTests(unittest.TestCase):
@@ -161,12 +194,201 @@ class KiteBrokerTests(unittest.TestCase):
         self.assertEqual(quote.unrealised, 50)
         self.assertEqual(broker.net_position_qty("AAA"), 10)
 
+    def test_modify_slm_translates_remaining_cover_to_total_qty(self) -> None:
+        kite = MagicMock()
+        order_state = {
+            "order_id": "sl1",
+            "tag": "te1",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "SL",
+            "quantity": 10,
+            "status": "OPEN",
+            "average_price": 99.0,
+            "filled_quantity": 4,
+            "pending_quantity": 6,
+            "trigger_price": 99.0,
+            "price": 99.0,
+        }
+
+        def orders() -> list:
+            return [dict(order_state)]
+
+        def modify_order(**kwargs: object) -> dict:
+            total = int(kwargs["quantity"])  # type: ignore[arg-type]
+            filled = int(order_state["filled_quantity"])
+            order_state["quantity"] = total
+            order_state["pending_quantity"] = max(0, total - filled)
+            return {"order_id": "sl1"}
+
+        kite.orders.side_effect = orders
+        kite.modify_order.side_effect = modify_order
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        # Port contract: quantity=8 means desired remaining cover.
+        # Triggered OPEN remainder → quantity-only request (no order_type/price/trigger).
+        updated = broker.modify_slm("sl1", 98.0, quantity=8, transaction_type="SELL")
+        sent = kite.modify_order.call_args.kwargs
+        self.assertEqual(int(sent["quantity"]), 12)
+        self.assertNotIn("trigger_price", sent)
+        self.assertNotIn("order_type", sent)
+        self.assertNotIn("price", sent)
+        self.assertEqual(set(sent.keys()), {"variety", "order_id", "quantity"})
+        self.assertEqual(int(updated.quantity or 0), 12)
+        self.assertEqual(int(updated.filled_quantity or 0), 4)
+        self.assertEqual(int(updated.pending_quantity or 0), 8)
+
+    def test_modify_slm_requires_confirmed_order_state(self) -> None:
+        kite = MagicMock()
+        kite.orders.return_value = []
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        with self.assertRaises(RuntimeError) as ctx:
+            broker.modify_slm("missing", 99.0, quantity=5, transaction_type="SELL")
+        self.assertIn("confirmed_order_state", str(ctx.exception))
+        kite.modify_order.assert_not_called()
+
+    def test_modify_waiting_stop_sends_sl_trigger(self) -> None:
+        kite = MagicMock()
+        order_state = {
+            "order_id": "slw",
+            "tag": "te1",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "SL",
+            "quantity": 10,
+            "status": "TRIGGER PENDING",
+            "average_price": None,
+            "filled_quantity": 0,
+            "pending_quantity": 10,
+            "trigger_price": 100.0,
+            "price": 100.0,
+        }
+
+        def orders() -> list:
+            return [dict(order_state)]
+
+        def modify_order(**kwargs: object) -> dict:
+            order_state["trigger_price"] = kwargs.get("trigger_price")
+            order_state["price"] = kwargs.get("price")
+            if "quantity" in kwargs:
+                order_state["quantity"] = int(kwargs["quantity"])  # type: ignore[arg-type]
+                order_state["pending_quantity"] = int(kwargs["quantity"])  # type: ignore[arg-type]
+            return {"order_id": "slw"}
+
+        kite.orders.side_effect = orders
+        kite.modify_order.side_effect = modify_order
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        broker.modify_slm("slw", 97.0, quantity=10, transaction_type="SELL", tick_size=1)
+        sent = kite.modify_order.call_args.kwargs
+        self.assertEqual(sent["order_type"], "SL")
+        self.assertEqual(sent["trigger_price"], 97)
+        self.assertEqual(sent["price"], 97)
+        self.assertEqual(int(sent["quantity"]), 10)
+
+    def test_modify_open_zero_fills_is_uncertain_not_waiting(self) -> None:
+        """OPEN with zero fills must not be treated as a waiting SL trigger rewrite."""
+        kite = MagicMock()
+        order_state = {
+            "order_id": "sl0",
+            "tag": "te1",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "SL",
+            "quantity": 10,
+            "status": "OPEN",
+            "average_price": None,
+            "filled_quantity": 0,
+            "pending_quantity": 10,
+            "trigger_price": 100.0,
+            "price": 100.0,
+        }
+        kite.orders.side_effect = lambda: [dict(order_state)]
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        with self.assertRaises(RuntimeError) as ctx:
+            broker.modify_slm("sl0", 97.0, quantity=10, transaction_type="SELL", tick_size=1)
+        self.assertIn("uncertain_order_state", str(ctx.exception))
+        kite.modify_order.assert_not_called()
+
+    def test_modify_triggered_rejects_trigger_only_rewrite(self) -> None:
+        kite = MagicMock()
+        order_state = {
+            "order_id": "sl1",
+            "tag": "te1",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "LIMIT",
+            "quantity": 10,
+            "status": "OPEN",
+            "average_price": 99.0,
+            "filled_quantity": 4,
+            "pending_quantity": 6,
+            "trigger_price": None,
+            "price": 99.0,
+        }
+        kite.orders.side_effect = lambda: [dict(order_state)]
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        with self.assertRaises(RuntimeError) as ctx:
+            broker.modify_slm("sl1", 98.0, transaction_type="SELL")
+        self.assertIn("triggered_quantity_only", str(ctx.exception))
+        kite.modify_order.assert_not_called()
+
+    def test_modify_exception_reconciles_without_retry(self) -> None:
+        kite = MagicMock()
+        order_state = {
+            "order_id": "slx",
+            "tag": "te1",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "SL",
+            "quantity": 10,
+            "status": "TRIGGER PENDING",
+            "average_price": None,
+            "filled_quantity": 0,
+            "pending_quantity": 10,
+            "trigger_price": 100.0,
+            "price": 100.0,
+        }
+
+        def orders() -> list:
+            return [dict(order_state)]
+
+        kite.orders.side_effect = orders
+        kite.modify_order.side_effect = RuntimeError("transient")
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        result = broker.modify_slm("slx", 99.0, quantity=10, transaction_type="SELL")
+        self.assertEqual(kite.modify_order.call_count, 1)
+        self.assertEqual(result.order_id, "slx")
+        self.assertEqual(str(result.status).upper(), "TRIGGER PENDING")
+
     def test_position_quote_failure_is_unknown_not_zero(self) -> None:
         kite = MagicMock()
         kite.positions.side_effect = RuntimeError("down")
         broker = KiteBroker(kite, live_orders_enabled=True)
         self.assertIsNone(broker.position_quote("AAA"))
         self.assertIsNone(broker.net_position_qty("AAA"))
+
+    def test_kite_normalizes_timezone_less_exchange_timestamp_as_ist(self) -> None:
+        raw = {
+            "order_id": "o1",
+            "tag": "te1",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "LIMIT",
+            "quantity": 10,
+            "status": "COMPLETE",
+            "average_price": 100.0,
+            "filled_quantity": 10,
+            "pending_quantity": 0,
+            "exchange_timestamp": "2026-08-17 10:25:00",
+        }
+        order = _kite_order_to_broker(raw)
+        self.assertEqual(order.order_timestamp, "2026-08-17T04:55:00+00:00")
+        # Unknown convention must not invent UTC for naive stamps.
+        self.assertIsNone(
+            normalize_broker_timestamp("2026-08-17 10:25:00", naive_tz=None)
+        )
+        aware = parse_timestamp_text("2026-08-17T04:55:00+00:00")
+        assert aware is not None
+        self.assertIsNotNone(aware.tzinfo)
 
 
 if __name__ == "__main__":

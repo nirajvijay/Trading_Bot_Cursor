@@ -17,23 +17,65 @@ DEMO_LEVERAGE_FACTOR = 5.0
 TradeStatus = Literal[
     "candidate",
     "entry_submitting",
+    "submission_unknown",
+    "partial_entry",
     "entry_filled",
+    "protection_pending",
     "stop_pending",
     "protected_open",
+    "exit_pending",
+    "partial_exit",
+    "reconciliation_required",
     "closed",
     "skipped",
     "rejected",
 ]
 
 RISK_CONSUMING_STATES: FrozenSet[str] = frozenset(
-    {"entry_submitting", "entry_filled", "stop_pending", "protected_open"}
+    {
+        "entry_submitting",
+        "submission_unknown",
+        "partial_entry",
+        "entry_filled",
+        "protection_pending",
+        "stop_pending",
+        "protected_open",
+        "exit_pending",
+        "partial_exit",
+        "reconciliation_required",
+    }
 )
-UNPROTECTED_STATES: FrozenSet[str] = frozenset({"entry_filled", "stop_pending"})
+# Legacy status labels plus any fill that is not yet covered by protected_qty
+# (see trading_engine_risk.is_unprotected for quantity-aware check).
+UNPROTECTED_STATES: FrozenSet[str] = frozenset(
+    {"entry_filled", "stop_pending", "protection_pending", "partial_entry"}
+)
 ACTIVE_STATES: FrozenSet[str] = frozenset(
-    {"entry_submitting", "entry_filled", "stop_pending", "protected_open"}
+    {
+        "entry_submitting",
+        "submission_unknown",
+        "partial_entry",
+        "entry_filled",
+        "protection_pending",
+        "stop_pending",
+        "protected_open",
+        "exit_pending",
+        "partial_exit",
+        "reconciliation_required",
+    }
 )
 IN_FLIGHT_BLOCK_STATES: FrozenSet[str] = frozenset(
-    {"entry_submitting", "entry_filled", "stop_pending"}
+    {
+        "entry_submitting",
+        "submission_unknown",
+        "partial_entry",
+        "entry_filled",
+        "protection_pending",
+        "stop_pending",
+        "reconciliation_required",
+        "exit_pending",
+        "partial_exit",
+    }
 )
 SKIPPED_STATES: FrozenSet[str] = frozenset({"skipped", "rejected"})
 
@@ -98,6 +140,24 @@ class TradeRecord:
     auto_trail_enabled: bool = False
     auto_trail_ticks: Optional[int] = None
     auto_trail_extreme: Optional[float] = None
+    # WP-1.1 quantity + provenance (qty remains intended size for back-compat).
+    intended_qty: int = 0
+    filled_qty: int = 0  # cumulative entry fills (never decreases on exit)
+    exited_qty: int = 0  # cumulative exit/stop fills (independent of entry)
+    entry_value: float = 0.0  # confirmed entry notional (broker average prices only)
+    exit_value: float = 0.0  # confirmed exit notional (broker average prices only)
+    entry_value_est: float = 0.0  # estimated entry notional for unpriced fills
+    exit_value_est: float = 0.0  # estimated exit notional for unpriced fills
+    pnl_provisional: bool = False  # True until all execution prices are confirmed
+    remaining_entry_qty: int = 0
+    remaining_position_qty: int = 0  # max(0, filled_qty - exited_qty) after reconcile
+    protected_qty: int = 0  # broker-confirmed protective coverage of remaining position
+    qty_model_version: int = 1
+    run_id: Optional[str] = None
+    entry_live_orders_enabled: Optional[bool] = None
+
+
+TERMINAL_FLAT_STATES: FrozenSet[str] = frozenset({"closed", "skipped", "rejected"})
 
 
 @dataclass
@@ -149,6 +209,31 @@ class BrokerOrder:
     product: str = "MIS"
     variety: str = "regular"
     exchange: str = "NSE"
+    filled_quantity: int = 0
+    pending_quantity: int = 0
+    cancelled_quantity: int = 0
+    order_timestamp: Optional[str] = None  # broker/exchange time when known
+
+
+def broker_order_filled_qty(order: BrokerOrder) -> int:
+    """Prefer explicit filled_quantity; fall back to COMPLETE ⇒ full quantity."""
+    filled = int(order.filled_quantity or 0)
+    if filled > 0:
+        return filled
+    if str(order.status).upper() == "COMPLETE":
+        return int(order.quantity or 0)
+    return 0
+
+
+def broker_order_pending_qty(order: BrokerOrder) -> int:
+    pending = int(order.pending_quantity or 0)
+    if pending > 0:
+        return pending
+    status = str(order.status).upper()
+    if status in {"COMPLETE", "CANCELLED", "REJECTED"}:
+        return 0
+    filled = broker_order_filled_qty(order)
+    return max(0, int(order.quantity or 0) - filled)
 
 
 @dataclass

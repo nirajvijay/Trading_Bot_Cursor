@@ -308,7 +308,7 @@ class CycleTests(unittest.TestCase):
         cycle.tick()
         trades = store.list_trades("2026-08-17")
         statuses = {t.setup_id: t.status for t in trades}
-        self.assertEqual(statuses["a"], "stop_pending")
+        self.assertEqual(statuses["a"], "protection_pending")
         self.assertEqual(statuses["b"], "rejected")
         self.assertEqual(trades[1].reject_reason if trades[0].setup_id == "a" else trades[0].reject_reason, "unprotected_lockout")
         snap = snapshot_dict(
@@ -322,7 +322,7 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(snap["state"], "critical")
         self.assertEqual(len(snap["active"]), 1)
         self.assertEqual(len(snap["skipped"]), 1)
-        self.assertTrue(any(r["status"] == "stop_pending" for r in snap["active"]))
+        self.assertTrue(any(r["status"] == "protection_pending" for r in snap["active"]))
         store.close()
 
     def test_trail_into_profit_zero_remaining(self) -> None:
@@ -391,7 +391,12 @@ class CycleTests(unittest.TestCase):
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
         self.assertEqual(trade.status, "protected_open")
-        broker.flatten_mis("AAA", 112.0)
+        store.update_trade(trade.trade_id, entry_time="2026-08-17T04:40:00+00:00")
+        broker.flatten_mis(
+            "AAA",
+            112.0,
+            order_timestamp="2026-08-17T04:55:00+00:00",
+        )
         cycle.tick()
         closed = store.get_trade(trade.trade_id)
         assert closed is not None
@@ -410,11 +415,17 @@ class CycleTests(unittest.TestCase):
         store, cycle = self._cycle(broker)
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
+        first_sl = trade.sl_order_id
+        places = broker.slm_place_count
         broker.cancel_order(trade.sl_order_id or "")
         cycle.tick()
         updated = store.get_trade(trade.trade_id)
         assert updated is not None
-        self.assertEqual(updated.status, "stop_pending")
+        # Residual exposure must be re-protected (new working stop), not left stranded.
+        self.assertGreater(broker.slm_place_count, places)
+        self.assertNotEqual(updated.sl_order_id, first_sl)
+        self.assertIn(updated.status, {"protected_open", "protection_pending", "stop_pending"})
+        self.assertGreater(int(updated.remaining_position_qty or 0), 0)
         store.close()
 
     def test_auto_trail_tightens_with_price(self) -> None:

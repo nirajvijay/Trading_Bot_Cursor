@@ -97,6 +97,19 @@ CREATE TABLE IF NOT EXISTS engine_commands (
 );
 """
 
+CREATE_ORDER_LINKS_SQL = """
+CREATE TABLE IF NOT EXISTS trade_order_links (
+    order_id TEXT PRIMARY KEY,
+    trade_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    attribution_kind TEXT NOT NULL,
+    attributed_at TEXT NOT NULL,
+    session_date TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_trade_order_links_trade
+    ON trade_order_links(trade_id);
+"""
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -112,6 +125,65 @@ def make_broker_tag(trade_id: str) -> str:
 
 
 def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
+    qty = int(row["qty"])
+    keys = set(row.keys())
+    intended = (
+        int(row["intended_qty"])
+        if "intended_qty" in keys and row["intended_qty"] is not None
+        else qty
+    )
+    filled = int(row["filled_qty"]) if "filled_qty" in keys and row["filled_qty"] is not None else 0
+    exited = int(row["exited_qty"]) if "exited_qty" in keys and row["exited_qty"] is not None else 0
+    entry_value = (
+        float(row["entry_value"])
+        if "entry_value" in keys and row["entry_value"] is not None
+        else 0.0
+    )
+    exit_value = (
+        float(row["exit_value"])
+        if "exit_value" in keys and row["exit_value"] is not None
+        else 0.0
+    )
+    entry_value_est = (
+        float(row["entry_value_est"])
+        if "entry_value_est" in keys and row["entry_value_est"] is not None
+        else 0.0
+    )
+    exit_value_est = (
+        float(row["exit_value_est"])
+        if "exit_value_est" in keys and row["exit_value_est"] is not None
+        else 0.0
+    )
+    pnl_provisional = False
+    if "pnl_provisional" in keys and row["pnl_provisional"] is not None:
+        pnl_provisional = bool(int(row["pnl_provisional"]))
+    remaining = (
+        int(row["remaining_entry_qty"])
+        if "remaining_entry_qty" in keys and row["remaining_entry_qty"] is not None
+        else 0
+    )
+    rem_pos = (
+        int(row["remaining_position_qty"])
+        if "remaining_position_qty" in keys and row["remaining_position_qty"] is not None
+        else 0
+    )
+    protected = (
+        int(row["protected_qty"])
+        if "protected_qty" in keys and row["protected_qty"] is not None
+        else 0
+    )
+    qty_model_version = (
+        int(row["qty_model_version"])
+        if "qty_model_version" in keys and row["qty_model_version"] is not None
+        else 0
+    )
+    status = str(row["status"])
+    run_id = None
+    if "run_id" in keys and row["run_id"] is not None:
+        run_id = str(row["run_id"])
+    entry_live = None
+    if "entry_live_orders_enabled" in keys and row["entry_live_orders_enabled"] is not None:
+        entry_live = bool(int(row["entry_live_orders_enabled"]))
     return TradeRecord(
         trade_id=str(row["trade_id"]),
         setup_id=str(row["setup_id"]),
@@ -121,7 +193,7 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         symbol=str(row["symbol"]),
         instrument_token=int(row["instrument_token"]),
         direction=str(row["direction"]),
-        qty=int(row["qty"]),
+        qty=qty,
         entry_estimate=float(row["entry_estimate"]),
         entry_fill=None if row["entry_fill"] is None else float(row["entry_fill"]),
         initial_stop=None if row["initial_stop"] is None else float(row["initial_stop"]),
@@ -130,7 +202,7 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         tick_size=float(row["tick_size"]),
         notional=float(row["notional"]),
         margin_blocked=float(row["margin_blocked"]),
-        status=str(row["status"]),
+        status=status,
         skip_reason=None if row["skip_reason"] is None else str(row["skip_reason"]),
         reject_reason=None if row["reject_reason"] is None else str(row["reject_reason"]),
         close_reason=None if row["close_reason"] is None else str(row["close_reason"]),
@@ -149,6 +221,20 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         auto_trail_enabled=_row_bool(row, "auto_trail_enabled", False),
         auto_trail_ticks=_row_optional_int(row, "auto_trail_ticks"),
         auto_trail_extreme=_row_optional_float(row, "auto_trail_extreme"),
+        intended_qty=intended,
+        filled_qty=filled,
+        exited_qty=exited,
+        entry_value=entry_value,
+        exit_value=exit_value,
+        entry_value_est=entry_value_est,
+        exit_value_est=exit_value_est,
+        pnl_provisional=pnl_provisional,
+        remaining_entry_qty=remaining,
+        remaining_position_qty=rem_pos,
+        protected_qty=protected,
+        qty_model_version=qty_model_version,
+        run_id=run_id,
+        entry_live_orders_enabled=entry_live,
     )
 
 
@@ -191,7 +277,11 @@ class TradingEngineStore:
 
     def _init(self) -> None:
         self._conn.executescript(
-            CREATE_RUNS_SQL + CREATE_TRADES_SQL + CREATE_EVENTS_SQL + CREATE_COMMANDS_SQL
+            CREATE_RUNS_SQL
+            + CREATE_TRADES_SQL
+            + CREATE_EVENTS_SQL
+            + CREATE_COMMANDS_SQL
+            + CREATE_ORDER_LINKS_SQL
         )
         self._ensure_column("trades", "auto_trail_enabled", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("trades", "auto_trail_ticks", "INTEGER")
@@ -206,9 +296,103 @@ class TradingEngineStore:
             ("vwap_accept_gap_exclusive_max", "REAL"),
             ("vwap_limited_gap_inclusive_max", "REAL"),
             ("admin_config_read_at", "TEXT"),
+            ("intended_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("filled_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("exited_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("entry_value", "REAL NOT NULL DEFAULT 0"),
+            ("exit_value", "REAL NOT NULL DEFAULT 0"),
+            ("entry_value_est", "REAL NOT NULL DEFAULT 0"),
+            ("exit_value_est", "REAL NOT NULL DEFAULT 0"),
+            ("pnl_provisional", "INTEGER NOT NULL DEFAULT 0"),
+            ("remaining_entry_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("remaining_position_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("protected_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("qty_model_version", "INTEGER NOT NULL DEFAULT 0"),
+            ("run_id", "TEXT"),
+            ("entry_live_orders_enabled", "INTEGER"),
         ):
             self._ensure_column("trades", col, ddl)
+        self._migrate_qty_model_v1()
+        # Closed rows: align exited_qty with cumulative entry fills (flat). Do not invent for open.
+        self._conn.execute(
+            """
+            UPDATE trades
+            SET exited_qty = filled_qty
+            WHERE status = 'closed'
+              AND COALESCE(exited_qty, 0) = 0
+              AND COALESCE(filled_qty, 0) > 0
+            """
+        )
+        # Backfill confirmed execution values only from stored fill prices (never invent).
+        self._conn.execute(
+            """
+            UPDATE trades
+            SET entry_value = COALESCE(entry_fill, 0) * COALESCE(filled_qty, 0)
+            WHERE COALESCE(entry_value, 0) = 0
+              AND COALESCE(filled_qty, 0) > 0
+              AND entry_fill IS NOT NULL
+            """
+        )
+        self._conn.execute(
+            """
+            UPDATE trades
+            SET exit_value = COALESCE(exit_fill, 0) * COALESCE(exited_qty, 0)
+            WHERE COALESCE(exit_value, 0) = 0
+              AND COALESCE(exited_qty, 0) > 0
+              AND exit_fill IS NOT NULL
+              AND COALESCE(pnl_provisional, 0) = 0
+            """
+        )
         self._conn.commit()
+
+    def _migrate_qty_model_v1(self) -> None:
+        """Explicit qty-model migration. Never invent broker-confirmed protection.
+
+        qty_model_version 0 → 1:
+        - Terminal rows: position flat; filled_qty set for closed only as historical size.
+        - Open exposure rows: intended/filled/remaining_position from local qty as
+          *unconfirmed estimates*; protected_qty stays 0 until broker confirmation.
+        """
+        rows = self._conn.execute(
+            "SELECT trade_id, status, qty FROM trades WHERE qty_model_version = 0"
+        ).fetchall()
+        for row in rows:
+            trade_id = str(row["trade_id"])
+            status = str(row["status"])
+            qty = int(row["qty"] or 0)
+            if status in {"closed"}:
+                fields = (
+                    qty,  # intended
+                    qty,  # filled cumulative historical
+                    0,  # remaining_entry
+                    0,  # remaining_position
+                    0,  # protected — not inventing
+                    1,  # version
+                    trade_id,
+                )
+            elif status in {"skipped", "rejected", "candidate"}:
+                fields = (qty, 0, 0, 0, 0, 1, trade_id)
+            elif status in {
+                "entry_submitting",
+                "submission_unknown",
+            }:
+                fields = (qty, 0, qty, 0, 0, 1, trade_id)
+            else:
+                # Open / in-flight: local size estimate only; protection unconfirmed.
+                fields = (qty, qty, 0, qty, 0, 1, trade_id)
+            self._conn.execute(
+                """
+                UPDATE trades SET
+                    intended_qty = ?,
+                    filled_qty = ?,
+                    remaining_entry_qty = ?,
+                    remaining_position_qty = ?,
+                    protected_qty = ?,
+                    qty_model_version = ?
+                WHERE trade_id = ?
+                """,
+                fields,
+            )
 
     def _ensure_column(self, table: str, name: str, ddl: str) -> None:
         rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -500,3 +684,58 @@ class TradingEngineStore:
         )
         self._conn.commit()
         return int(cur.rowcount or 0)
+
+    def get_order_link(self, order_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM trade_order_links WHERE order_id = ?",
+            (str(order_id),),
+        ).fetchone()
+
+    def list_order_links(self, trade_id: str) -> List[sqlite3.Row]:
+        return self._conn.execute(
+            """
+            SELECT * FROM trade_order_links
+            WHERE trade_id = ?
+            ORDER BY attributed_at ASC, order_id ASC
+            """,
+            (str(trade_id),),
+        ).fetchall()
+
+    def attribute_order(
+        self,
+        trade_id: str,
+        order_id: str,
+        *,
+        role: str,
+        attribution_kind: str,
+        session_date: Optional[str] = None,
+    ) -> str:
+        """Persist order→trade ownership.
+
+        Returns:
+          linked   — newly inserted
+          exists   — already linked to this trade
+          conflict — already linked to a different trade (unchanged)
+        """
+        existing = self.get_order_link(order_id)
+        if existing is not None:
+            if str(existing["trade_id"]) == str(trade_id):
+                return "exists"
+            return "conflict"
+        self._conn.execute(
+            """
+            INSERT INTO trade_order_links (
+                order_id, trade_id, role, attribution_kind, attributed_at, session_date
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(order_id),
+                str(trade_id),
+                str(role),
+                str(attribution_kind),
+                _utc_now(),
+                session_date,
+            ),
+        )
+        self._conn.commit()
+        return "linked"
