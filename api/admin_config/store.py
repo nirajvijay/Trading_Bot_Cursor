@@ -83,6 +83,12 @@ def apply_saved_to_effective(
         old_v = float(out[key])
         if new_v > old_v + 1e-12:
             out[key] = new_v
+    # Shorter safety timers (tightening) apply immediately for new decisions.
+    for key in ("protection_confirm_deadline_seconds", "entry_remainder_cancel_seconds"):
+        new_v = float(saved[key])
+        old_v = float(out[key])
+        if new_v < old_v - 1e-12:
+            out[key] = new_v
     return out
 
 
@@ -139,6 +145,8 @@ def validate_config_values(
     notional_cap_flag = float(merged["aggregate_notional_cap_equals_allocated_capital"])
     charge_bps = float(merged["round_trip_charge_bps"])
     slippage_bps = float(merged["estimated_slippage_bps"])
+    protection_deadline = float(merged["protection_confirm_deadline_seconds"])
+    remainder_cancel = float(merged["entry_remainder_cancel_seconds"])
 
     if per_trade <= 0 or per_trade > 2000:
         raise ValueError("per_trade_risk_cap_inr out of range")
@@ -166,6 +174,10 @@ def validate_config_values(
         raise ValueError("round_trip_charge_bps out of range")
     if slippage_bps < 0 or slippage_bps > 100:
         raise ValueError("estimated_slippage_bps out of range")
+    if protection_deadline < 1 or protection_deadline > 120:
+        raise ValueError("protection_confirm_deadline_seconds out of range")
+    if remainder_cancel < 1 or remainder_cancel > 120:
+        raise ValueError("entry_remainder_cancel_seconds out of range")
 
     warnings: list[str] = []
     if daily < per_trade:
@@ -184,6 +196,8 @@ def validate_config_values(
         "aggregate_notional_cap_equals_allocated_capital": notional_cap_flag,
         "round_trip_charge_bps": charge_bps,
         "estimated_slippage_bps": slippage_bps,
+        "protection_confirm_deadline_seconds": protection_deadline,
+        "entry_remainder_cancel_seconds": remainder_cancel,
     }
     return normalized, warnings
 

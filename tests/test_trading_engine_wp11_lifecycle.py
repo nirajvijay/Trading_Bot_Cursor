@@ -965,7 +965,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
         _session_align_entry(store, trade.trade_id)
-        flat = broker.flatten_mis(
+        flat = broker.simulate_external_flatten(
             "AAA",
             112.0,
             order_type="LIMIT",
@@ -993,7 +993,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         cycle.tick()
         first = store.list_trades("2026-08-17")[0]
         _session_align_entry(store, first.trade_id)
-        flat = broker.flatten_mis(
+        flat = broker.simulate_external_flatten(
             "AAA",
             111.0,
             order_type="LIMIT",
@@ -1057,7 +1057,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         raw_exit = "2026-08-17 15:35:00+05:30"
         entry = "2026-08-17T10:00:00+00:00"
         self.assertLess(raw_exit, entry)  # string trap on broker-style text
-        flat = broker.flatten_mis(
+        flat = broker.simulate_external_flatten(
             "AAA",
             112.0,
             order_type="LIMIT",
@@ -1078,7 +1078,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
         _session_align_entry(store, trade.trade_id)
-        flat = broker.flatten_mis("AAA", 112.0, order_type="LIMIT", stamp=False)
+        flat = broker.simulate_external_flatten("AAA", 112.0, order_type="LIMIT", stamp=False)
         self.assertIsNone(flat.order_timestamp)
         for _ in range(4):
             cycle.tick()
@@ -1096,7 +1096,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
         _session_align_entry(store, trade.trade_id)
-        flat = broker.flatten_mis(
+        flat = broker.simulate_external_flatten(
             "AAA",
             112.0,
             order_type="LIMIT",
@@ -1119,7 +1119,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         trade = store.list_trades("2026-08-17")[0]
         store.update_trade(trade.trade_id, entry_time="2026-08-17T04:40:00+00:00")
         # 10:25 IST = 04:55 UTC — after entry under IST, before entry if forced to UTC.
-        flat = broker.flatten_mis(
+        flat = broker.simulate_external_flatten(
             "AAA",
             112.0,
             order_type="LIMIT",
@@ -1142,7 +1142,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
         store.update_trade(trade.trade_id, entry_time="2026-08-17T04:40:00+00:00")
-        flat = broker.flatten_mis(
+        flat = broker.simulate_external_flatten(
             "AAA",
             112.0,
             order_type="LIMIT",
@@ -1182,7 +1182,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
         self.assertGreater(as_utc, entry_dt)  # incorrect UTC assumption
         self.assertLess(as_ist, entry_dt)  # correct IST convention
 
-        flat = broker.flatten_mis(
+        flat = broker.simulate_external_flatten(
             "AAA",
             112.0,
             order_type="LIMIT",

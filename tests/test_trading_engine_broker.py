@@ -152,6 +152,36 @@ class KiteBrokerTests(unittest.TestCase):
         self.assertEqual(order.order_id, "oid1")
         kite.place_order.assert_not_called()
 
+    def test_flatten_mis_uses_place_market_mis_path(self) -> None:
+        kite = MagicMock()
+        kite.place_order.return_value = {"order_id": "ex1"}
+        placed = {
+            "order_id": "ex1",
+            "tag": "teabcE",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "MARKET",
+            "quantity": 10,
+            "status": "COMPLETE",
+            "average_price": 111,
+            "filled_quantity": 10,
+            "pending_quantity": 0,
+        }
+        kite.orders.side_effect = [[], [placed], [placed]]
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        order = broker.flatten_mis(
+            tradingsymbol="AAA",
+            transaction_type="SELL",
+            quantity=10,
+            tag="teabcE",
+        )
+        self.assertEqual(order.order_id, "ex1")
+        kwargs = kite.place_order.call_args.kwargs
+        self.assertEqual(kwargs["order_type"], "MARKET")
+        self.assertEqual(kwargs["transaction_type"], "SELL")
+        self.assertEqual(kwargs["quantity"], 10)
+        self.assertEqual(kwargs["tag"], "teabcE")
+
     def test_place_sl_equal_trigger_and_price(self) -> None:
         kite = MagicMock()
         kite.place_order.return_value = {"order_id": "sl1"}

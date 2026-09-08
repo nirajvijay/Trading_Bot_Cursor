@@ -495,6 +495,7 @@ Mirror shorts; persist extreme; ≤1 modify / 2s / ≥2 ticks improvement; never
 | 1.1 | 2026-09-08 | Cursor | Owner review corrections: entry vs management split; independent partial protection; live auth path; ADANIPORTS provenance; test-claim labeling |
 | 1.2 | 2026-09-08 | Cursor | **WP-1.1 accepted** (dev checkpoint). See §7. |
 | 1.3 | 2026-09-08 | Cursor | **WP-1.2 accepted** (dev checkpoint). See §8. |
+| 1.4 | 2026-09-09 | Cursor | **WP-1.3 accepted** (dev checkpoint). See §9. |
 
 Astra remains product authority; this file is the Stage 0 evidence + implementation contract freeze for Cursor.
 

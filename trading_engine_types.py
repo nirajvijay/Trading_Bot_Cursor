@@ -22,6 +22,11 @@ DEFAULT_ROUND_TRIP_CHARGE_BPS = 3.0
 DEFAULT_ESTIMATED_SLIPPAGE_BPS = 2.0
 # Legacy combined default (charge + slippage) for older call sites / payloads.
 DEFAULT_ROUND_TRIP_COST_BPS = DEFAULT_ROUND_TRIP_CHARGE_BPS + DEFAULT_ESTIMATED_SLIPPAGE_BPS
+# WP-1.3 protection / remainder / trail policy defaults (§3.8 / §3.14).
+DEFAULT_PROTECTION_CONFIRM_DEADLINE_SECONDS = 5.0
+DEFAULT_ENTRY_REMAINDER_CANCEL_SECONDS = 5.0
+TRAIL_MIN_MODIFY_INTERVAL_SECONDS = 2.0
+TRAIL_MIN_IMPROVEMENT_TICKS = 2
 
 TradeStatus = Literal[
     "candidate",
@@ -171,6 +176,14 @@ class TradeRecord:
     # WP-1.2 cost profile stamped at accept (immutable for the trade).
     charge_bps: Optional[float] = None
     slippage_bps: Optional[float] = None
+    # WP-1.3 protection deadline + staged-R trail state.
+    protection_deadline_at: Optional[str] = None
+    r_value: Optional[float] = None  # frozen |entry − structural stop| after entry complete
+    last_trail_modify_at: Optional[str] = None
+    # Submission-intent clock for remainder cancel (not fill-time entry_time).
+    entry_submitted_at: Optional[str] = None
+    # Owner explicitly disabled auto-trail; protection refresh must not re-enable.
+    auto_trail_owner_disabled: bool = False
 
 
 TERMINAL_FLAT_STATES: FrozenSet[str] = frozenset({"closed", "skipped", "rejected"})

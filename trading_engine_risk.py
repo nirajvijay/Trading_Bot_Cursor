@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Optional, Sequence, Set
 
 from continuation_features import price_to_ticks, ticks_to_price
@@ -771,6 +772,123 @@ def trail_crosses_last_price(
     if direction == "DOWN":
         return new_stop <= last_price
     return False
+
+
+def freeze_r_value(*, entry: float, initial_stop: float) -> float:
+    """Frozen R = |actual average entry − original structural stop|."""
+    return abs(float(entry) - float(initial_stop))
+
+
+def cost_adjusted_break_even(
+    *,
+    direction: str,
+    entry: float,
+    charge_bps: float,
+) -> float:
+    """Break-even stop after round-trip charges (never embeds estimated slippage)."""
+    cps = charge_per_share(entry, charge_bps=charge_bps)
+    if direction == "UP":
+        return float(entry) + cps
+    if direction == "DOWN":
+        return float(entry) - cps
+    return float(entry)
+
+
+def favorable_r_multiple(
+    *,
+    direction: str,
+    entry: float,
+    last_price: float,
+    r_value: float,
+) -> float:
+    """How many R of favorable excursion from entry to last_price."""
+    if r_value <= 1e-12:
+        return 0.0
+    if direction == "UP":
+        return max(0.0, (float(last_price) - float(entry)) / float(r_value))
+    if direction == "DOWN":
+        return max(0.0, (float(entry) - float(last_price)) / float(r_value))
+    return 0.0
+
+
+def update_trail_extreme(
+    *,
+    direction: str,
+    last_price: float,
+    current_extreme: Optional[float],
+) -> float:
+    """Persist favorable extreme (high for UP, low for DOWN)."""
+    px = float(last_price)
+    if current_extreme is None:
+        return px
+    if direction == "UP":
+        return max(float(current_extreme), px)
+    if direction == "DOWN":
+        return min(float(current_extreme), px)
+    return px
+
+
+def staged_r_desired_stop(
+    *,
+    direction: str,
+    entry: float,
+    initial_stop: float,
+    current_stop: float,
+    extreme: float,
+    last_price: float,
+    r_value: float,
+    charge_bps: float,
+    tick_size: float,
+) -> float:
+    """§3.14 staged-R desired stop (tighten-only vs current is caller's job).
+
+    Stage selection uses the attained favorable *extreme* (not the latest mark),
+    so a retracement cannot downgrade the stage before a modification succeeds.
+    Below +1R → structural. +1R to < +2R → tightest of existing, cost BE, 1R behind extreme.
+    +2R+ → tightest of existing, cost BE, 0.5R behind extreme.
+    """
+    structural = float(initial_stop)
+    existing = float(current_stop)
+    be = cost_adjusted_break_even(direction=direction, entry=entry, charge_bps=charge_bps)
+    # Stage from extreme; last_price kept for call-site compatibility / diagnostics.
+    _ = last_price
+    mult = favorable_r_multiple(
+        direction=direction, entry=entry, last_price=float(extreme), r_value=r_value
+    )
+    if mult < 1.0 - 1e-12:
+        desired = structural
+    else:
+        behind = 1.0 * float(r_value) if mult < 2.0 - 1e-12 else 0.5 * float(r_value)
+        if direction == "UP":
+            behind_extreme = float(extreme) - behind
+            desired = max(existing, be, behind_extreme)
+        else:
+            behind_extreme = float(extreme) + behind
+            desired = min(existing, be, behind_extreme)
+    # Align to tick grid (half-up); desired may sit mid-tick after R offsets.
+    tick = Decimal(str(tick_size))
+    if tick <= 0:
+        raise ValueError("tick_size must be positive")
+    ticks = (Decimal(str(desired)) / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return ticks_to_price(int(ticks), tick_size)
+
+
+def trail_improvement_ticks(
+    *,
+    direction: str,
+    current_stop: float,
+    new_stop: float,
+    tick_size: float,
+) -> int:
+    from continuation_features import price_to_ticks
+
+    cur = price_to_ticks(current_stop, tick_size)
+    nxt = price_to_ticks(new_stop, tick_size)
+    if direction == "UP":
+        return max(0, nxt - cur)
+    if direction == "DOWN":
+        return max(0, cur - nxt)
+    return 0
 
 
 def realised_pnl(

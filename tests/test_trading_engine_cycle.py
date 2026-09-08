@@ -396,7 +396,7 @@ class CycleTests(unittest.TestCase):
         trade = store.list_trades("2026-08-17")[0]
         self.assertEqual(trade.status, "protected_open")
         store.update_trade(trade.trade_id, entry_time="2026-08-17T04:40:00+00:00")
-        broker.flatten_mis(
+        broker.simulate_external_flatten(
             "AAA",
             112.0,
             order_timestamp="2026-08-17T04:55:00+00:00",
@@ -433,14 +433,17 @@ class CycleTests(unittest.TestCase):
         store.close()
 
     def test_auto_trail_tightens_with_price(self) -> None:
+        """Staged-R: +1R..+2R tightens stop (1R behind extreme); not tick-gap."""
         _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
         broker = FakeBroker(last_prices={"AAA": 110})
         store, cycle = self._cycle(broker)
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
-        broker.last_prices["AAA"] = 120
-        cycle.set_auto_trail(trade.trade_id, enabled=True)
-        broker.last_prices["AAA"] = 125
+        # R = |110-99| = 11; mark +1.5R → 126.5 rounded via LTP 127.
+        if not trade.auto_trail_enabled:
+            cycle.set_auto_trail(trade.trade_id, enabled=True)
+        broker.last_prices["AAA"] = 127
+        store.update_trade(trade.trade_id, last_trail_modify_at=None)
         cycle._reset_quote_cache()
         cycle.apply_auto_trails()
         updated = store.get_trade(trade.trade_id)
@@ -449,29 +452,40 @@ class CycleTests(unittest.TestCase):
         self.assertGreater(updated.current_stop or 0, trade.current_stop or 0)
         store.close()
 
-    def test_auto_trail_follows_last_price_tick_for_tick(self) -> None:
+    def test_auto_trail_staged_r_below_one_r_keeps_structural(self) -> None:
+        """Below +1R favorable excursion, staged-R leaves structural stop alone."""
         _seed_live(self.live, "ok1", "2026-08-17T04:40:00+00:00")
         broker = FakeBroker(last_prices={"AAA": 110})
         store, cycle = self._cycle(broker)
         cycle.tick()
         trade = store.list_trades("2026-08-17")[0]
         self.assertEqual(trade.current_stop, 99.0)
-        cycle.set_auto_trail(trade.trade_id, enabled=True)
-        enabled = store.get_trade(trade.trade_id)
-        assert enabled is not None
-        self.assertEqual(enabled.auto_trail_ticks, 11)
+        if not trade.auto_trail_enabled:
+            cycle.set_auto_trail(trade.trade_id, enabled=True)
+        # +1 tick only (~0.09R) — must not trail.
         broker.last_prices["AAA"] = 111
+        store.update_trade(trade.trade_id, last_trail_modify_at=None)
         cycle._reset_quote_cache()
         cycle.apply_auto_trails()
         moved = store.get_trade(trade.trade_id)
         assert moved is not None
-        self.assertEqual(moved.current_stop, 100.0)
-        broker.last_prices["AAA"] = 110
+        self.assertEqual(moved.current_stop, 99.0)
+        # After +1.5R, stop tightens; subsequent adverse tick must not widen.
+        broker.last_prices["AAA"] = 127
+        store.update_trade(trade.trade_id, last_trail_modify_at=None)
+        cycle._reset_quote_cache()
+        cycle.apply_auto_trails()
+        tightened = store.get_trade(trade.trade_id)
+        assert tightened is not None
+        self.assertGreater(float(tightened.current_stop or 0), 99.0)
+        prior = float(tightened.current_stop or 0)
+        broker.last_prices["AAA"] = 120
+        store.update_trade(trade.trade_id, last_trail_modify_at=None)
         cycle._reset_quote_cache()
         cycle.apply_auto_trails()
         chopped = store.get_trade(trade.trade_id)
         assert chopped is not None
-        self.assertEqual(chopped.current_stop, 100.0)
+        self.assertEqual(float(chopped.current_stop or 0), prior)
         store.close()
 
     def test_live_open_pnl_uses_kite_position_pnl(self) -> None:

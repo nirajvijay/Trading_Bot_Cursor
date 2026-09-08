@@ -239,6 +239,23 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         slippage_bps=_row_optional_float(row, "slippage_bps"),
         exit_confirmed_qty=_row_optional_int(row, "exit_confirmed_qty"),
         exit_est_qty=_row_optional_int(row, "exit_est_qty"),
+        protection_deadline_at=(
+            None
+            if "protection_deadline_at" not in keys or row["protection_deadline_at"] is None
+            else str(row["protection_deadline_at"])
+        ),
+        r_value=_row_optional_float(row, "r_value"),
+        last_trail_modify_at=(
+            None
+            if "last_trail_modify_at" not in keys or row["last_trail_modify_at"] is None
+            else str(row["last_trail_modify_at"])
+        ),
+        entry_submitted_at=(
+            None
+            if "entry_submitted_at" not in keys or row["entry_submitted_at"] is None
+            else str(row["entry_submitted_at"])
+        ),
+        auto_trail_owner_disabled=_row_bool(row, "auto_trail_owner_disabled", False),
     )
 
 
@@ -318,6 +335,11 @@ class TradingEngineStore:
             ("slippage_bps", "REAL"),
             ("exit_confirmed_qty", "INTEGER"),
             ("exit_est_qty", "INTEGER"),
+            ("protection_deadline_at", "TEXT"),
+            ("r_value", "REAL"),
+            ("last_trail_modify_at", "TEXT"),
+            ("entry_submitted_at", "TEXT"),
+            ("auto_trail_owner_disabled", "INTEGER NOT NULL DEFAULT 0"),
         ):
             self._ensure_column("trades", col, ddl)
         for col, ddl in (

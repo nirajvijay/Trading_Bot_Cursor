@@ -114,6 +114,23 @@ class BrokerPort(Protocol):
 
     def cancel_order(self, order_id: str) -> Optional[BrokerOrder]: ...
 
+    def flatten_mis(
+        self,
+        *,
+        tradingsymbol: str,
+        transaction_type: str,
+        quantity: int,
+        tag: str,
+    ) -> BrokerOrder:
+        """Market MIS flatten/exit used by emergency and trail-through paths.
+
+        Port contract: ``quantity`` is the absolute size to exit; ``tag`` must be
+        distinct from the trade's entry MARKET tag so entry reconcile cannot
+        confuse the exit order. Adapters implement via the same write path as
+        ``place_market_mis`` (FakeBroker / KiteBroker).
+        """
+        ...
+
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]: ...
 
     def net_position_qty(self, tradingsymbol: str) -> Optional[int]: ...
@@ -235,6 +252,12 @@ class FakeBroker:
     modify_error: Optional[str] = None
     # When True, modify_slm ignores quantity updates (stale broker response simulation).
     stale_modify_quantity: bool = False
+    # When True, modify_slm leaves trigger_price unchanged (stale/uncertain modify).
+    stale_modify_trigger: bool = False
+    # When True, flatten_mis / exit market orders stay working (partial/unknown exit).
+    auto_fill_exit: bool = True
+    # One-shot: place MARKET then raise (lost-response after broker accept).
+    market_place_error: Optional[str] = None
     # Delay tag visibility for MARKET orders until reveal_tag() (lost-response tests).
     hide_market_tags: bool = False
     _hidden_tags: set = field(default_factory=set)
@@ -360,6 +383,10 @@ class FakeBroker:
         self.orders[order.order_id] = order
         if self.hide_market_tags:
             self._hidden_tags.add(tag)
+        if self.market_place_error:
+            msg = str(self.market_place_error)
+            self.market_place_error = None
+            raise RuntimeError(msg)
         return order
 
     def place_slm(
@@ -420,9 +447,12 @@ class FakeBroker:
         order = self.orders[order_id]
         self.modify_count += 1
         side = transaction_type or order.transaction_type
+        new_trigger = float(order.trigger_price or trigger_price)
+        if not self.stale_modify_trigger:
+            new_trigger = float(trigger_price)
         price = _limit_price_for_stop(
             transaction_type=side,
-            trigger_price=trigger_price,
+            trigger_price=new_trigger,
             tick_size=tick_size,
             worse_ticks=1 if self.reject_equal_sl_price else 0,
         )
@@ -446,7 +476,7 @@ class FakeBroker:
             pending = max(0, qty - filled)
         updated = _copy_order(
             order,
-            trigger_price=trigger_price,
+            trigger_price=new_trigger,
             price=price,
             order_type="SL",
             quantity=qty,
@@ -481,6 +511,8 @@ class FakeBroker:
                 average_price=order.average_price or self.last_prices.get(order.tradingsymbol),
             )
             self.orders[order_id] = updated
+            if str(order_id) in self._hidden_order_ids:
+                return None
             return updated
         cancelled = max(0, int(order.quantity or 0) - filled)
         updated = _copy_order(
@@ -492,6 +524,9 @@ class FakeBroker:
             average_price=order.average_price or self.last_prices.get(order.tradingsymbol),
         )
         self.orders[order_id] = updated
+        # Hidden order: cancel may have applied locally, but visibility/response is lost.
+        if str(order_id) in self._hidden_order_ids:
+            return None
         return updated
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
@@ -697,6 +732,37 @@ class FakeBroker:
 
     def flatten_mis(
         self,
+        *,
+        tradingsymbol: str,
+        transaction_type: str,
+        quantity: int,
+        tag: str,
+    ) -> BrokerOrder:
+        """Port flatten: market MIS exit via the same path as place_market_mis."""
+        qty = max(0, int(quantity))
+        if qty <= 0:
+            raise ValueError("flatten_qty_required")
+        existing = [
+            o
+            for o in self.orders.values()
+            if o.tag == tag and o.order_type == "MARKET"
+        ]
+        if existing:
+            return existing[0]
+        prev_auto = self.auto_fill_entry
+        try:
+            self.auto_fill_entry = bool(self.auto_fill_exit)
+            return self.place_market_mis(
+                tradingsymbol=tradingsymbol,
+                transaction_type=transaction_type,
+                quantity=qty,
+                tag=tag,
+            )
+        finally:
+            self.auto_fill_entry = prev_auto
+
+    def simulate_external_flatten(
+        self,
         tradingsymbol: str,
         price: float,
         *,
@@ -705,6 +771,7 @@ class FakeBroker:
         stamp: bool = True,
         timezone_known: bool = True,
     ) -> BrokerOrder:
+        """Test helper: inject an untagged complete flatten (external/manual exit)."""
         net = self.net_position_qty(tradingsymbol)
         if net is None or net == 0:
             raise ValueError("no_position")
@@ -1062,6 +1129,25 @@ class KiteBroker:
         self._require_live()
         self._kite.cancel_order(variety="regular", order_id=order_id)  # type: ignore[attr-defined]
         return self.poll_order(order_id)
+
+    def flatten_mis(
+        self,
+        *,
+        tradingsymbol: str,
+        transaction_type: str,
+        quantity: int,
+        tag: str,
+    ) -> BrokerOrder:
+        """Port flatten: market MIS exit via place_market_mis."""
+        qty = max(0, int(quantity))
+        if qty <= 0:
+            raise ValueError("flatten_qty_required")
+        return self.place_market_mis(
+            tradingsymbol=tradingsymbol,
+            transaction_type=transaction_type,
+            quantity=qty,
+            tag=tag,
+        )
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
         raw = self._kite.orders()  # type: ignore[attr-defined]

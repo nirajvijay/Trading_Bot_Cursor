@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
@@ -25,6 +25,7 @@ from trading_engine_risk import (
     blocks_new_entries,
     capital_snapshot,
     fold_exit_costs_into_loss,
+    freeze_r_value,
     is_unprotected,
     live_pnl,
     margin_blocked,
@@ -34,15 +35,20 @@ from trading_engine_risk import (
     remaining_downside_risk,
     risk_snapshot,
     size_new_trade,
+    staged_r_desired_stop,
     trade_cost_profile,
     trail_crosses_last_price,
+    trail_improvement_ticks,
     trail_is_tighten_only,
+    update_trail_extreme,
 )
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import (
     ACTIVE_STATES,
     DAILY_LOSS_CAP,
+    DEFAULT_ENTRY_REMAINDER_CANCEL_SECONDS,
     DEFAULT_ESTIMATED_SLIPPAGE_BPS,
+    DEFAULT_PROTECTION_CONFIRM_DEADLINE_SECONDS,
     DEFAULT_ROUND_TRIP_CHARGE_BPS,
     DEMO_LEVERAGE_FACTOR,
     LIMITED_PER_TRADE_RISK_CAP,
@@ -51,6 +57,8 @@ from trading_engine_types import (
     PER_TRADE_RISK_CAP,
     SKIPPED_STATES,
     STOP_ORDER_TYPES,
+    TRAIL_MIN_IMPROVEMENT_TICKS,
+    TRAIL_MIN_MODIFY_INTERVAL_SECONDS,
     UNPROTECTED_STATES,
     EngineState,
     PositionQuote,
@@ -377,6 +385,18 @@ class TradingEngineCycle:
                 self.last_error = str(exc)
         try:
             self.drive_open()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+        try:
+            self.enforce_entry_remainder_cancels()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+        try:
+            self.enforce_protection_deadlines()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+        try:
+            self.resume_pending_market_exits()
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
         try:
@@ -1108,6 +1128,7 @@ class TradingEngineCycle:
                 return
 
         # Persist intent before any broker write (durable command boundary).
+        submitted_at = _now()
         self.store.append_event(
             trade.trade_id,
             "entry_intent",
@@ -1117,8 +1138,12 @@ class TradingEngineCycle:
                 "side": _entry_side(trade.direction),
                 "run_id": trade.run_id or self.run_id,
                 "live_orders": bool(self.live_orders_enabled),
+                "submitted_at": submitted_at,
             },
         )
+        if not trade.entry_submitted_at:
+            self.store.update_trade(trade.trade_id, entry_submitted_at=submitted_at)
+            trade = self.store.get_trade(trade.trade_id) or trade
         try:
             order = self.broker.place_market_mis(
                 tradingsymbol=trade.symbol,
@@ -1250,6 +1275,12 @@ class TradingEngineCycle:
             pnl_provisional=1 if entry_est > 0 else int(bool(getattr(trade, "pnl_provisional", False))),
             qty_model_version=1,
         )
+        if remaining == 0 and filled_qty > 0:
+            mid = self.store.get_trade(trade.trade_id)
+            if mid is not None:
+                freeze = self._maybe_freeze_r_fields(mid)
+                if freeze:
+                    self.store.update_trade(trade.trade_id, **freeze)
         self.store.append_event(
             trade.trade_id,
             "entry_fill",
@@ -1475,6 +1506,7 @@ class TradingEngineCycle:
                 remaining_position_qty=rem_pos,
                 qty_model_version=1,
                 **{k: v for k, v in exit_updates.items() if k != "exited_qty"},
+                **self._protection_state_fields(trade, next_status=next_status),
             )
             self.store.append_event(
                 trade.trade_id,
@@ -1493,14 +1525,16 @@ class TradingEngineCycle:
             return
 
         # Unconfirmed OPEN (no fills yet) or other non-terminal: order exists but not covering.
+        pending_status = "protection_pending" if rem_pos > 0 else "stop_pending"
         self.store.update_trade(
             trade.trade_id,
-            status="protection_pending" if rem_pos > 0 else "stop_pending",
+            status=pending_status,
             sl_order_id=order.order_id,
             protected_qty=0,
             exited_qty=exited_total,
             remaining_position_qty=rem_pos,
             qty_model_version=1,
+            **self._protection_state_fields(trade, next_status=pending_status),
         )
         self.store.append_event(trade.trade_id, "protection_pending")
 
@@ -1570,6 +1604,12 @@ class TradingEngineCycle:
                 "entry_value_est": entry_est,
             },
         )
+        if pending == 0 and new_filled > 0:
+            refreshed = self.store.get_trade(trade.trade_id)
+            if refreshed is not None:
+                freeze = self._maybe_freeze_r_fields(refreshed)
+                if freeze:
+                    self.store.update_trade(trade.trade_id, **freeze)
         return pending
 
     def _handle_protective_exit(
@@ -1979,7 +2019,8 @@ class TradingEngineCycle:
                                 filled_qty=filled,
                             )
                     elif rem_pos > 0:
-                        self._ensure_protection(trade)
+                        if not self._blocking_exit_in_progress(trade):
+                            self._ensure_protection(trade)
                     refreshed = self.store.get_trade(trade.trade_id)
                     trade = refreshed if refreshed is not None else trade
 
@@ -2022,11 +2063,15 @@ class TradingEngineCycle:
                         pos = int(trade.remaining_position_qty or 0)
                         prot = int(trade.protected_qty or 0)
                 if pos > prot:
-                    self._ensure_protection(trade)
+                    if not self._blocking_exit_in_progress(trade):
+                        self._ensure_protection(trade)
                 elif trade.status == "protected_open":
                     self._drive_protected(trade)
 
     def _reconcile_external_exit(self, trade: TradeRecord) -> bool:
+        if self._blocking_exit_in_progress(trade) or self._pending_exit_submission(trade):
+            # Outstanding emergency/trail exit owns reconciliation until linked.
+            return False
         filled = int(trade.filled_qty or 0)
         exited = max(int(trade.exited_qty or 0), self._broker_exit_filled_total(trade))
         pos = self._remaining_position_from_executions(filled, exited)
@@ -2256,7 +2301,7 @@ class TradingEngineCycle:
             new_stop=aligned,
         )
         try:
-            self.broker.modify_slm(
+            modified = self.broker.modify_slm(
                 trade.sl_order_id,
                 aligned,
                 tick_size=trade.tick_size,
@@ -2270,7 +2315,35 @@ class TradingEngineCycle:
                 payload={"reason": f"modify_failed:{exc}"},
             )
             raise ValueError(f"modify_failed:{exc}") from exc
-        fields: dict[str, Any] = {"current_stop": aligned}
+        confirmed = self._confirmed_trail_trigger(modified, requested=aligned, tick_size=trade.tick_size)
+        if confirmed is None:
+            self.store.append_event(
+                trade.trade_id,
+                "sl_modify_unconfirmed",
+                actor=actor,
+                old_stop=old,
+                new_stop=aligned,
+                payload={
+                    "broker_trigger": getattr(modified, "trigger_price", None),
+                    "broker_status": getattr(modified, "status", None),
+                },
+            )
+            return trade
+        if not trail_is_tighten_only(
+            direction=trade.direction,
+            current_stop=float(old),
+            new_stop=float(confirmed),
+        ):
+            self.store.append_event(
+                trade.trade_id,
+                "sl_modify_unchanged",
+                actor=actor,
+                old_stop=old,
+                new_stop=aligned,
+                payload={"broker_trigger": confirmed},
+            )
+            return trade
+        fields: dict[str, Any] = {"current_stop": float(confirmed)}
         if actor == "user" and trade.auto_trail_enabled:
             mark_for_trail = mark if mark is not None else self._last_price(trade.symbol)
             if mark_for_trail is not None:
@@ -2278,7 +2351,7 @@ class TradingEngineCycle:
                     1,
                     abs(
                         price_to_ticks(float(mark_for_trail), trade.tick_size)
-                        - price_to_ticks(aligned, trade.tick_size)
+                        - price_to_ticks(float(confirmed), trade.tick_size)
                     ),
                 )
                 fields["auto_trail_extreme"] = float(mark_for_trail)
@@ -2288,16 +2361,43 @@ class TradingEngineCycle:
             "sl_modified",
             actor=actor,
             old_stop=old,
-            new_stop=aligned,
+            new_stop=float(confirmed),
         )
         return updated
+
+    def _confirmed_trail_trigger(
+        self,
+        order: Any,
+        *,
+        requested: float,
+        tick_size: float,
+    ) -> Optional[float]:
+        """Return broker-confirmed stop only when waiting-SL trigger advanced to request."""
+        if order is None:
+            return None
+        status = str(getattr(order, "status", "") or "").upper()
+        if status not in SL_WORKING:
+            # Triggered/uncertain states must not advance confirmed protection from modify.
+            return None
+        raw = getattr(order, "trigger_price", None)
+        if raw is None:
+            return None
+        confirmed = _align_stop(float(raw), tick_size)
+        req = _align_stop(float(requested), tick_size)
+        if abs(confirmed - req) > max(float(tick_size) * 0.5, 1e-9):
+            return None
+        return confirmed
 
     def set_auto_trail(self, trade_id: str, *, enabled: bool) -> TradeRecord:
         trade = self.store.get_trade(trade_id)
         if trade is None:
             raise ValueError("trade_not_found")
         if not enabled:
-            updated = self.store.update_trade(trade_id, auto_trail_enabled=0)
+            updated = self.store.update_trade(
+                trade_id,
+                auto_trail_enabled=0,
+                auto_trail_owner_disabled=1,
+            )
             self.store.append_event(trade_id, "auto_trail_off", actor="user")
             return updated
         protected = int(trade.protected_qty or 0)
@@ -2322,6 +2422,7 @@ class TradingEngineCycle:
         updated = self.store.update_trade(
             trade_id,
             auto_trail_enabled=1,
+            auto_trail_owner_disabled=0,
             auto_trail_ticks=ticks,
             auto_trail_extreme=float(mark),
         )
@@ -2333,9 +2434,593 @@ class TradingEngineCycle:
         )
         return updated
 
+    def _protection_deadline_seconds(self) -> float:
+        admin = self._admin_store.load_effective_payload()
+        return float(
+            admin.get(
+                "protection_confirm_deadline_seconds",
+                DEFAULT_PROTECTION_CONFIRM_DEADLINE_SECONDS,
+            )
+        )
+
+    def _remainder_cancel_seconds(self) -> float:
+        admin = self._admin_store.load_effective_payload()
+        return float(
+            admin.get(
+                "entry_remainder_cancel_seconds",
+                DEFAULT_ENTRY_REMAINDER_CANCEL_SECONDS,
+            )
+        )
+
+    def _deadline_iso(self, *, seconds: float) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=float(seconds))).isoformat(
+            timespec="seconds"
+        )
+
+    def _iso_expired(self, raw: Optional[str]) -> bool:
+        if not raw:
+            return False
+        try:
+            deadline = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return False
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= deadline.astimezone(timezone.utc)
+
+    def _parse_event_payload(self, row: Any) -> dict[str, Any]:
+        raw = row["payload_json"] if "payload_json" in row.keys() else None
+        if not raw:
+            return {}
+        try:
+            data = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _entry_submission_anchor(self, trade: TradeRecord) -> Optional[datetime]:
+        """Clock for remainder cancel: persisted submission intent, not fill time."""
+        if trade.entry_submitted_at:
+            try:
+                started = datetime.fromisoformat(str(trade.entry_submitted_at))
+            except ValueError:
+                started = None
+            else:
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                return started.astimezone(timezone.utc)
+        for row in self.store.list_events(trade.trade_id):
+            if str(row["action"]) != "entry_intent":
+                continue
+            payload = self._parse_event_payload(row)
+            stamp = payload.get("submitted_at") or row["at"]
+            try:
+                started = datetime.fromisoformat(str(stamp))
+            except ValueError:
+                continue
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            return started.astimezone(timezone.utc)
+        return None
+
+    def _maybe_freeze_r_fields(self, trade: TradeRecord) -> dict[str, Any]:
+        """Freeze R only after entry completion or confirmed remainder cancellation."""
+        if trade.r_value is not None:
+            return {}
+        if int(trade.remaining_entry_qty or 0) > 0:
+            return {}
+        if int(trade.filled_qty or 0) <= 0:
+            return {}
+        entry = float(trade.entry_fill or trade.entry_estimate or 0)
+        stop = float(trade.initial_stop or trade.current_stop or 0)
+        if entry <= 0 or stop <= 0:
+            return {}
+        return {"r_value": freeze_r_value(entry=entry, initial_stop=stop)}
+
+    def _protection_state_fields(
+        self, trade: TradeRecord, *, next_status: str
+    ) -> dict[str, Any]:
+        """Stamp protection deadline / clear it / freeze R when entry is complete."""
+        fields: dict[str, Any] = {}
+        if next_status == "protection_pending":
+            if not trade.protection_deadline_at:
+                fields["protection_deadline_at"] = self._deadline_iso(
+                    seconds=self._protection_deadline_seconds()
+                )
+        elif next_status in {"protected_open", "partial_exit", "partial_entry"}:
+            fields["protection_deadline_at"] = None
+            fields.update(self._maybe_freeze_r_fields(trade))
+            if (
+                next_status == "protected_open"
+                and not bool(trade.auto_trail_enabled)
+                and not bool(trade.auto_trail_owner_disabled)
+            ):
+                fields["auto_trail_enabled"] = 1
+                mark = self._last_price(trade.symbol)
+                if mark is not None:
+                    fields["auto_trail_extreme"] = float(mark)
+        return fields
+
+    def enforce_entry_remainder_cancels(self) -> None:
+        """Cancel working entry remainders after submission-intent deadline."""
+        limit = self._remainder_cancel_seconds()
+        for trade in self.store.list_trades(self.session_date):
+            rem = int(trade.remaining_entry_qty or 0)
+            if rem <= 0 or not trade.entry_order_id:
+                continue
+            if trade.status in {"closed", "skipped", "rejected"}:
+                continue
+            started = self._entry_submission_anchor(trade)
+            if started is None:
+                continue
+            age = (datetime.now(timezone.utc) - started).total_seconds()
+            if age < float(limit):
+                continue
+            self.store.append_event(
+                trade.trade_id,
+                "entry_remainder_cancel_deadline",
+                payload={
+                    "age_seconds": age,
+                    "limit_seconds": limit,
+                    "anchor": "entry_submitted_at",
+                },
+            )
+            self._cancel_entry_remainder(trade)
+
+    def enforce_protection_deadlines(self) -> None:
+        """Unprotected past deadline → pause entries + durable emergency flatten."""
+        for trade in self.store.list_trades(self.session_date):
+            if trade.status in {"closed", "skipped", "rejected"}:
+                continue
+            pos = int(trade.remaining_position_qty or 0)
+            if pos <= 0:
+                continue
+            if not is_unprotected(trade):
+                continue
+            deadline = trade.protection_deadline_at
+            if not deadline:
+                self.store.update_trade(
+                    trade.trade_id,
+                    protection_deadline_at=self._deadline_iso(
+                        seconds=self._protection_deadline_seconds()
+                    ),
+                )
+                continue
+            if not self._iso_expired(deadline):
+                continue
+            self._protection_deadline_breach(trade)
+
+    def _protection_deadline_breach(self, trade: TradeRecord) -> None:
+        self.store.append_event(
+            trade.trade_id,
+            "protection_deadline_breach",
+            payload={"deadline_at": trade.protection_deadline_at},
+        )
+        try:
+            pause_store = AdminConfigStore(Path(self._admin_store.db_path), read_only=False)
+            pause_store.set_entries_paused(True)
+            pause_store.append_control_log(
+                actor_username="engine",
+                action="pause_entries",
+                result="ok",
+                detail="protection_deadline_breach",
+                version_id=pause_store.active_version_id(),
+            )
+            pause_store.close()
+        except Exception as exc:  # noqa: BLE001
+            self.store.append_event(
+                trade.trade_id,
+                "error",
+                payload={"reason": f"pause_failed:{exc}"},
+            )
+        self.consume_new_triggers = False
+        self._durable_market_exit(
+            trade,
+            reason="protection_deadline",
+            kind="emergency",
+        )
+
+    def _exit_order_tag(self, trade: TradeRecord, kind: str) -> str:
+        base = str(trade.broker_tag or "NR")[:12]
+        suffix = {"emergency": "E", "trail_through": "T"}.get(kind, "X")
+        return f"{base}{suffix}"[:20]
+
+    def _has_exit_intent(self, trade_id: str, *, reason: str) -> bool:
+        for row in self.store.list_events(trade_id):
+            if str(row["action"]) != "exit_intent":
+                continue
+            payload = self._parse_event_payload(row)
+            if str(payload.get("reason") or "") == reason:
+                return True
+        return False
+
+    def _has_exit_submit_attempt(
+        self, trade_id: str, *, reason: str, kind: str
+    ) -> bool:
+        for row in self.store.list_events(trade_id):
+            action = str(row["action"])
+            if action not in {"exit_submit_attempt", "exit_submission_unknown"}:
+                continue
+            payload = self._parse_event_payload(row)
+            if str(payload.get("reason") or "") == reason:
+                return True
+            if str(payload.get("kind") or "") == kind:
+                return True
+        return False
+
+    def _pending_exit_submission(self, trade: TradeRecord) -> bool:
+        """True when an exit write was attempted but not yet attributed via order link."""
+        has_attempt = False
+        for row in self.store.list_events(trade.trade_id):
+            if str(row["action"]) in {"exit_submit_attempt", "exit_submission_unknown"}:
+                has_attempt = True
+                break
+        if not has_attempt:
+            return False
+        for link in self.store.list_order_links(trade.trade_id):
+            if str(link["role"]) == "exit":
+                return False
+        return True
+
+    def _blocking_exit_in_progress(self, trade: TradeRecord) -> bool:
+        """Exit intent active without attributed exit — block re-protect / external close."""
+        if int(trade.remaining_position_qty or 0) <= 0:
+            return False
+        for reason, kind in (
+            ("protection_deadline", "emergency"),
+            ("trail_through_exit", "trail_through"),
+        ):
+            if not self._has_exit_intent(trade.trade_id, reason=reason):
+                continue
+            if self._linked_exit_order_id(trade, kind=kind) is None:
+                return True
+        return False
+
+    def _linked_exit_order_id(self, trade: TradeRecord, *, kind: str) -> Optional[str]:
+        for link in self.store.list_order_links(trade.trade_id):
+            if str(link["role"]) != "exit":
+                continue
+            if str(link["attribution_kind"] or "") == kind:
+                return str(link["order_id"])
+        return None
+
+    def _cancel_stop_confirmed(self, trade: TradeRecord) -> str:
+        """Cancel working stop and account cancel-race fills. Returns terminal state class.
+
+        Returns one of: ``cancelled``, ``filled``, ``still_working``, ``absent``,
+        ``visibility_unknown``.
+
+        ``absent`` means no stop id is recorded (never placed / already cleared).
+        ``visibility_unknown`` means a known ``sl_order_id`` cannot be polled — that
+        stop may still execute, so a competing flatten must not proceed.
+        """
+        if not trade.sl_order_id:
+            return "absent"
+        oid = str(trade.sl_order_id)
+        try:
+            cancelled = self.broker.cancel_order(oid)
+        except Exception as exc:  # noqa: BLE001
+            self.store.append_event(
+                trade.trade_id,
+                "error",
+                payload={"reason": f"stop_cancel_failed:{exc}"},
+            )
+            cancelled = self.broker.poll_order(oid)
+        polled = cancelled if cancelled is not None else self.broker.poll_order(oid)
+        if polled is None:
+            self.store.append_event(
+                trade.trade_id,
+                "stop_visibility_unknown",
+                payload={"order_id": oid},
+            )
+            return "visibility_unknown"
+        status = str(polled.status).upper()
+        # Persist any cancel-time stop fills through the durable stop path.
+        if broker_order_filled_qty(polled) > 0 or status in SL_FILLED:
+            refreshed = self.store.get_trade(trade.trade_id)
+            if refreshed is not None:
+                self._apply_sl_order(refreshed, polled)
+            if status in SL_FILLED:
+                return "filled"
+            if status in SL_CANCELLED:
+                return "cancelled"
+            return "still_working"
+        if status in SL_CANCELLED:
+            self.store.update_trade(
+                trade.trade_id,
+                protected_qty=0,
+                sl_order_id=None,
+                status=(
+                    "stop_pending"
+                    if int(trade.remaining_position_qty or 0) > 0
+                    else trade.status
+                ),
+            )
+            self.store.append_event(trade.trade_id, "sl_cancelled")
+            return "cancelled"
+        self.store.append_event(
+            trade.trade_id,
+            "stop_cancel_unconfirmed",
+            payload={"status": status, "order_id": oid},
+        )
+        return "still_working"
+
+    def resume_pending_market_exits(self) -> None:
+        """Continue durable emergency/trail-through exits after intent is persisted."""
+        for trade in self.store.list_trades(self.session_date):
+            if trade.status in {"closed", "skipped", "rejected"}:
+                continue
+            if int(trade.remaining_position_qty or 0) <= 0 and self._broker_is_flat(trade):
+                continue
+            for reason, kind in (
+                ("protection_deadline", "emergency"),
+                ("trail_through_exit", "trail_through"),
+            ):
+                if self._has_exit_intent(trade.trade_id, reason=reason):
+                    self._durable_market_exit(trade, reason=reason, kind=kind)
+
+    def _durable_market_exit(
+        self,
+        trade: TradeRecord,
+        *,
+        reason: str,
+        kind: str,
+    ) -> None:
+        """Emergency/trail-through exit: intent → confirmed stop cancel → port flatten.
+
+        Exited qty advances only from durable confirmed fills (never assumes full size).
+        Exit market writes require a fresh ``exit_submit_attempt``; empty broker lookup
+        after an attempt means reconcile-wait, never permission to resubmit.
+        """
+        refreshed = self.store.get_trade(trade.trade_id)
+        trade = refreshed if refreshed is not None else trade
+        if trade.status in {"closed", "skipped", "rejected"}:
+            return
+        pos = int(trade.remaining_position_qty or 0)
+        if pos <= 0 and self._broker_is_flat(trade):
+            return
+
+        if not self._has_exit_intent(trade.trade_id, reason=reason):
+            self.store.append_event(
+                trade.trade_id,
+                "exit_intent",
+                payload={
+                    "reason": reason,
+                    "kind": kind,
+                    "qty": pos,
+                    "symbol": trade.symbol,
+                    "side": _stop_side(trade.direction),
+                },
+            )
+            self.store.update_trade(trade.trade_id, status="exit_pending", protected_qty=0)
+
+        if int(trade.remaining_entry_qty or 0) > 0:
+            self._cancel_entry_remainder(trade)
+            refreshed = self.store.get_trade(trade.trade_id)
+            trade = refreshed if refreshed is not None else trade
+
+        if trade.sl_order_id:
+            stop_state = self._cancel_stop_confirmed(trade)
+            refreshed = self.store.get_trade(trade.trade_id)
+            trade = refreshed if refreshed is not None else trade
+            if stop_state in {"still_working", "visibility_unknown"}:
+                self.store.update_trade(
+                    trade.trade_id,
+                    status="reconciliation_required",
+                    protected_qty=0,
+                )
+                return
+            if stop_state == "filled" and int(trade.remaining_position_qty or 0) <= 0:
+                return
+
+        refreshed = self.store.get_trade(trade.trade_id)
+        trade = refreshed if refreshed is not None else trade
+        pos = int(trade.remaining_position_qty or 0)
+        if pos <= 0:
+            if self._broker_is_flat(trade):
+                exit_updates = self._sync_exit_values(trade)
+                exited = max(
+                    int(trade.exited_qty or 0),
+                    int(exit_updates.get("exited_qty", 0) or 0),
+                )
+                if exited > 0 and self._exit_prices_fully_confirmed(trade):
+                    self._close_trade(
+                        trade,
+                        float(trade.exit_fill or trade.current_stop or trade.entry_fill or 0),
+                        reason,
+                        exited_qty=exited,
+                        filled_qty=int(trade.filled_qty or 0),
+                    )
+            return
+
+        exit_tag = self._exit_order_tag(trade, kind)
+        existing_oid = self._linked_exit_order_id(trade, kind=kind)
+        order: Any = None
+        if existing_oid:
+            order = self.broker.poll_order(existing_oid)
+            if order is None:
+                # Known exit order id with lost visibility — wait; do not resubmit.
+                self.store.update_trade(
+                    trade.trade_id,
+                    status="reconciliation_required",
+                    protection_deadline_at=None,
+                    protected_qty=0,
+                )
+                self.store.append_event(
+                    trade.trade_id,
+                    "exit_reconcile_waiting",
+                    payload={
+                        "reason": reason,
+                        "kind": kind,
+                        "order_id": existing_oid,
+                        "tag": exit_tag,
+                    },
+                )
+                return
+        if order is None:
+            tagged = [
+                o
+                for o in self.broker.orders_by_tag(exit_tag)
+                if str(o.order_type).upper() == "MARKET"
+            ]
+            order = tagged[0] if tagged else None
+
+        # Broker already flat with an outstanding submit attempt and no visible exit
+        # order yet → wait (do not invent an external close / re-protect).
+        if (
+            order is None
+            and self._broker_is_flat(trade)
+            and self._has_exit_submit_attempt(trade.trade_id, reason=reason, kind=kind)
+            and max(int(trade.exited_qty or 0), self._broker_exit_filled_total(trade))
+            <= 0
+        ):
+            self.store.update_trade(
+                trade.trade_id,
+                status="reconciliation_required",
+                protected_qty=0,
+                protection_deadline_at=None,
+            )
+            self.store.append_event(
+                trade.trade_id,
+                "exit_reconcile_waiting",
+                payload={
+                    "reason": reason,
+                    "kind": kind,
+                    "tag": exit_tag,
+                    "broker_flat": True,
+                },
+            )
+            return
+
+        if order is None and self._broker_is_flat(trade):
+            exited_seen = max(
+                int(trade.exited_qty or 0), self._broker_exit_filled_total(trade)
+            )
+            self._handle_protective_exit(
+                trade,
+                exit_px=float(
+                    trade.exit_fill or trade.current_stop or trade.entry_fill or 0
+                ),
+                exit_qty=max(0, exited_seen - int(trade.exited_qty or 0)),
+                reason=reason,
+                exited_qty_absolute=exited_seen,
+                stop_complete=True,
+            )
+            return
+
+        if order is None:
+            if self._has_exit_submit_attempt(
+                trade.trade_id, reason=reason, kind=kind
+            ):
+                # Prior submit attempt with empty lookup → reconcile-wait only.
+                self.store.update_trade(
+                    trade.trade_id,
+                    status="reconciliation_required",
+                    protection_deadline_at=None,
+                )
+                self.store.append_event(
+                    trade.trade_id,
+                    "exit_reconcile_waiting",
+                    payload={
+                        "reason": reason,
+                        "kind": kind,
+                        "tag": exit_tag,
+                        "qty": pos,
+                    },
+                )
+                return
+            # Persist submission attempt before any broker write.
+            self.store.append_event(
+                trade.trade_id,
+                "exit_submit_attempt",
+                payload={
+                    "reason": reason,
+                    "kind": kind,
+                    "tag": exit_tag,
+                    "qty": pos,
+                    "side": _stop_side(trade.direction),
+                    "symbol": trade.symbol,
+                },
+            )
+            self.store.update_trade(
+                trade.trade_id,
+                status="exit_pending",
+                protected_qty=0,
+                protection_deadline_at=None,
+            )
+            try:
+                order = self.broker.flatten_mis(
+                    tradingsymbol=trade.symbol,
+                    transaction_type=_stop_side(trade.direction),
+                    quantity=pos,
+                    tag=exit_tag,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.store.update_trade(
+                    trade.trade_id,
+                    status="reconciliation_required",
+                    protection_deadline_at=None,
+                )
+                self.store.append_event(
+                    trade.trade_id,
+                    "exit_submission_unknown",
+                    payload={
+                        "reason": reason,
+                        "kind": kind,
+                        "tag": exit_tag,
+                        "error": str(exc),
+                    },
+                )
+                return
+        self._link_order(trade, str(order.order_id), role="exit", kind=kind)
+        filled = broker_order_filled_qty(order)
+        pending = broker_order_pending_qty(order)
+        status = str(order.status).upper()
+        complete = status in ENTRY_COMPLETE and pending <= 0
+        if filled <= 0 and not complete:
+            self.store.update_trade(
+                trade.trade_id,
+                status="exit_pending" if status in ENTRY_WORKING else "reconciliation_required",
+                protection_deadline_at=None,
+            )
+            self.store.append_event(
+                trade.trade_id,
+                "exit_partial_or_unreconciled",
+                payload={
+                    "reason": reason,
+                    "exit_qty": 0,
+                    "order_id": order.order_id,
+                    "status": status,
+                    "pending": pending,
+                },
+            )
+            return
+        # Advance only by confirmed fills; sync durable link snapshot.
+        prev_exited = int(trade.exited_qty or 0)
+        self._broker_exit_execution_values(trade)
+        exited_total = max(prev_exited, self._broker_exit_filled_total(trade), filled)
+        exit_px = float(
+            order.average_price
+            or self._last_price(trade.symbol)
+            or trade.entry_fill
+            or trade.entry_estimate
+            or 0
+        )
+        self._handle_protective_exit(
+            trade,
+            exit_px=exit_px,
+            exit_qty=max(0, exited_total - prev_exited),
+            reason=reason,
+            exited_qty_absolute=exited_total,
+            stop_complete=complete,
+            stop_order=order if complete else None,
+        )
+
     def apply_auto_trails(self) -> None:
         for trade in self.store.list_trades(self.session_date):
             if not trade.auto_trail_enabled:
+                continue
+            if bool(trade.auto_trail_owner_disabled):
                 continue
             if trade.status == "protected_open":
                 pass
@@ -2343,30 +3028,87 @@ class TradingEngineCycle:
                 pass
             else:
                 continue
-            if trade.current_stop is None or not trade.auto_trail_ticks:
+            if trade.current_stop is None or trade.initial_stop is None:
+                continue
+            # Staged-R requires frozen R after entry completion / remainder cancel.
+            if trade.r_value is None or int(trade.remaining_entry_qty or 0) > 0:
+                continue
+            entry = float(trade.entry_fill or trade.entry_estimate or 0)
+            if entry <= 0:
                 continue
             mark = self._last_price(trade.symbol)
             if mark is None:
                 continue
-            tick_size = trade.tick_size
-            gap = int(trade.auto_trail_ticks)
-            if trade.direction == "UP":
-                proposed = ticks_to_price(price_to_ticks(mark, tick_size) - gap, tick_size)
-            else:
-                proposed = ticks_to_price(price_to_ticks(mark, tick_size) + gap, tick_size)
-            aligned = _align_stop(proposed, tick_size)
+            r_value = float(trade.r_value)
+            if r_value <= 1e-12:
+                continue
+            extreme = update_trail_extreme(
+                direction=trade.direction,
+                last_price=float(mark),
+                current_extreme=(
+                    float(trade.auto_trail_extreme)
+                    if trade.auto_trail_extreme is not None
+                    else None
+                ),
+            )
+            charge_bps, _ = trade_cost_profile(trade)
+            desired = staged_r_desired_stop(
+                direction=trade.direction,
+                entry=entry,
+                initial_stop=float(trade.initial_stop),
+                current_stop=float(trade.current_stop),
+                extreme=extreme,
+                last_price=float(mark),
+                r_value=r_value,
+                charge_bps=charge_bps,
+                tick_size=trade.tick_size,
+            )
+            aligned = _align_stop(desired, trade.tick_size)
+            self.store.update_trade(
+                trade.trade_id,
+                auto_trail_extreme=extreme,
+            )
             if trail_crosses_last_price(
                 direction=trade.direction, new_stop=aligned, last_price=mark
             ):
+                self._durable_market_exit(
+                    trade,
+                    reason="trail_through_exit",
+                    kind="trail_through",
+                )
                 continue
             if not trail_is_tighten_only(
                 direction=trade.direction,
-                current_stop=trade.current_stop,
+                current_stop=float(trade.current_stop),
                 new_stop=aligned,
             ):
                 continue
-            if abs(aligned - trade.current_stop) < 1e-9:
+            improve = trail_improvement_ticks(
+                direction=trade.direction,
+                current_stop=float(trade.current_stop),
+                new_stop=aligned,
+                tick_size=trade.tick_size,
+            )
+            if improve < TRAIL_MIN_IMPROVEMENT_TICKS:
                 continue
+            if trade.last_trail_modify_at:
+                try:
+                    last = datetime.fromisoformat(str(trade.last_trail_modify_at))
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
+                    age = (
+                        datetime.now(timezone.utc) - last.astimezone(timezone.utc)
+                    ).total_seconds()
+                    if age < TRAIL_MIN_MODIFY_INTERVAL_SECONDS:
+                        continue
+                except ValueError:
+                    pass
+            # Stamp throttle before write so retracement during the interval keeps extreme stage.
+            self.store.update_trade(
+                trade.trade_id,
+                last_trail_modify_at=_now(),
+                auto_trail_extreme=extreme,
+            )
             try:
                 self.apply_trail(
                     trade.trade_id,
