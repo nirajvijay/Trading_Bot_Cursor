@@ -591,3 +591,43 @@ These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_life
 
 - Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
 - Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
+
+---
+
+## 9. WP-1.3 development checkpoint (accepted)
+
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
+**Scope:** Protection confirm deadline (pause + durable emergency flatten); entry-remainder cancel from submission intent (incl. zero-fill); staged-R trailing (extreme-based stages, confirm-before-advance, owner-disable durable); broker-port `flatten_mis` on FakeBroker + KiteBroker; durable exit lifecycle (intent → confirmed stop cancel → submit-attempt before write → no duplicate on lost response / hidden tag; known-stop visibility gap blocks competing flatten).  
+**Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
+
+### 9.1 Acceptance test command and results
+
+```text
+python3 -m unittest \
+  tests.test_trading_engine_risk \
+  tests.test_trading_engine_wp12_risk \
+  tests.test_trading_engine_wp11_lifecycle \
+  tests.test_trading_engine_wp13_trail \
+  tests.test_trading_engine_cycle \
+  tests.test_trading_engine_store \
+  tests.test_trading_engine_broker \
+  tests.test_admin_config_store \
+  tests.test_trading_engine_loop \
+  tests.test_trading_engine_handoff \
+  -q
+
+Ran 162 tests in 30.548s
+OK (expected failures=2)
+```
+
+### 9.2 Deferred expected-failure placeholders (WP-1.4)
+
+These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_lifecycle.py` (`PendingGapRegressionTests`) until WP-1.4:
+
+1. `test_close_all_command_kind_exists` — Close All / close-position command surface.
+2. `test_square_off_helpers_present_in_cycle` — session square-off / cutoff helpers.
+
+### 9.3 Preserve rule (unchanged)
+
+- Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
+- Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
