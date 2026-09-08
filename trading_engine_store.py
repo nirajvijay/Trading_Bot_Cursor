@@ -235,6 +235,10 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         qty_model_version=qty_model_version,
         run_id=run_id,
         entry_live_orders_enabled=entry_live,
+        charge_bps=_row_optional_float(row, "charge_bps"),
+        slippage_bps=_row_optional_float(row, "slippage_bps"),
+        exit_confirmed_qty=_row_optional_int(row, "exit_confirmed_qty"),
+        exit_est_qty=_row_optional_int(row, "exit_est_qty"),
     )
 
 
@@ -310,8 +314,21 @@ class TradingEngineStore:
             ("qty_model_version", "INTEGER NOT NULL DEFAULT 0"),
             ("run_id", "TEXT"),
             ("entry_live_orders_enabled", "INTEGER"),
+            ("charge_bps", "REAL"),
+            ("slippage_bps", "REAL"),
+            ("exit_confirmed_qty", "INTEGER"),
+            ("exit_est_qty", "INTEGER"),
         ):
             self._ensure_column("trades", col, ddl)
+        for col, ddl in (
+            ("filled_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("confirmed_filled_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("average_price", "REAL"),
+            ("execution_value", "REAL NOT NULL DEFAULT 0"),
+            ("execution_value_est", "REAL NOT NULL DEFAULT 0"),
+            ("reconciled_at", "TEXT"),
+        ):
+            self._ensure_column("trade_order_links", col, ddl)
         self._migrate_qty_model_v1()
         # Closed rows: align exited_qty with cumulative entry fills (flat). Do not invent for open.
         self._conn.execute(
@@ -739,3 +756,168 @@ class TradingEngineStore:
         )
         self._conn.commit()
         return "linked"
+
+    def record_order_execution(
+        self,
+        order_id: str,
+        *,
+        filled_qty: int,
+        average_price: Optional[float],
+        estimated_px: float = 0.0,
+    ) -> None:
+        """Merge a visible broker observation into the durable per-order snapshot.
+
+        - Priced observations are authoritative for the observed fill qty.
+        - Unpriced observations must not erase previously confirmed avg/value; extra
+          unpriced shares are tracked separately via confirmed_filled_qty.
+        - Callers must not invoke this when the order is temporarily missing.
+        """
+        existing = self.get_order_link(order_id)
+        if existing is None:
+            return
+        keys = set(existing.keys())
+
+        def _int(col: str, default: int = 0) -> int:
+            if col not in keys or existing[col] is None:
+                return default
+            return int(existing[col])
+
+        def _float(col: str, default: float = 0.0) -> float:
+            if col not in keys or existing[col] is None:
+                return default
+            return float(existing[col])
+
+        prev_filled = _int("filled_qty")
+        prev_confirmed = _int("confirmed_filled_qty")
+        prev_avg = (
+            None
+            if "average_price" not in keys or existing["average_price"] is None
+            else float(existing["average_price"])
+        )
+        # Legacy rows: priced snapshot without confirmed_filled_qty → all filled confirmed.
+        if prev_avg is not None and prev_confirmed <= 0 and prev_filled > 0:
+            prev_confirmed = prev_filled
+        prev_value = _float("execution_value")
+        observed = max(0, int(filled_qty))
+
+        if average_price is not None:
+            avg: Optional[float] = float(average_price)
+            filled_out = observed
+            confirmed_out = observed
+            value = float(filled_out) * float(avg) if filled_out > 0 else 0.0
+            value_est = 0.0
+        elif prev_avg is not None and prev_confirmed > 0:
+            # Keep confirmed slice; allow total filled to grow as unpriced remainder.
+            avg = float(prev_avg)
+            confirmed_out = prev_confirmed
+            filled_out = max(observed, prev_filled, prev_confirmed)
+            value = (
+                float(prev_value)
+                if prev_value > 0
+                else float(avg) * float(confirmed_out)
+            )
+            extra = max(0, filled_out - confirmed_out)
+            value_est = float(extra) * float(estimated_px or 0.0)
+        else:
+            avg = None
+            filled_out = observed
+            confirmed_out = 0
+            value = 0.0
+            value_est = float(filled_out) * float(estimated_px or 0.0)
+
+        self._conn.execute(
+            """
+            UPDATE trade_order_links
+            SET filled_qty = ?,
+                confirmed_filled_qty = ?,
+                average_price = ?,
+                execution_value = ?,
+                execution_value_est = ?,
+                reconciled_at = ?
+            WHERE order_id = ?
+            """,
+            (
+                filled_out,
+                confirmed_out,
+                avg,
+                value,
+                value_est,
+                _utc_now(),
+                str(order_id),
+            ),
+        )
+        self._conn.commit()
+
+    def exit_execution_totals(
+        self,
+        trade_id: str,
+        *,
+        estimated_px: float = 0.0,
+    ) -> tuple[float, float, int, int]:
+        """Durable (confirmed_value, estimated_value, confirmed_qty, est_qty).
+
+        Qty and ₹ come from the same per-order reconciliation snapshot. Missing
+        broker visibility does not drop previously recorded rows.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT filled_qty, confirmed_filled_qty, average_price,
+                   execution_value, execution_value_est
+            FROM trade_order_links
+            WHERE trade_id = ? AND role IN ('exit', 'stop')
+            """,
+            (str(trade_id),),
+        ).fetchall()
+        confirmed_value = 0.0
+        estimated_value = 0.0
+        confirmed_qty = 0
+        est_qty = 0
+        for row in rows:
+            keys = set(row.keys())
+            filled = int(row["filled_qty"] or 0) if "filled_qty" in keys else 0
+            if filled <= 0:
+                continue
+            avg = row["average_price"] if "average_price" in keys else None
+            confirmed_filled = (
+                int(row["confirmed_filled_qty"] or 0)
+                if "confirmed_filled_qty" in keys
+                else 0
+            )
+            if avg is not None and confirmed_filled <= 0:
+                confirmed_filled = filled
+            confirmed_filled = max(0, min(filled, confirmed_filled))
+            unpriced = max(0, filled - confirmed_filled)
+            if confirmed_filled > 0:
+                confirmed_qty += confirmed_filled
+                stored = (
+                    float(row["execution_value"] or 0)
+                    if "execution_value" in keys
+                    else 0.0
+                )
+                if stored > 0:
+                    confirmed_value += stored
+                elif avg is not None:
+                    confirmed_value += float(confirmed_filled) * float(avg)
+            if unpriced > 0:
+                est_qty += unpriced
+                stored_est = (
+                    float(row["execution_value_est"] or 0)
+                    if "execution_value_est" in keys
+                    else 0.0
+                )
+                estimated_value += (
+                    stored_est
+                    if stored_est > 0
+                    else float(unpriced) * float(estimated_px or 0.0)
+                )
+        return (
+            float(confirmed_value),
+            float(estimated_value),
+            int(confirmed_qty),
+            int(est_qty),
+        )
+
+    def exit_execution_qty_totals(self, trade_id: str) -> tuple[int, int]:
+        """Exact (confirmed_qty, est_qty) from durable exit/stop order link records."""
+        _cv, _ev, confirmed, estimated = self.exit_execution_totals(trade_id)
+        return int(confirmed), int(estimated)

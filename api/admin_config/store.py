@@ -16,6 +16,16 @@ from api.admin_config.snapshot import AdminConfigSnapshot
 
 _CONFIG_KEYS = tuple(DEFAULT_ADMIN_CONFIG_VALUES.keys())
 
+# Frozen apply policy (§3.7): risk-budget reductions apply immediately for new entries;
+# capital / concurrency / fill limits / VWAP (and risk increases) wait for next arm.
+_IMMEDIATE_REDUCTION_KEYS = frozenset(
+    {
+        "daily_loss_cap_inr",
+        "per_trade_risk_cap_inr",
+        "limited_per_trade_risk_cap_inr",
+    }
+)
+
 
 def _path_exists(path: Path) -> bool:
     try:
@@ -32,17 +42,103 @@ def _new_version_id() -> str:
     return uuid.uuid4().hex
 
 
-def validate_config_values(values: Mapping[str, Any]) -> tuple[dict[str, float], list[str]]:
-    """Return normalized values and non-blocking warnings."""
-    missing = [k for k in _CONFIG_KEYS if k not in values]
-    if missing:
-        raise ValueError(f"missing_fields:{','.join(missing)}")
+def merge_payload_with_defaults(stored: Mapping[str, Any]) -> dict[str, float]:
+    """Backward-compatible load merge: code defaults under saved values (never clobber).
 
-    per_trade = float(values["per_trade_risk_cap_inr"])
-    limited = float(values["limited_per_trade_risk_cap_inr"])
-    daily = float(values["daily_loss_cap_inr"])
-    accept = float(values["vwap_accept_gap_exclusive_max"])
-    limited_gap = float(values["vwap_limited_gap_inclusive_max"])
+    Legacy ``round_trip_cost_slippage_bps`` maps to charges when the split keys are
+    absent (slippage defaults to 0 so we do not invent a split).
+    """
+    merged = dict(DEFAULT_ADMIN_CONFIG_VALUES)
+    for key, raw in stored.items():
+        if key in merged:
+            merged[key] = float(raw)
+    if (
+        "round_trip_charge_bps" not in stored
+        and "round_trip_cost_slippage_bps" in stored
+    ):
+        merged["round_trip_charge_bps"] = float(stored["round_trip_cost_slippage_bps"])
+        if "estimated_slippage_bps" not in stored:
+            merged["estimated_slippage_bps"] = 0.0
+    return merged
+
+
+def apply_saved_to_effective(
+    effective: Mapping[str, float],
+    saved: Mapping[str, float],
+) -> dict[str, float]:
+    """Merge Saved into Effective under the frozen apply policy (no full promote).
+
+    Risk-budget reductions take effect immediately. Risk increases, capital,
+    concurrency/fill limits, and VWAP wait for ``arm_effective_config``.
+    Charge/slippage *increases* (tightening) apply immediately.
+    """
+    out = {k: float(effective.get(k, DEFAULT_ADMIN_CONFIG_VALUES[k])) for k in _CONFIG_KEYS}
+    for key in _IMMEDIATE_REDUCTION_KEYS:
+        new_v = float(saved[key])
+        old_v = float(out[key])
+        if new_v < old_v - 1e-12:
+            out[key] = new_v
+    for key in ("round_trip_charge_bps", "estimated_slippage_bps"):
+        new_v = float(saved[key])
+        old_v = float(out[key])
+        if new_v > old_v + 1e-12:
+            out[key] = new_v
+    return out
+
+
+def validate_config_values(
+    values: Mapping[str, Any],
+    *,
+    base: Optional[Mapping[str, Any]] = None,
+    fill_defaults: bool = False,
+) -> tuple[dict[str, float], list[str]]:
+    """Return normalized values and non-blocking warnings.
+
+    Save path: pass ``base`` = current saved/effective payload so omitted keys keep
+    their prior values (protects ₹2,995 etc.). Do **not** fill omitted keys from
+    code defaults on save.
+
+    Load/bootstrap path: ``fill_defaults=True`` merges missing keys from code
+    defaults (new WP keys only when absent).
+
+    Strict replacement: neither ``base`` nor ``fill_defaults`` → require every key.
+    """
+    if base is not None:
+        merged = merge_payload_with_defaults(base)
+        for key, raw in values.items():
+            if key in merged:
+                merged[key] = float(raw)
+            elif key == "round_trip_cost_slippage_bps":
+                # Legacy write path: treat as charge-only update.
+                merged["round_trip_charge_bps"] = float(raw)
+    elif fill_defaults:
+        merged = merge_payload_with_defaults(values)
+    else:
+        # Allow legacy combined key as a stand-in for the split pair.
+        provided = dict(values)
+        if (
+            "round_trip_charge_bps" not in provided
+            and "round_trip_cost_slippage_bps" in provided
+        ):
+            provided["round_trip_charge_bps"] = float(provided["round_trip_cost_slippage_bps"])
+            provided.setdefault("estimated_slippage_bps", 0.0)
+        missing = [k for k in _CONFIG_KEYS if k not in provided]
+        if missing:
+            raise ValueError(f"incomplete_config:{','.join(missing)}")
+        merged = {k: float(provided[k]) for k in _CONFIG_KEYS}
+
+    per_trade = float(merged["per_trade_risk_cap_inr"])
+    limited = float(merged["limited_per_trade_risk_cap_inr"])
+    daily = float(merged["daily_loss_cap_inr"])
+    accept = float(merged["vwap_accept_gap_exclusive_max"])
+    limited_gap = float(merged["vwap_limited_gap_inclusive_max"])
+    allocated = float(merged["allocated_capital_inr"])
+    max_concurrent = float(merged["max_concurrent_positions"])
+    max_filled = float(merged["max_filled_setups_per_day"])
+    one_per_symbol = float(merged["one_position_or_unresolved_entry_per_symbol"])
+    notional_cap_flag = float(merged["aggregate_notional_cap_equals_allocated_capital"])
+    charge_bps = float(merged["round_trip_charge_bps"])
+    slippage_bps = float(merged["estimated_slippage_bps"])
 
     if per_trade <= 0 or per_trade > 2000:
         raise ValueError("per_trade_risk_cap_inr out of range")
@@ -56,6 +152,20 @@ def validate_config_values(values: Mapping[str, Any]) -> tuple[dict[str, float],
         raise ValueError("vwap_limited_gap_inclusive_max out of range")
     if limited_gap <= accept:
         raise ValueError("vwap_limited_gap_inclusive_max must exceed accept threshold")
+    if allocated <= 0:
+        raise ValueError("allocated_capital_inr out of range")
+    if max_concurrent < 1 or max_concurrent > 20:
+        raise ValueError("max_concurrent_positions out of range")
+    if max_filled < 1 or max_filled > 50:
+        raise ValueError("max_filled_setups_per_day out of range")
+    if one_per_symbol not in (0.0, 1.0):
+        raise ValueError("one_position_or_unresolved_entry_per_symbol must be 0 or 1")
+    if notional_cap_flag not in (0.0, 1.0):
+        raise ValueError("aggregate_notional_cap_equals_allocated_capital must be 0 or 1")
+    if charge_bps < 0 or charge_bps > 100:
+        raise ValueError("round_trip_charge_bps out of range")
+    if slippage_bps < 0 or slippage_bps > 100:
+        raise ValueError("estimated_slippage_bps out of range")
 
     warnings: list[str] = []
     if daily < per_trade:
@@ -67,6 +177,13 @@ def validate_config_values(values: Mapping[str, Any]) -> tuple[dict[str, float],
         "daily_loss_cap_inr": daily,
         "vwap_accept_gap_exclusive_max": accept,
         "vwap_limited_gap_inclusive_max": limited_gap,
+        "allocated_capital_inr": allocated,
+        "max_concurrent_positions": max_concurrent,
+        "max_filled_setups_per_day": max_filled,
+        "one_position_or_unresolved_entry_per_symbol": one_per_symbol,
+        "aggregate_notional_cap_equals_allocated_capital": notional_cap_flag,
+        "round_trip_charge_bps": charge_bps,
+        "estimated_slippage_bps": slippage_bps,
     }
     return normalized, warnings
 
@@ -130,10 +247,13 @@ class AdminConfigStore:
         )
         self._conn.execute(
             """
-            INSERT INTO admin_config_state (id, active_version_id, entries_paused)
-            VALUES (1, ?, 0)
+            INSERT INTO admin_config_state (
+                id, active_version_id, entries_paused,
+                effective_version_id, effective_payload_json, effective_armed_at
+            )
+            VALUES (1, ?, 0, ?, ?, ?)
             """,
-            (version_id,),
+            (version_id, version_id, json.dumps(payload, sort_keys=True), now),
         )
         self._conn.commit()
 
@@ -163,6 +283,7 @@ class AdminConfigStore:
         return str(row["active_version_id"])
 
     def load_active_payload(self) -> dict[str, float]:
+        """Return Saved config: saved values overlay code defaults (preserve 2995 etc.)."""
         version_id = self.active_version_id()
         row = self._conn.execute(
             "SELECT payload_json FROM admin_config_versions WHERE version_id = ?",
@@ -170,11 +291,66 @@ class AdminConfigStore:
         ).fetchone()
         if row is None:
             return dict(DEFAULT_ADMIN_CONFIG_VALUES)
-        return {k: float(v) for k, v in json.loads(str(row["payload_json"])).items()}
+        stored = {k: float(v) for k, v in json.loads(str(row["payload_json"])).items()}
+        return merge_payload_with_defaults(stored)
+
+    def effective_version_id(self) -> str:
+        row = self._conn.execute(
+            "SELECT effective_version_id, active_version_id FROM admin_config_state WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return "bootstrap"
+        return str(row["effective_version_id"] or row["active_version_id"] or "bootstrap")
+
+    def load_effective_payload(self) -> dict[str, float]:
+        """Return Effective config used for new entry decisions (after apply rules)."""
+        row = self._conn.execute(
+            "SELECT effective_payload_json FROM admin_config_state WHERE id = 1"
+        ).fetchone()
+        if row is None or row["effective_payload_json"] is None:
+            return self.load_active_payload()
+        stored = {
+            k: float(v) for k, v in json.loads(str(row["effective_payload_json"])).items()
+        }
+        return merge_payload_with_defaults(stored)
+
+    def arm_effective_config(self, *, actor: str = "engine_arm") -> str:
+        """Promote Saved → Effective at an explicit validated arm boundary only."""
+        if self.read_only:
+            raise RuntimeError("admin config store is read-only")
+        saved = self.load_active_payload()
+        validate_config_values(saved, fill_defaults=True)
+        version_id = self.active_version_id()
+        now = _utc_now()
+        old = self.load_effective_payload()
+        old_eff_version = self.effective_version_id()
+        self._conn.execute(
+            """
+            UPDATE admin_config_state
+            SET effective_version_id = ?,
+                effective_payload_json = ?,
+                effective_armed_at = ?
+            WHERE id = 1
+            """,
+            (version_id, json.dumps(saved, sort_keys=True), now),
+        )
+        diff = _diff_payload(old, saved)
+        self._conn.commit()
+        self.append_control_log(
+            actor_username=actor,
+            action="arm_effective_config",
+            version_id=version_id,
+            from_version_id=old_eff_version,
+            diff_json=diff,
+            result="ok",
+            detail="explicit_arm_boundary",
+        )
+        return version_id
 
     def capture_snapshot(self, *, risk_cap_used_inr: Optional[float] = None) -> AdminConfigSnapshot:
-        version_id = self.active_version_id()
-        payload = self.load_active_payload()
+        """Snapshot Effective config for new decisions / trade provenance."""
+        version_id = self.effective_version_id()
+        payload = self.load_effective_payload()
         snap = AdminConfigSnapshot.from_payload(
             version_id=version_id,
             payload=payload,
@@ -185,7 +361,7 @@ class AdminConfigStore:
 
     def get_config_response(self) -> dict[str, Any]:
         payload = self.load_active_payload()
-        _, warnings = validate_config_values(payload)
+        _, warnings = validate_config_values(payload, fill_defaults=True)
         accept = payload["vwap_accept_gap_exclusive_max"]
         limited = payload["vwap_limited_gap_inclusive_max"]
         return {
@@ -207,11 +383,12 @@ class AdminConfigStore:
     ) -> tuple[str, list[str]]:
         if self.read_only:
             raise RuntimeError("admin config store is read-only")
-        normalized, warnings = validate_config_values(values)
         current_version = self.active_version_id()
         if expected_version_id is not None and expected_version_id != current_version:
             raise VersionConflictError(current_version)
         old_payload = self.load_active_payload()
+        # Merge explicitly against saved/effective — never reset omitted keys to code defaults.
+        normalized, warnings = validate_config_values(values, base=old_payload)
         diff = _diff_payload(old_payload, normalized)
         if not diff:
             return current_version, warnings
@@ -236,6 +413,20 @@ class AdminConfigStore:
             "UPDATE admin_config_state SET active_version_id = ? WHERE id = 1",
             (new_version,),
         )
+        # Apply policy: reductions immediate; increases/capital/limits/VWAP wait for arm.
+        old_effective = self.load_effective_payload()
+        new_effective = apply_saved_to_effective(old_effective, normalized)
+        eff_diff = _diff_payload(old_effective, new_effective)
+        if eff_diff:
+            self._conn.execute(
+                """
+                UPDATE admin_config_state
+                SET effective_payload_json = ?,
+                    effective_version_id = ?
+                WHERE id = 1
+                """,
+                (json.dumps(new_effective, sort_keys=True), new_version),
+            )
         self.append_control_log(
             actor_username=actor,
             action="config_update",
@@ -244,6 +435,16 @@ class AdminConfigStore:
             diff_json=diff,
             result="ok",
         )
+        if eff_diff:
+            self.append_control_log(
+                actor_username=actor,
+                action="effective_immediate_apply",
+                version_id=new_version,
+                from_version_id=current_version,
+                diff_json=eff_diff,
+                result="ok",
+                detail="risk_budget_reductions_only",
+            )
         self._conn.commit()
         return new_version, warnings
 
@@ -265,7 +466,8 @@ class AdminConfigStore:
         if current_version == target_version_id:
             return current_version
         payload = json.loads(str(row["payload_json"]))
-        normalized, _ = validate_config_values(payload)
+        # Historical payloads may omit newer keys — fill those only on load semantics.
+        normalized, _ = validate_config_values(payload, fill_defaults=True)
         old_payload = self.load_active_payload()
         diff = _diff_payload(old_payload, normalized)
         self._conn.execute(

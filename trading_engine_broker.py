@@ -130,6 +130,10 @@ class BrokerPort(Protocol):
         quantity: int,
     ) -> MarginQuote: ...
 
+    def available_margins(self) -> Optional[float]:
+        """Verified available cash/margin for LIVE sizing, or None if unknown."""
+        ...
+
     def ltp(self, tradingsymbol: str) -> Optional[float]: ...
 
 
@@ -234,12 +238,18 @@ class FakeBroker:
     # Delay tag visibility for MARKET orders until reveal_tag() (lost-response tests).
     hide_market_tags: bool = False
     _hidden_tags: set = field(default_factory=set)
+    # Temporarily omit specific order ids from poll/list visibility (gap tests).
+    _hidden_order_ids: set = field(default_factory=set)
     # When True, cancel_order leaves the order working (unconfirmed cancel).
     cancel_noop: bool = False
     # Extra shares filled at cancel time (cancellation-race simulation).
     cancel_additional_fill: int = 0
     # Optional fixed timestamp for new orders (tests); otherwise wall clock.
     next_order_timestamp: Optional[str] = None
+    # LIVE margin simulation: None = unknown (blocks LIVE); float = verified available.
+    # When unset (Ellipsis sentinel via margins_unavailable / available_margin fields):
+    available_margin: Optional[float] = None
+    margins_unavailable: bool = False
 
     def _stamp(self) -> str:
         if self.next_order_timestamp is not None:
@@ -285,15 +295,33 @@ class FakeBroker:
             return [
                 o
                 for o in self.orders.values()
-                if o.tag == tag and o.order_type != "MARKET"
+                if o.tag == tag
+                and o.order_type != "MARKET"
+                and str(o.order_id) not in self._hidden_order_ids
             ]
-        return [o for o in self.orders.values() if o.tag == tag]
+        return [
+            o
+            for o in self.orders.values()
+            if o.tag == tag and str(o.order_id) not in self._hidden_order_ids
+        ]
 
     def reveal_tag(self, tag: str) -> None:
         self._hidden_tags.discard(tag)
 
+    def hide_order(self, order_id: str) -> None:
+        """Omit an order from poll/list results until ``reveal_order``."""
+        self._hidden_order_ids.add(str(order_id))
+
+    def reveal_order(self, order_id: str) -> None:
+        self._hidden_order_ids.discard(str(order_id))
+
     def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]:
-        return [o for o in self.orders.values() if o.tradingsymbol == tradingsymbol]
+        return [
+            o
+            for o in self.orders.values()
+            if o.tradingsymbol == tradingsymbol
+            and str(o.order_id) not in self._hidden_order_ids
+        ]
 
     def place_market_mis(
         self,
@@ -467,6 +495,8 @@ class FakeBroker:
         return updated
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
+        if str(order_id) in self._hidden_order_ids:
+            return None
         return self.orders.get(order_id)
 
     def net_position_qty(self, tradingsymbol: str) -> Optional[int]:
@@ -525,6 +555,13 @@ class FakeBroker:
         if required > self.remaining_capital:
             return MarginQuote(ok=False, required=required, reason="insufficient_margin")
         return MarginQuote(ok=True, required=required)
+
+    def available_margins(self) -> Optional[float]:
+        if self.margins_unavailable:
+            return None
+        if self.available_margin is not None:
+            return float(self.available_margin)
+        return float(self.remaining_capital)
 
     def ltp(self, tradingsymbol: str) -> Optional[float]:
         return self.last_prices.get(tradingsymbol)
@@ -1113,6 +1150,35 @@ class KiteBroker:
             required = float(result.get("total") or 0.0)
             return MarginQuote(ok=True, required=required)
         return MarginQuote(ok=False, required=0.0, reason="mis_unavailable")
+
+    def available_margins(self) -> Optional[float]:
+        """Read verified equity available margin from Kite; None if unavailable."""
+        self._require_live()
+        try:
+            data = self._kite.margins()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(data, dict):
+            return None
+        equity = data.get("equity")
+        if not isinstance(equity, dict):
+            return None
+        available = equity.get("available")
+        if isinstance(available, dict):
+            for key in ("live_balance", "cash", "available_margin", "intraday_payin"):
+                raw = available.get(key)
+                if raw is not None:
+                    try:
+                        return float(raw)
+                    except (TypeError, ValueError):
+                        continue
+        net = equity.get("net")
+        if net is not None:
+            try:
+                return float(net)
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def ltp(self, tradingsymbol: str) -> Optional[float]:
         data = self._kite.ltp([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]

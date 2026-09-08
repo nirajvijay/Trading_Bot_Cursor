@@ -323,8 +323,9 @@ Initial `kind` set (extensible):
 |---|---|
 | Pause/resume, disarm, close-all, recovery commands | Immediate command path |
 | Risk-budget **reductions** | Immediate for **new** entries; if existing commitments exceed reduced allowance → block further entries |
-| Risk **increases**, capital, concurrency/fill limits, VWAP/strategy, trailing profile, execution preference | **Next arm / next session** |
-| Open trade profile | Retained; explicit tighten-stop / close remain available |
+| Charge / estimated-slippage **increases** (tightening) | Immediate for **new** entries; open trades keep stamped profile |
+| Risk **increases**, capital, concurrency/fill limits, VWAP/strategy, trailing profile, execution preference, charge/slippage **decreases** | **Next arm / next session** (explicit `arm_effective_config` only — engine cycle start never auto-promotes) |
+| Open trade profile | Retained (incl. stamped `charge_bps` / `slippage_bps`); explicit tighten-stop / close remain available |
 
 **Preserve saved settings:** migrations add keys with code defaults only when absent; never clobber `daily_loss_cap_inr=2995` etc.
 
@@ -342,6 +343,8 @@ Minimum V1 saved keys (floats/ints/bools as appropriate); defaults = code defaul
 - `max_filled_setups_per_day` (default **5** = five distinct `setup_id`s with an entry fill)
 - `one_position_or_unresolved_entry_per_symbol` (default true)
 - `aggregate_notional_cap_equals_allocated_capital` (default true)
+- `round_trip_charge_bps` (fees/charges; never embedded in fill prices)
+- `estimated_slippage_bps` (reserved until fills confirm; confirmed prices embed slippage)
 - `entry_cutoff_ist` (default `14:45`)
 - `square_off_ist` (default `15:15`)
 - `auto_trail_default_enabled` (default true)
@@ -491,6 +494,7 @@ Mirror shorts; persist extreme; ≤1 modify / 2s / ≥2 ticks improvement; never
 | 1.0 | 2026-09-08 | Cursor Stage 0 | Baseline + frozen contracts |
 | 1.1 | 2026-09-08 | Cursor | Owner review corrections: entry vs management split; independent partial protection; live auth path; ADANIPORTS provenance; test-claim labeling |
 | 1.2 | 2026-09-08 | Cursor | **WP-1.1 accepted** (dev checkpoint). See §7. |
+| 1.3 | 2026-09-08 | Cursor | **WP-1.2 accepted** (dev checkpoint). See §8. |
 
 Astra remains product authority; this file is the Stage 0 evidence + implementation contract freeze for Cursor.
 
@@ -524,6 +528,65 @@ These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_life
 2. `test_square_off_helpers_present_in_cycle` — session square-off / cutoff helpers (WP-1.4).
 
 ### 7.3 Preserve rule (unchanged)
+
+- Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
+- Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
+
+### 7.4 Stage 2 track — Admin API fields (not WP-1.2 frontend)
+
+`api/schemas/admin.py` `AdminConfigValues` still exposes only the legacy five keys. WP-1.2 Saved/Effective store keys exist in `DEFAULT_ADMIN_CONFIG_VALUES` / `AdminConfigStore` but are **not** yet first-class on the Admin HTTP schema/response model:
+
+| Key | Notes |
+|---|---|
+| `allocated_capital_inr` | Effective after arm; Saved immediately |
+| `max_concurrent_positions` | Next-arm apply |
+| `max_filled_setups_per_day` | Next-arm apply |
+| `one_position_or_unresolved_entry_per_symbol` | Next-arm apply |
+| `aggregate_notional_cap_equals_allocated_capital` | Next-arm apply |
+| `round_trip_charge_bps` | Fees/charges; tightening immediate; loosening next-arm; stamped per trade at accept |
+| `estimated_slippage_bps` | Est. slippage until fills confirm; tightening immediate; loosening next-arm; stamped per trade |
+| Legacy `round_trip_cost_slippage_bps` | Maps to charges on load/save when split keys absent |
+| Effective vs Saved dual read in GET `/admin/config` | Stage 2 API surface |
+
+Do **not** expand frontend Admin forms in Stage 1/WP-1.2. Partial PATCH continues to merge against Saved so ₹2,995 is preserved. Cycle construction must **not** auto-promote Saved→Effective; promotion is only via explicit `arm_effective_config`.
+
+---
+
+## 8. WP-1.2 development checkpoint (accepted)
+
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
+**Scope:** Risk reservations & sizing — pending+filled qty/notional, daily setup slots, LIVE margin gate, separated charges vs slippage, Saved≠Effective apply policy (explicit arm only), per-trade cost profile, durable per-order exit reconciliation (qty+₹ same snapshot; missing-order preserve; authoritative price corrections).  
+**Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
+
+### 8.1 Acceptance test command and results
+
+```text
+python3 -m unittest \
+  tests.test_trading_engine_risk \
+  tests.test_trading_engine_wp12_risk \
+  tests.test_trading_engine_wp11_lifecycle \
+  tests.test_trading_engine_cycle \
+  tests.test_trading_engine_store \
+  tests.test_trading_engine_broker \
+  tests.test_admin_config_store \
+  tests.test_trading_engine_loop \
+  tests.test_trading_engine_handoff \
+  -q
+
+Ran 145 tests in 25.729s
+OK (expected failures=2)
+```
+
+Admin config store coverage is included above (`tests.test_admin_config_store`). FastAPI-dependent HTTP Admin/API modules were not runnable in this environment (missing `fastapi`); store-layer Admin config regressions are the WP-1.2 contract surface.
+
+### 8.2 Deferred expected-failure placeholders (unchanged from WP-1.1)
+
+These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_lifecycle.py` (`PendingGapRegressionTests`) until later work packages:
+
+1. `test_close_all_command_kind_exists` — Close All / close-position command surface (WP-1.4).
+2. `test_square_off_helpers_present_in_cycle` — session square-off / cutoff helpers (WP-1.4).
+
+### 8.3 Preserve rule (unchanged)
 
 - Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
 - Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.

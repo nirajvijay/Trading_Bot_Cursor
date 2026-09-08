@@ -685,7 +685,15 @@ class Wp11ReviewFixTests(unittest.TestCase):
         self.assertAlmostEqual(float(trade.exit_value), expected_exit_value, places=6)
         self.assertAlmostEqual(float(trade.entry_value), expected_entry_value, places=6)
         self.assertAlmostEqual(float(trade.realised_pnl), expected_pnl, places=6)
-        self.assertAlmostEqual(float(trade.closed_loss_contribution), abs(expected_pnl), places=6)
+        from trading_engine_risk import fold_exit_costs_into_loss
+
+        expected_loss = fold_exit_costs_into_loss(
+            price_pnl=expected_pnl,
+            qty=qty,
+            entry=110.0,
+            charge_bps=float(trade.charge_bps or 0.0),
+        )
+        self.assertAlmostEqual(float(trade.closed_loss_contribution), expected_loss, places=6)
         weighted_exit = expected_exit_value / float(qty)
         self.assertAlmostEqual(float(trade.exit_fill or 0), weighted_exit, places=6)
         store.close()
@@ -871,7 +879,15 @@ class Wp11ReviewFixTests(unittest.TestCase):
         self.assertEqual(trade.status, "closed")
         expected_pnl = qty * (resolved - 110.0)  # UP
         self.assertAlmostEqual(float(trade.realised_pnl), expected_pnl, places=6)
-        self.assertAlmostEqual(float(trade.closed_loss_contribution), abs(expected_pnl), places=6)
+        from trading_engine_risk import fold_exit_costs_into_loss
+
+        expected_loss = fold_exit_costs_into_loss(
+            price_pnl=expected_pnl,
+            qty=qty,
+            entry=110.0,
+            charge_bps=float(trade.charge_bps or 0.0),
+        )
+        self.assertAlmostEqual(float(trade.closed_loss_contribution), expected_loss, places=6)
         # Must not keep the higher stop-based estimate.
         self.assertLess(float(trade.exit_value), qty * stop)
         store.close()

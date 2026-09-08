@@ -13,6 +13,15 @@ LIMITED_PER_TRADE_RISK_CAP = 450.0
 DAILY_LOSS_CAP = 3000.0
 DEFAULT_TOTAL_CAPITAL = 300_000.0
 DEMO_LEVERAGE_FACTOR = 5.0
+# WP-1.2 reservation / concurrency defaults (Stage 0 §3.8 / §3.13).
+MAX_CONCURRENT_POSITIONS = 2
+MAX_FILLED_SETUPS_PER_DAY = 5
+# Round-trip cost components (basis points of entry). Charges are never in fill
+# prices; estimated slippage is reserved only until execution prices confirm.
+DEFAULT_ROUND_TRIP_CHARGE_BPS = 3.0
+DEFAULT_ESTIMATED_SLIPPAGE_BPS = 2.0
+# Legacy combined default (charge + slippage) for older call sites / payloads.
+DEFAULT_ROUND_TRIP_COST_BPS = DEFAULT_ROUND_TRIP_CHARGE_BPS + DEFAULT_ESTIMATED_SLIPPAGE_BPS
 
 TradeStatus = Literal[
     "candidate",
@@ -149,12 +158,19 @@ class TradeRecord:
     entry_value_est: float = 0.0  # estimated entry notional for unpriced fills
     exit_value_est: float = 0.0  # estimated exit notional for unpriced fills
     pnl_provisional: bool = False  # True until all execution prices are confirmed
+    # Exact exit qty split from durable per-order reconciliation (never price-ratio inferred).
+    # None = unset/legacy; 0 = explicitly zero after reconcile.
+    exit_confirmed_qty: Optional[int] = None
+    exit_est_qty: Optional[int] = None
     remaining_entry_qty: int = 0
     remaining_position_qty: int = 0  # max(0, filled_qty - exited_qty) after reconcile
     protected_qty: int = 0  # broker-confirmed protective coverage of remaining position
     qty_model_version: int = 1
     run_id: Optional[str] = None
     entry_live_orders_enabled: Optional[bool] = None
+    # WP-1.2 cost profile stamped at accept (immutable for the trade).
+    charge_bps: Optional[float] = None
+    slippage_bps: Optional[float] = None
 
 
 TERMINAL_FLAT_STATES: FrozenSet[str] = frozenset({"closed", "skipped", "rejected"})

@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from api import config
-from api.admin_config.store import AdminConfigStore, VersionConflictError, validate_config_values
+from api.admin_config.store import AdminConfigStore, VersionConflictError
 from api.auth.audit import write_audit
 from api.auth.deps import WebAuthContext, require_step_up, require_web_session, require_web_session_mutating
 from api.auth.rate_limit import ACTION_ADMIN_CONFIG, check_rate_limit
@@ -108,10 +108,11 @@ def patch_admin_config(
     check_rate_limit(ACTION_ADMIN_CONFIG, request)
     store = _store()
     try:
-        normalized, warnings = validate_config_values(body.values.model_dump())
+        # Merge against saved/effective inside update_config — do not pre-fill
+        # omitted keys from code defaults (would reset ₹2,995 etc.).
         try:
-            version_id, patch_warnings = store.update_config(
-                normalized,
+            version_id, warnings = store.update_config(
+                body.values.model_dump(),
                 actor=_username(ctx),
                 expected_version_id=body.expected_version_id,
                 comment=body.comment,
@@ -121,16 +122,17 @@ def patch_admin_config(
                 status_code=409,
                 detail=f"version_conflict:{exc.current_version_id}",
             ) from exc
-        all_warnings = sorted(set(warnings + patch_warnings))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         write_audit(
             "admin_config_updated",
             version_id=version_id,
-            warnings=all_warnings,
+            warnings=warnings,
         )
     finally:
         store.close()
     resp = _config_response()
-    resp.warnings = all_warnings
+    resp.warnings = warnings
     return resp
 
 

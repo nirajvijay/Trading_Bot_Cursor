@@ -24,6 +24,7 @@ from trading_engine_handoff import (
 from trading_engine_risk import (
     blocks_new_entries,
     capital_snapshot,
+    fold_exit_costs_into_loss,
     is_unprotected,
     live_pnl,
     margin_blocked,
@@ -33,6 +34,7 @@ from trading_engine_risk import (
     remaining_downside_risk,
     risk_snapshot,
     size_new_trade,
+    trade_cost_profile,
     trail_crosses_last_price,
     trail_is_tighten_only,
 )
@@ -40,8 +42,12 @@ from trading_engine_store import TradingEngineStore
 from trading_engine_types import (
     ACTIVE_STATES,
     DAILY_LOSS_CAP,
+    DEFAULT_ESTIMATED_SLIPPAGE_BPS,
+    DEFAULT_ROUND_TRIP_CHARGE_BPS,
     DEMO_LEVERAGE_FACTOR,
     LIMITED_PER_TRADE_RISK_CAP,
+    MAX_CONCURRENT_POSITIONS,
+    MAX_FILLED_SETUPS_PER_DAY,
     PER_TRADE_RISK_CAP,
     SKIPPED_STATES,
     STOP_ORDER_TYPES,
@@ -288,6 +294,9 @@ class TradingEngineCycle:
         self._monotonic = monotonic_fn
         self._vwap_rule_version = vwap_rule_version
         db_path = _resolve_admin_config_db(admin_config_db, store.db_path)
+        # Saved→Effective promotion is never automatic on cycle construction.
+        # Promote only via AdminConfigStore.arm_effective_config() at an explicit
+        # validated arm boundary.
         self._admin_store = AdminConfigStore(db_path, read_only=True)
         self.consume_new_triggers = True
         self.last_error: Optional[str] = None
@@ -480,7 +489,7 @@ class TradingEngineCycle:
             return
         if classification == "ACCEPT":
             self._pending_vwap.pop(key, None)
-            admin = self._admin_store.load_active_payload()
+            admin = self._admin_store.load_effective_payload()
             self._place_candidate(
                 candidate,
                 per_trade_risk_cap=float(admin["per_trade_risk_cap_inr"]),
@@ -488,7 +497,7 @@ class TradingEngineCycle:
             return
         if classification == "LIMITED":
             self._pending_vwap.pop(key, None)
-            admin = self._admin_store.load_active_payload()
+            admin = self._admin_store.load_effective_payload()
             self._place_candidate(
                 candidate,
                 per_trade_risk_cap=float(admin["limited_per_trade_risk_cap_inr"]),
@@ -548,13 +557,48 @@ class TradingEngineCycle:
         trades = self.store.list_trades(self.session_date)
         # Exclude this candidate (qty 0) from consuming risk until accepted.
         peers = [t for t in trades if t.trade_id != trade.trade_id]
+        admin_payload = self._admin_store.load_effective_payload()
+        # Effective allocated capital under frozen apply policy (post-arm).
+        allocated = float(
+            admin_payload.get("allocated_capital_inr", self.total_capital())
+        )
+        available_margin: Optional[float] = None
+        if self.live_orders_enabled:
+            try:
+                available_margin = self.broker.available_margins()
+            except Exception:  # noqa: BLE001
+                available_margin = None
+        notional_cap = (
+            allocated
+            if bool(int(admin_payload.get("aggregate_notional_cap_equals_allocated_capital", 1)))
+            else None
+        )
         decision = size_new_trade(
             candidate,
             peers,
-            total_capital=self.total_capital(),
+            total_capital=allocated,
             leverage_factor=self.leverage_factor,
             per_trade_risk_cap=per_trade_risk_cap,
             daily_loss_cap=snapshot.daily_loss_cap_inr,
+            max_concurrent_positions=int(
+                admin_payload.get("max_concurrent_positions", MAX_CONCURRENT_POSITIONS)
+            ),
+            max_filled_setups_per_day=int(
+                admin_payload.get("max_filled_setups_per_day", MAX_FILLED_SETUPS_PER_DAY)
+            ),
+            one_per_symbol=bool(
+                int(admin_payload.get("one_position_or_unresolved_entry_per_symbol", 1))
+            ),
+            aggregate_notional_cap=notional_cap,
+            charge_bps=float(
+                admin_payload.get("round_trip_charge_bps", DEFAULT_ROUND_TRIP_CHARGE_BPS)
+            ),
+            slippage_bps=float(
+                admin_payload.get("estimated_slippage_bps", DEFAULT_ESTIMATED_SLIPPAGE_BPS)
+            ),
+            # PAPER may use demo leverage; LIVE sizes against verified available margin only.
+            use_demo_leverage=not bool(self.live_orders_enabled),
+            available_broker_margin=available_margin,
         )
         self.store.append_event(
             trade.trade_id,
@@ -579,6 +623,12 @@ class TradingEngineCycle:
         elif isinstance(self.broker, FakeBroker):
             self.broker.last_prices.setdefault(candidate.tradingsymbol, candidate.trigger_price)
 
+        stamp_charge = float(
+            admin_payload.get("round_trip_charge_bps", DEFAULT_ROUND_TRIP_CHARGE_BPS)
+        )
+        stamp_slip = float(
+            admin_payload.get("estimated_slippage_bps", DEFAULT_ESTIMATED_SLIPPAGE_BPS)
+        )
         trade = self.store.update_trade(
             trade.trade_id,
             qty=decision.qty,
@@ -596,6 +646,8 @@ class TradingEngineCycle:
             status="entry_submitting",
             run_id=self.run_id,
             entry_live_orders_enabled=1 if self.live_orders_enabled else 0,
+            charge_bps=stamp_charge,
+            slippage_bps=stamp_slip,
             **snapshot.provenance_fields(),
         )
         self.store.append_event(trade.trade_id, "entry_submitting")
@@ -716,16 +768,9 @@ class TradingEngineCycle:
         return None
 
     def _attributed_exit_qty(self, trade: TradeRecord) -> int:
-        total = 0
-        for link in self.store.list_order_links(trade.trade_id):
-            role = str(link["role"])
-            if role not in {"exit", "stop"}:
-                continue
-            order = self._resolve_order(str(link["order_id"]), trade.symbol)
-            if order is None:
-                continue
-            total += broker_order_filled_qty(order)
-        return max(0, total)
+        """Cumulative exit fills from durable per-order snapshots (not live visibility)."""
+        _cv, _ev, confirmed, estimated = self.store.exit_execution_totals(trade.trade_id)
+        return max(0, int(confirmed) + int(estimated))
 
     def _try_attribute_external_exits(self, trade: TradeRecord) -> list[Any]:
         """Attribute untagged exits only when ownership is unique; else leave unresolved."""
@@ -856,24 +901,20 @@ class TradingEngineCycle:
         return out
 
     def _broker_exit_filled_total(self, trade: TradeRecord) -> int:
-        """Cumulative exit executions from stop (and exit-side market) orders for this trade."""
-        total = 0
-        for order in self._iter_exit_orders(trade):
-            total += broker_order_filled_qty(order)
-        return max(0, total)
+        """Cumulative exit fills from the durable per-order reconciliation snapshot."""
+        _cv, _ev, confirmed, estimated = self._broker_exit_execution_values(trade)
+        return max(0, int(confirmed) + int(estimated))
 
     def _broker_exit_execution_values(
         self, trade: TradeRecord
     ) -> tuple[float, float, int, int]:
         """Per-order exit notionals: (confirmed_value, estimated_value, confirmed_qty, est_qty).
 
-        Confirmed uses broker average_price only. Missing prices contribute to estimated
-        using stop/reference prices and never inflate confirmed value.
+        Visible broker orders update the durable trade_order_links snapshot. Qty and ₹
+        totals are then read from that same snapshot so a temporarily missing order
+        cannot drop previously confirmed execution value. Authoritative priced
+        observations overwrite the snapshot when the order reappears.
         """
-        confirmed = 0.0
-        estimated = 0.0
-        confirmed_qty = 0
-        est_qty = 0
         est_px = float(
             trade.current_stop
             or trade.exit_fill
@@ -883,15 +924,14 @@ class TradingEngineCycle:
         )
         for order in self._iter_exit_orders(trade):
             filled = broker_order_filled_qty(order)
-            if filled <= 0:
-                continue
-            if order.average_price is not None:
-                confirmed += float(filled) * float(order.average_price)
-                confirmed_qty += filled
-            else:
-                estimated += float(filled) * est_px
-                est_qty += filled
-        return float(confirmed), float(estimated), int(confirmed_qty), int(est_qty)
+            avg = order.average_price
+            self.store.record_order_execution(
+                str(order.order_id),
+                filled_qty=filled,
+                average_price=None if avg is None else float(avg),
+                estimated_px=est_px,
+            )
+        return self.store.exit_execution_totals(trade.trade_id, estimated_px=est_px)
 
     def _broker_exit_value_total(self, trade: TradeRecord) -> float:
         """Confirmed exit notional only (no price substitution)."""
@@ -926,6 +966,8 @@ class TradingEngineCycle:
             "exit_value_est": estimated,
             "pnl_provisional": 1 if provisional else 0,
             "exited_qty": max(int(trade.exited_qty or 0), confirmed_qty + est_qty),
+            "exit_confirmed_qty": int(confirmed_qty),
+            "exit_est_qty": int(est_qty),
         }
         if weighted is not None and not provisional:
             updates["exit_fill"] = weighted
@@ -1022,17 +1064,37 @@ class TradingEngineCycle:
             return
 
         if self.live_orders_enabled:
+            available = None
+            try:
+                available = self.broker.available_margins()
+            except Exception:  # noqa: BLE001
+                available = None
+            if available is None:
+                self.store.update_trade(
+                    trade.trade_id,
+                    status="rejected",
+                    reject_reason="margin_unavailable",
+                    qty=0,
+                    intended_qty=0,
+                    filled_qty=0,
+                    exited_qty=0,
+                    remaining_entry_qty=0,
+                    remaining_position_qty=0,
+                    protected_qty=0,
+                    notional=0,
+                    margin_blocked=0,
+                    qty_model_version=1,
+                )
+                self.store.append_event(
+                    trade.trade_id, "rejected", payload={"reason": "margin_unavailable"}
+                )
+                return
             quote = self.broker.order_margins(
                 tradingsymbol=trade.symbol,
                 transaction_type=_entry_side(trade.direction),
                 quantity=trade.qty,
             )
-            cap = capital_snapshot(
-                [t for t in self.store.list_trades(self.session_date) if t.trade_id != trade.trade_id],
-                total_capital=self.total_capital(),
-                leverage_factor=self.leverage_factor,
-            )
-            if not quote.ok or quote.required > cap.remaining_capital:
+            if not quote.ok or quote.required > float(available):
                 reason = quote.reason or "insufficient_margin"
                 if not quote.ok and "mis" in reason.lower():
                     reason = "mis_unavailable"
@@ -1138,15 +1200,18 @@ class TradingEngineCycle:
             return
 
         fill_px = float(order.average_price or trade.entry_estimate)
-        blocked = margin_blocked(
-            qty=filled_qty, entry=fill_px, leverage_factor=self.leverage_factor
-        )
+        # LIVE must not restore demo leverage into margin_blocked accounting.
+        lev = 1.0 if self.live_orders_enabled else self.leverage_factor
         if status in ENTRY_COMPLETE or pending_qty <= 0:
             phase = "entry_filled"
             remaining = 0
         else:
             phase = "partial_entry"
             remaining = pending_qty
+        reserved_for_margin = filled_qty + remaining
+        blocked = margin_blocked(
+            qty=reserved_for_margin, entry=fill_px, leverage_factor=lev
+        )
 
         rem_pos = self._remaining_position_from_executions(filled_qty, exited_qty)
         if rem_pos <= 0 and exited_qty > 0 and remaining > 0:
@@ -1161,6 +1226,7 @@ class TradingEngineCycle:
         entry_confirmed, entry_est = self._entry_execution_values_from_order(
             order, filled_qty, fill_px
         )
+        reserved_qty = filled_qty + remaining
         self.store.update_trade(
             trade.trade_id,
             status=phase,
@@ -1179,7 +1245,7 @@ class TradingEngineCycle:
             remaining_position_qty=rem_pos,
             intended_qty=intended,
             qty=intended,
-            notional=filled_qty * float(order.average_price or fill_px),
+            notional=float(reserved_qty) * float(order.average_price or fill_px),
             margin_blocked=blocked,
             pnl_provisional=1 if entry_est > 0 else int(bool(getattr(trade, "pnl_provisional", False))),
             qty_model_version=1,
@@ -1479,13 +1545,15 @@ class TradingEngineCycle:
             updates["entry_fill"] = float(cancelled.average_price)
         elif new_filled > 0 and entry_confirmed > 0:
             updates["entry_fill"] = entry_confirmed / float(new_filled)
-        if new_filled > prev_filled:
+        if new_filled > prev_filled or pending == 0:
             avg = float(updates.get("entry_fill") or trade.entry_fill or trade.entry_estimate)
-            updates["notional"] = new_filled * avg
+            reserved = rem_pos + max(0, pending)
+            updates["notional"] = float(reserved) * avg
+            lev = 1.0 if self.live_orders_enabled else self.leverage_factor
             updates["margin_blocked"] = margin_blocked(
-                qty=new_filled,
+                qty=reserved,
                 entry=avg,
-                leverage_factor=self.leverage_factor,
+                leverage_factor=lev,
             )
         self.store.update_trade(trade.trade_id, **updates)
         self.store.append_event(
@@ -1609,6 +1677,31 @@ class TradingEngineCycle:
                 display_exit = exit_value / float(max(1, int(exit_updates.get("exited_qty", new_exited))))
             elif exit_value + exit_value_est > 0 and new_exited > 0:
                 display_exit = (exit_value + exit_value_est) / float(new_exited)
+            prev_loss = float(getattr(trade, "closed_loss_contribution", 0) or 0)
+            prev_pnl = float(getattr(trade, "realised_pnl", 0) or 0)
+            partial_loss = prev_loss
+            partial_pnl = prev_pnl
+            if (
+                not provisional
+                and new_exited > 0
+                and filled > 0
+                and entry_confirmed > 0
+                and exit_value > 0
+            ):
+                entry_slice = entry_confirmed * (float(new_exited) / float(filled))
+                partial_pnl = realised_pnl_from_values(
+                    direction=trade.direction,
+                    entry_value=entry_slice,
+                    exit_value=exit_value,
+                    qty=new_exited,
+                )
+                # Price loss only here; residual exit costs stay in exited_cost_reservation
+                # until authoritative close (avoids wiping costs at gross BE).
+                partial_loss = abs(partial_pnl) if partial_pnl < 0 else 0.0
+            elif provisional:
+                # Missing prices must not zero an existing confirmed loss.
+                partial_loss = prev_loss
+                partial_pnl = prev_pnl
             self.store.update_trade(
                 trade.trade_id,
                 status=next_status,
@@ -1621,6 +1714,8 @@ class TradingEngineCycle:
                 remaining_entry_qty=rem_entry,
                 protected_qty=cover if next_status == "partial_exit" else 0,
                 close_reason=None,
+                realised_pnl=partial_pnl,
+                closed_loss_contribution=partial_loss,
                 sl_order_id=(
                     trade.sl_order_id
                     if not stop_complete
@@ -1701,8 +1796,94 @@ class TradingEngineCycle:
             filled_qty=filled,
         )
 
+    def _refresh_closed_exit_snapshot(self, trade: TradeRecord) -> None:
+        """Re-sync durable exit qty/₹ after close when hidden orders reappear/correct.
+
+        Temporarily missing broker orders must not erase the snapshot. When a priced
+        observation returns, apply the authoritative correction once (no double-count).
+        """
+        prev_value = float(getattr(trade, "exit_value", 0) or 0)
+        prev_est = float(getattr(trade, "exit_value_est", 0) or 0)
+        prev_cq = int(getattr(trade, "exit_confirmed_qty", 0) or 0)
+        prev_eq = int(getattr(trade, "exit_est_qty", 0) or 0)
+        prev_exited = int(getattr(trade, "exited_qty", 0) or 0)
+        updates = self._sync_exit_values(trade)
+        new_value = float(updates.get("exit_value", 0) or 0)
+        new_est = float(updates.get("exit_value_est", 0) or 0)
+        new_cq = int(updates.get("exit_confirmed_qty", 0) or 0)
+        new_eq = int(updates.get("exit_est_qty", 0) or 0)
+        new_exited = int(updates.get("exited_qty", prev_exited) or prev_exited)
+        if (
+            abs(new_value - prev_value) < 1e-9
+            and abs(new_est - prev_est) < 1e-9
+            and new_cq == prev_cq
+            and new_eq == prev_eq
+            and new_exited == prev_exited
+        ):
+            return
+        filled = int(trade.filled_qty or trade.qty or 0)
+        pnl_qty = min(filled, new_exited) if filled and new_exited else max(filled, new_exited)
+        entry_value = float(getattr(trade, "entry_value", 0) or 0)
+        provisional = bool(int(updates.get("pnl_provisional", 0) or 0))
+        if entry_value > 0 and new_value > 0 and pnl_qty > 0 and not provisional:
+            entry_for_pnl = (
+                entry_value * (float(pnl_qty) / float(filled)) if filled else entry_value
+            )
+            pnl = realised_pnl_from_values(
+                direction=trade.direction,
+                entry_value=entry_for_pnl,
+                exit_value=new_value,
+                qty=pnl_qty,
+            )
+            entry_px = entry_for_pnl / float(pnl_qty)
+            charge_bps, _ = trade_cost_profile(
+                trade,
+                charge_bps=float(
+                    self._admin_store.load_effective_payload().get(
+                        "round_trip_charge_bps", DEFAULT_ROUND_TRIP_CHARGE_BPS
+                    )
+                ),
+            )
+            loss = fold_exit_costs_into_loss(
+                price_pnl=pnl,
+                qty=pnl_qty,
+                entry=float(entry_px),
+                charge_bps=charge_bps,
+            )
+            exit_avg = new_value / float(new_cq) if new_cq > 0 else trade.exit_fill
+        else:
+            pnl = float(trade.realised_pnl or 0)
+            loss = float(trade.closed_loss_contribution or 0)
+            exit_avg = trade.exit_fill
+        self.store.update_trade(
+            trade.trade_id,
+            exit_value=new_value,
+            exit_value_est=new_est,
+            exit_confirmed_qty=new_cq,
+            exit_est_qty=new_eq,
+            exited_qty=max(prev_exited, new_exited),
+            pnl_provisional=1 if provisional else 0,
+            exit_fill=exit_avg,
+            realised_pnl=pnl,
+            closed_loss_contribution=loss,
+        )
+        self.store.append_event(
+            trade.trade_id,
+            "closed_exit_snapshot_refreshed",
+            payload={
+                "exit_value": new_value,
+                "exit_value_est": new_est,
+                "exit_confirmed_qty": new_cq,
+                "exit_est_qty": new_eq,
+                "pnl": pnl,
+            },
+        )
+
     def drive_open(self) -> None:
         for trade in self.store.list_trades(self.session_date):
+            if trade.status == "closed":
+                self._refresh_closed_exit_snapshot(trade)
+                continue
             if trade.status in {
                 "entry_submitting",
                 "submission_unknown",
@@ -2311,7 +2492,8 @@ class TradingEngineCycle:
                 pnl = realised_pnl(
                     direction=trade.direction, qty=close_qty, entry_fill=entry, exit_fill=exit_avg
                 )
-            loss = 0.0
+            # Do not zero an existing confirmed loss while prices are unresolved.
+            loss = float(getattr(trade, "closed_loss_contribution", 0) or 0)
         elif entry_value > 0 and exit_value > 0 and pnl_qty > 0:
             entry_for_pnl = (
                 entry_value * (float(pnl_qty) / float(filled_keep)) if filled_keep else entry_value
@@ -2327,7 +2509,20 @@ class TradingEngineCycle:
             )
             entry = entry_for_pnl / float(pnl_qty)
             exit_avg = exit_for_pnl / float(pnl_qty)
-            loss = abs(pnl) if pnl < 0 else 0.0
+            charge_bps, _ = trade_cost_profile(
+                trade,
+                charge_bps=float(
+                    self._admin_store.load_effective_payload().get(
+                        "round_trip_charge_bps", DEFAULT_ROUND_TRIP_CHARGE_BPS
+                    )
+                ),
+            )
+            loss = fold_exit_costs_into_loss(
+                price_pnl=pnl,
+                qty=pnl_qty,
+                entry=float(entry),
+                charge_bps=charge_bps,
+            )
         else:
             entry = trade.entry_fill if trade.entry_fill is not None else trade.entry_estimate
             exit_avg = float(exit_fill)
@@ -2335,7 +2530,7 @@ class TradingEngineCycle:
                 direction=trade.direction, qty=close_qty, entry_fill=entry, exit_fill=exit_avg
             )
             provisional = True
-            loss = 0.0
+            loss = float(getattr(trade, "closed_loss_contribution", 0) or 0)
 
         if (
             not provisional
@@ -2353,8 +2548,20 @@ class TradingEngineCycle:
                     pnl = float(quote.realised)
                     if quote.average_price is not None:
                         entry = float(quote.average_price)
-                    loss = abs(pnl) if pnl < 0 else 0.0
-
+                    charge_bps, _ = trade_cost_profile(
+                        trade,
+                        charge_bps=float(
+                            self._admin_store.load_effective_payload().get(
+                                "round_trip_charge_bps", DEFAULT_ROUND_TRIP_CHARGE_BPS
+                            )
+                        ),
+                    )
+                    loss = fold_exit_costs_into_loss(
+                        price_pnl=pnl,
+                        qty=pnl_qty,
+                        entry=float(entry or 0.0),
+                        charge_bps=charge_bps,
+                    )
         self.store.update_trade(
             trade.trade_id,
             status="closed",
@@ -2399,7 +2606,7 @@ class TradingEngineCycle:
     def write_status(self) -> None:
         if self.status_file is None:
             return
-        admin = self._admin_store.load_active_payload()
+        admin = self._admin_store.load_effective_payload()
         snap = snapshot_dict(
             self.store,
             session_date=self.session_date,

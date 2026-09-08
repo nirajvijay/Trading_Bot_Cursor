@@ -37,7 +37,7 @@ class AdminConfigStoreTests(unittest.TestCase):
         run_migrations(conn)
         rows = conn.execute("SELECT version FROM admin_schema_migrations ORDER BY version").fetchall()
         conn.close()
-        self.assertEqual([int(r[0]) for r in rows], [1])
+        self.assertEqual([int(r[0]) for r in rows], [1, 2])
 
     def test_daily_cap_below_per_trade_warns(self) -> None:
         values = dict(DEFAULT_ADMIN_CONFIG_VALUES)
@@ -51,6 +51,101 @@ class AdminConfigStoreTests(unittest.TestCase):
         values["vwap_limited_gap_inclusive_max"] = 0.22
         with self.assertRaises(ValueError):
             validate_config_values(values)
+
+    def test_strict_validate_rejects_incomplete_replacement(self) -> None:
+        partial = {
+            "per_trade_risk_cap_inr": 900.0,
+            "limited_per_trade_risk_cap_inr": 450.0,
+            "daily_loss_cap_inr": 2995.0,
+            "vwap_accept_gap_exclusive_max": 0.0022,
+            "vwap_limited_gap_inclusive_max": 0.004,
+        }
+        with self.assertRaises(ValueError) as ctx:
+            validate_config_values(partial)
+        self.assertIn("incomplete_config", str(ctx.exception))
+
+    def test_partial_save_merges_against_saved_preserves_daily_cap(self) -> None:
+        store = AdminConfigStore(self.db_path)
+        try:
+            # Simulate host saved ₹2,995 (and a custom allocated capital).
+            base = dict(store.load_active_payload())
+            base["daily_loss_cap_inr"] = 2995.0
+            base["allocated_capital_inr"] = 250_000.0
+            store.update_config(base, actor="tester")
+            # Partial legacy patch omits daily + allocated — must not reset to code defaults.
+            partial = {
+                "per_trade_risk_cap_inr": 850.0,
+                "limited_per_trade_risk_cap_inr": 450.0,
+                "vwap_accept_gap_exclusive_max": 0.0022,
+                "vwap_limited_gap_inclusive_max": 0.004,
+            }
+            store.update_config(partial, actor="tester")
+            payload = store.load_active_payload()
+            self.assertEqual(payload["daily_loss_cap_inr"], 2995.0)
+            self.assertEqual(payload["allocated_capital_inr"], 250_000.0)
+            self.assertEqual(payload["per_trade_risk_cap_inr"], 850.0)
+        finally:
+            store.close()
+
+    def test_load_merges_new_keys_onto_legacy_saved_payload(self) -> None:
+        store = AdminConfigStore(self.db_path)
+        try:
+            version_id = store.active_version_id()
+            legacy = {
+                "per_trade_risk_cap_inr": 900.0,
+                "limited_per_trade_risk_cap_inr": 450.0,
+                "daily_loss_cap_inr": 2995.0,
+                "vwap_accept_gap_exclusive_max": 0.0022,
+                "vwap_limited_gap_inclusive_max": 0.004,
+            }
+            store._conn.execute(
+                "UPDATE admin_config_versions SET payload_json = ? WHERE version_id = ?",
+                (__import__("json").dumps(legacy), version_id),
+            )
+            store._conn.commit()
+            payload = store.load_active_payload()
+            self.assertEqual(payload["daily_loss_cap_inr"], 2995.0)
+            self.assertEqual(
+                payload["allocated_capital_inr"],
+                DEFAULT_ADMIN_CONFIG_VALUES["allocated_capital_inr"],
+            )
+            self.assertEqual(
+                payload["max_filled_setups_per_day"],
+                DEFAULT_ADMIN_CONFIG_VALUES["max_filled_setups_per_day"],
+            )
+        finally:
+            store.close()
+
+    def test_apply_policy_reductions_immediate_capital_next_arm(self) -> None:
+        store = AdminConfigStore(self.db_path)
+        try:
+            base = dict(store.load_active_payload())
+            base["daily_loss_cap_inr"] = 2995.0
+            base["allocated_capital_inr"] = 300_000.0
+            store.update_config(base, actor="tester")
+            store.arm_effective_config(actor="tester")
+            self.assertEqual(store.load_effective_payload()["allocated_capital_inr"], 300_000.0)
+
+            tighter = dict(store.load_active_payload())
+            tighter["daily_loss_cap_inr"] = 2000.0
+            tighter["allocated_capital_inr"] = 50_000.0
+            store.update_config(tighter, actor="tester")
+            eff = store.load_effective_payload()
+            saved = store.load_active_payload()
+            self.assertEqual(saved["daily_loss_cap_inr"], 2000.0)
+            self.assertEqual(saved["allocated_capital_inr"], 50_000.0)
+            # Risk reduction immediate; capital waits for arm.
+            self.assertEqual(eff["daily_loss_cap_inr"], 2000.0)
+            self.assertEqual(eff["allocated_capital_inr"], 300_000.0)
+            # Open-trade profile is stamped from Effective at accept — version id recorded.
+            snap = store.capture_snapshot()
+            self.assertEqual(snap.daily_loss_cap_inr, 2000.0)
+            self.assertEqual(snap.admin_config_version_id, store.effective_version_id())
+
+            store.arm_effective_config(actor="tester")
+            self.assertEqual(store.load_effective_payload()["allocated_capital_inr"], 50_000.0)
+        finally:
+            store.close()
 
     def test_update_and_version_conflict(self) -> None:
         store = AdminConfigStore(self.db_path)

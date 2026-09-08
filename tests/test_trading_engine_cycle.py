@@ -334,9 +334,13 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(trade.status, "protected_open")
         updated = cycle.apply_trail(trade.trade_id, 111.0, last_price=112.0)
         self.assertEqual(updated.current_stop, 111.0)
-        from trading_engine_risk import trade_remaining_risk
+        from trading_engine_risk import estimated_cost_per_share, trade_remaining_risk
 
-        self.assertEqual(trade_remaining_risk(updated), 0.0)
+        # Price downside is zero once stop is in profit, but costs remain reserved.
+        costs = estimated_cost_per_share(
+            float(updated.entry_fill or updated.entry_estimate)
+        ) * float(updated.remaining_position_qty or updated.qty)
+        self.assertAlmostEqual(trade_remaining_risk(updated), costs, places=6)
         events = store.list_events(trade.trade_id)
         actions = [e["action"] for e in events]
         self.assertIn("sl_modified", actions)

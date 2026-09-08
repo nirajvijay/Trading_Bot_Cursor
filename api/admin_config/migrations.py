@@ -53,8 +53,48 @@ def _apply_migration_1(conn: sqlite3.Connection) -> None:
     conn.executescript(MIGRATION_1_SQL)
 
 
+def _apply_migration_2(conn: sqlite3.Connection) -> None:
+    cols = {
+        str(r[1])
+        for r in conn.execute("PRAGMA table_info(admin_config_state)").fetchall()
+    }
+    if "effective_version_id" not in cols:
+        conn.execute(
+            "ALTER TABLE admin_config_state ADD COLUMN effective_version_id TEXT"
+        )
+    if "effective_payload_json" not in cols:
+        conn.execute(
+            "ALTER TABLE admin_config_state ADD COLUMN effective_payload_json TEXT"
+        )
+    if "effective_armed_at" not in cols:
+        conn.execute(
+            "ALTER TABLE admin_config_state ADD COLUMN effective_armed_at TEXT"
+        )
+    # Seed effective from active saved payload when missing.
+    row = conn.execute(
+        """
+        SELECT s.active_version_id, v.payload_json
+        FROM admin_config_state s
+        LEFT JOIN admin_config_versions v ON v.version_id = s.active_version_id
+        WHERE s.id = 1
+        """
+    ).fetchone()
+    if row is not None and row[0] is not None:
+        conn.execute(
+            """
+            UPDATE admin_config_state
+            SET effective_version_id = COALESCE(effective_version_id, ?),
+                effective_payload_json = COALESCE(effective_payload_json, ?),
+                effective_armed_at = COALESCE(effective_armed_at, ?)
+            WHERE id = 1
+            """,
+            (str(row[0]), str(row[1] or "{}"), _utc_now()),
+        )
+
+
 MIGRATIONS: List[Migration] = [
     (1, "initial admin config schema", _apply_migration_1),
+    (2, "saved vs effective config payloads", _apply_migration_2),
 ]
 
 
