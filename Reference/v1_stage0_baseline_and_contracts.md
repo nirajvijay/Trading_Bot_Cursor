@@ -910,7 +910,7 @@ Owner-requested supplement before Stage 2. **No implementation in this revision.
 | **Status** | **PARTIAL** (**E**) |
 | **Implementation present** | `_ensure_protection` lists working stops via `orders_by_tag` before `place_slm`; broker-layer idempotent return of existing working stop for same tag (`FakeBroker.place_slm` / `KiteBroker.place_slm`). Ambiguous **modify** path: `sl_modify_ambiguous` + poll. |
 | **Implementation missing** | No durable SL submit-intent / `sl_submit_attempt` before `place_slm` (unlike entry `_submit_entry` and `_durable_market_exit`). `place_slm` not wrapped into `submission_unknown`-style recovery. No FakeBroker lost-SL harness analogous to `hide_market_tags` / market place error. |
-| **Named tests present** | Broker tag idempotency: `FakeBrokerTests.test_market_then_slm` (second `place_slm` same order_id). Lost **entry** MARKET: `Wp11ReviewFixTests.test_6_ambiguous_submission_does_not_place_second_entry`, `test_crash_recovery_intent_no_duplicate_entry_unpaused`. Lost **exit** MARKET: `Wp13TrailTests.test_lost_exit_response_no_duplicate_market_write_across_restart`. |
+| **Named tests present** | Broker tag idempotency: `FakeBrokerTests.test_market_then_slm` (second `place_slm` same order_id). Lost **entry** MARKET: `Wp11ReviewFixTests.test_6_ambiguous_submission_does_not_place_second_entry`, `test_crash_recovery_intent_no_duplicate_entry_unpaused`. Lost **exit** MARKET: `Wp13IntegrationTests.test_lost_exit_response_no_duplicate_market_write_across_restart`. |
 | **Named tests missing** | **none** for lost protective-stop **place** response → reconcile without second `place_slm` / blind retry. |
 
 #### §12.6 summary
