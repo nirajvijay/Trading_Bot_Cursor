@@ -27,6 +27,9 @@ DEFAULT_PROTECTION_CONFIRM_DEADLINE_SECONDS = 5.0
 DEFAULT_ENTRY_REMAINDER_CANCEL_SECONDS = 5.0
 TRAIL_MIN_MODIFY_INTERVAL_SECONDS = 2.0
 TRAIL_MIN_IMPROVEMENT_TICKS = 2
+# WP-1.4 session gates (IST wall-clock as HHMM float for admin float payloads).
+DEFAULT_ENTRY_CUTOFF_IST_HHMM = 1445.0  # 14:45 IST
+DEFAULT_SQUARE_OFF_IST_HHMM = 1515.0  # 15:15 IST
 
 TradeStatus = Literal[
     "candidate",
@@ -95,7 +98,15 @@ SKIPPED_STATES: FrozenSet[str] = frozenset({"skipped", "rejected"})
 
 EngineState = Literal["stopped", "starting", "running", "error", "critical"]
 
-CommandKind = Literal["trail_stop", "stop_engine", "set_auto_trail"]
+CommandKind = Literal[
+    "trail_stop",
+    "stop_engine",
+    "set_auto_trail",
+    "pause_entries",
+    "resume_entries",
+    "close_position",
+    "close_all",
+]
 
 STOP_ORDER_TYPES: FrozenSet[str] = frozenset({"SL", "SL-M"})
 
@@ -184,6 +195,9 @@ class TradeRecord:
     entry_submitted_at: Optional[str] = None
     # Owner explicitly disabled auto-trail; protection refresh must not re-enable.
     auto_trail_owner_disabled: bool = False
+    # WP-1.4: active market-exit attempt (never confuse with older failed links).
+    active_exit_order_id: Optional[str] = None
+    active_exit_kind: Optional[str] = None
 
 
 TERMINAL_FLAT_STATES: FrozenSet[str] = frozenset({"closed", "skipped", "rejected"})

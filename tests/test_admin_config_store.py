@@ -192,6 +192,40 @@ class AdminConfigStoreTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_rejects_malformed_session_gate_hhmm(self) -> None:
+        """Admin entry_cutoff/square_off use the same strict HHMM validator."""
+        cases = (
+            ("entry_cutoff_ist", 1865.0),
+            ("entry_cutoff_ist", 2400.0),
+            ("entry_cutoff_ist", 1445.5),
+            ("entry_cutoff_ist", float("nan")),
+            ("entry_cutoff_ist", float("inf")),
+            ("square_off_ist", 1865.0),
+            ("square_off_ist", 2400.0),
+            ("square_off_ist", 1515.25),
+            ("square_off_ist", float("nan")),
+            ("square_off_ist", float("-inf")),
+        )
+        for key, bad in cases:
+            with self.subTest(key=key, bad=bad):
+                values = dict(DEFAULT_ADMIN_CONFIG_VALUES)
+                values[key] = bad
+                with self.assertRaises(ValueError):
+                    validate_config_values(values)
+
+    def test_rejects_invalid_session_gate_ordering(self) -> None:
+        values = dict(DEFAULT_ADMIN_CONFIG_VALUES)
+        values["entry_cutoff_ist"] = 1515.0
+        values["square_off_ist"] = 1445.0
+        with self.assertRaises(ValueError) as ctx:
+            validate_config_values(values)
+        self.assertIn("square_off_ist must be after entry_cutoff_ist", str(ctx.exception))
+        equal = dict(DEFAULT_ADMIN_CONFIG_VALUES)
+        equal["entry_cutoff_ist"] = 1445.0
+        equal["square_off_ist"] = 1445.0
+        with self.assertRaises(ValueError):
+            validate_config_values(equal)
+
 
 if __name__ == "__main__":
     unittest.main()

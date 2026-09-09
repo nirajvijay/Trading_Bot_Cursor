@@ -21,7 +21,7 @@ from trading_engine_risk import (
 )
 from trading_engine_store import TradingEngineStore
 
-from tests.test_trading_engine_cycle import SCHEMA, _seed_live
+from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _session_clock
 
 
 class Wp12RiskIntegrationTests(unittest.TestCase):
@@ -74,6 +74,7 @@ class Wp12RiskIntegrationTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=live_orders,
             admin_config_db=self.admin,
+            clock_fn=_session_clock(),
         )
         return store, cycle
 

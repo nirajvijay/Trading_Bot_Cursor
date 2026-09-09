@@ -13,6 +13,7 @@ from typing import Any, Mapping, Optional
 from api.admin_config.defaults import DEFAULT_ADMIN_CONFIG_VALUES
 from api.admin_config.migrations import run_migrations
 from api.admin_config.snapshot import AdminConfigSnapshot
+from nse_trading_calendar import parse_hhmm, validate_session_gate_hhmm_pair
 
 _CONFIG_KEYS = tuple(DEFAULT_ADMIN_CONFIG_VALUES.keys())
 
@@ -147,6 +148,8 @@ def validate_config_values(
     slippage_bps = float(merged["estimated_slippage_bps"])
     protection_deadline = float(merged["protection_confirm_deadline_seconds"])
     remainder_cancel = float(merged["entry_remainder_cancel_seconds"])
+    entry_cutoff = float(merged["entry_cutoff_ist"])
+    square_off = float(merged["square_off_ist"])
 
     if per_trade <= 0 or per_trade > 2000:
         raise ValueError("per_trade_risk_cap_inr out of range")
@@ -178,6 +181,12 @@ def validate_config_values(
         raise ValueError("protection_confirm_deadline_seconds out of range")
     if remainder_cancel < 1 or remainder_cancel > 120:
         raise ValueError("entry_remainder_cancel_seconds out of range")
+    for label, hhmm in (("entry_cutoff_ist", entry_cutoff), ("square_off_ist", square_off)):
+        if parse_hhmm(hhmm) is None:
+            raise ValueError(f"{label} out of range")
+    gate_err = validate_session_gate_hhmm_pair(entry_cutoff, square_off)
+    if gate_err is not None:
+        raise ValueError("square_off_ist must be after entry_cutoff_ist")
 
     warnings: list[str] = []
     if daily < per_trade:
@@ -198,6 +207,9 @@ def validate_config_values(
         "estimated_slippage_bps": slippage_bps,
         "protection_confirm_deadline_seconds": protection_deadline,
         "entry_remainder_cancel_seconds": remainder_cancel,
+        # Strict integer HHMM — parse_hhmm already rejected fractions / malformed.
+        "entry_cutoff_ist": float(int(entry_cutoff)),
+        "square_off_ist": float(int(square_off)),
     }
     return normalized, warnings
 

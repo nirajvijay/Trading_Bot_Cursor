@@ -10,7 +10,7 @@ from pathlib import Path
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle
 from trading_engine_store import TradingEngineStore
-from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _seed_vwap
+from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _seed_vwap, _session_clock
 
 
 class FakeBrokerLimitedValidationTests(unittest.TestCase):
@@ -26,9 +26,9 @@ class FakeBrokerLimitedValidationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_limited_sized_qty_below_accept(self) -> None:
-        _seed_live(self.live, "lim", "2026-08-17T04:40:00+00:00", vwap="LIMITED")
-        _seed_live(self.live, "acc", "2026-08-17T04:41:00+00:00", vwap="ACCEPT")
-        broker = FakeBroker(last_prices={"AAA": 110})
+        _seed_live(self.live, "lim", "2026-08-17T04:40:00+00:00", symbol="LIM", vwap="LIMITED")
+        _seed_live(self.live, "acc", "2026-08-17T04:41:00+00:00", symbol="ACC", vwap="ACCEPT")
+        broker = FakeBroker(last_prices={"LIM": 110, "ACC": 110})
         store = TradingEngineStore(self.te)
         run_id = store.start_run(session_date="2026-08-17", live_orders_enabled=False, pid=1)
         cycle = TradingEngineCycle(
@@ -39,6 +39,7 @@ class FakeBrokerLimitedValidationTests(unittest.TestCase):
             started_at="2026-08-17T04:30:00+00:00",
             run_id=run_id,
             live_orders_enabled=False,
+            clock_fn=_session_clock(),
         )
         cycle.tick()
         cycle.tick()

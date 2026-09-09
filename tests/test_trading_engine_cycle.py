@@ -5,12 +5,23 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle, snapshot_dict
 from trading_engine_store import TradingEngineStore
+
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def _session_clock(session_date: str = "2026-08-17", hour: int = 14, minute: int = 0):
+    """Injected IST clock matching the fixture session date (calendar gates)."""
+    y, m, d = (int(part) for part in session_date.split("-"))
+    stamp = datetime(y, m, d, hour, minute, tzinfo=_IST)
+    return lambda: stamp
 
 SCHEMA = """
 CREATE TABLE live_continuation_arms (
@@ -208,6 +219,7 @@ class CycleTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=False,
             require_vwap_accept=require_vwap_accept,
+            clock_fn=_session_clock(),
             **kwargs,
         )
         return store, cycle
@@ -227,6 +239,7 @@ class CycleTests(unittest.TestCase):
             started_at="2026-08-17T04:30:00+00:00",
             run_id=run_id,
             live_orders_enabled=True,
+            clock_fn=_session_clock(),
         )
         cycle.tick()
         trades = store.list_trades("2026-08-17")
@@ -290,6 +303,7 @@ class CycleTests(unittest.TestCase):
             started_at="2026-08-17T04:30:00+00:00",
             run_id=str(run["run_id"]),
             live_orders_enabled=False,
+            clock_fn=_session_clock(),
         )
         cycle2.tick()
         self.assertEqual(broker.market_place_count, first_count)
@@ -622,6 +636,7 @@ class VwapGateCycleTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=False,
             require_vwap_accept=require_vwap_accept,
+            clock_fn=_session_clock(),
             **kwargs,
         )
         return store, cycle
@@ -751,6 +766,7 @@ class VwapGateCycleTests(unittest.TestCase):
                     started_at="2026-08-17T04:30:00+00:00",
                     run_id=run_id,
                     live_orders_enabled=False,
+                    clock_fn=_session_clock(),
                 )
                 cycle.tick()
                 trades = store.list_trades("2026-08-17")
@@ -784,6 +800,7 @@ class VwapGateCycleTests(unittest.TestCase):
             started_at="2026-08-17T04:30:00+00:00",
             run_id=run_id,
             live_orders_enabled=False,
+            clock_fn=_session_clock(),
         )
         cycle.tick()
         self.assertEqual(store.list_trades("2026-08-17")[0].skip_reason, "vwap_unavailable")
@@ -822,6 +839,7 @@ class VwapGateCycleTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=False,
             monotonic_fn=clock,
+            clock_fn=_session_clock(),
         )
         cycle.tick()
         clock.t = 2.0

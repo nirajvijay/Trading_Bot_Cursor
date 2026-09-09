@@ -357,7 +357,9 @@ class FakeBroker:
         existing = [
             o
             for o in self.orders.values()
-            if o.tag == tag and o.order_type == "MARKET"
+            if o.tag == tag
+            and o.order_type == "MARKET"
+            and str(o.status).upper() not in {"REJECTED", "CANCELLED"}
         ]
         if existing:
             return existing[0]
@@ -730,6 +732,21 @@ class FakeBroker:
         self.last_prices[order.tradingsymbol] = price
         return filled
 
+    def reject_order(self, order_id: str, *, status: str = "REJECTED") -> BrokerOrder:
+        """Mark an order rejected/cancelled with no fill (partial-exit failure tests)."""
+        order = self.orders[order_id]
+        updated = _copy_order(
+            order,
+            status=str(status).upper(),
+            filled_quantity=int(order.filled_quantity or 0),
+            pending_quantity=0,
+            cancelled_quantity=max(
+                0, int(order.quantity or 0) - int(order.filled_quantity or 0)
+            ),
+        )
+        self.orders[order_id] = updated
+        return updated
+
     def flatten_mis(
         self,
         *,
@@ -742,13 +759,6 @@ class FakeBroker:
         qty = max(0, int(quantity))
         if qty <= 0:
             raise ValueError("flatten_qty_required")
-        existing = [
-            o
-            for o in self.orders.values()
-            if o.tag == tag and o.order_type == "MARKET"
-        ]
-        if existing:
-            return existing[0]
         prev_auto = self.auto_fill_entry
         try:
             self.auto_fill_entry = bool(self.auto_fill_exit)

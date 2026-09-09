@@ -256,6 +256,16 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
             else str(row["entry_submitted_at"])
         ),
         auto_trail_owner_disabled=_row_bool(row, "auto_trail_owner_disabled", False),
+        active_exit_order_id=(
+            None
+            if "active_exit_order_id" not in keys or row["active_exit_order_id"] is None
+            else str(row["active_exit_order_id"])
+        ),
+        active_exit_kind=(
+            None
+            if "active_exit_kind" not in keys or row["active_exit_kind"] is None
+            else str(row["active_exit_kind"])
+        ),
     )
 
 
@@ -340,6 +350,8 @@ class TradingEngineStore:
             ("last_trail_modify_at", "TEXT"),
             ("entry_submitted_at", "TEXT"),
             ("auto_trail_owner_disabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("active_exit_order_id", "TEXT"),
+            ("active_exit_kind", "TEXT"),
         ):
             self._ensure_column("trades", col, ddl)
         for col, ddl in (
