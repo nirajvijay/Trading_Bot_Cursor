@@ -497,6 +497,8 @@ Mirror shorts; persist extreme; ≤1 modify / 2s / ≥2 ticks improvement; never
 | 1.3 | 2026-09-08 | Cursor | **WP-1.2 accepted** (dev checkpoint). See §8. |
 | 1.4 | 2026-09-09 | Cursor | **WP-1.3 accepted** (dev checkpoint). See §9. |
 | 1.5 | 2026-09-09 | Cursor | **WP-1.4 accepted** (dev checkpoint). See §10. |
+| 1.6 | 2026-09-09 | Cursor | **WP-1.5 accepted** (dev checkpoint). See §11. |
+| 1.7 | 2026-09-09 | Cursor | **Stage 1 gate report** (execution-safety). See §12. |
 
 Astra remains product authority; this file is the Stage 0 evidence + implementation contract freeze for Cursor.
 
@@ -679,3 +681,167 @@ Broker-truth reconciliation and recovery remain Stage 1 follow-on:
 
 - Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations (new `entry_cutoff_ist` / `square_off_ist` keys fill only when absent).
 - Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
+
+---
+
+## 11. WP-1.5 development checkpoint (accepted)
+
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
+**Scope:** Broker-truth reconciliation — qty mismatch / external stop cancel / external stop widen → pause entries + `reconciliation_required`; clean external flatten closes without qty incident; restart recovery engages local entry lock before canonical pause (fail-closed on pause-store failure); feed-age from `runner_status.json` (launcher-wired); trading-window-only 5s pause / 30s managed `feed_stale` exit; unknown/NaN/error freshness blocks new risk in-window; `feed_stale` registered in `DURABLE_MARKET_EXIT_OWNERS` and routed via `_request_market_exit` (serialized with Close/square-off); PAPER → FakeBroker selection + Kite write endpoints refuse when `live_orders_enabled=False` (incl. protective stop path).  
+**Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
+
+### 11.1 Acceptance test command and results
+
+```text
+python3 -m unittest \
+  tests.test_trading_engine_risk \
+  tests.test_trading_engine_wp12_risk \
+  tests.test_trading_engine_wp11_lifecycle \
+  tests.test_trading_engine_wp13_trail \
+  tests.test_trading_engine_wp14_close \
+  tests.test_trading_engine_wp15_reconcile \
+  tests.test_trading_engine_cycle \
+  tests.test_trading_engine_store \
+  tests.test_trading_engine_broker \
+  tests.test_admin_config_store \
+  tests.test_trading_engine_loop \
+  tests.test_trading_engine_handoff \
+  tests.test_nse_trading_calendar \
+  -q
+
+Ran 212 tests in 47.428s
+OK
+```
+
+Implementation commit: `c47d32e04fc4d8d5043425df221f5c9e1cf6f596`.
+
+### 11.2 Deferred beyond WP-1.5 (Stage 2+ / ops — not claimed complete)
+
+1. Full command-outcome HTTP surface (`queued`→`awaiting_broker`→terminal) and UI binding (G9 / Stage 2).
+2. Named `SessionArm` product model PAPER/LIVE × MANUAL/AUTOPILOT with mode-switch rules (G4/G5).
+3. Status-strip / Desk / Admin UI freshness presentation (contracts frozen; Stage 3).
+4. Observation 09:00 wait-state API messages (G10 / Stage 2).
+5. Sector map module beside universe (G11 / parallel after contracts).
+6. Host ADANIPORTS `protected_open` provenance-safe live reconcile (ops; never auto-delete) — engine restart/pause class covered in FakeBroker; host row untouched.
+7. Formal Stop Engine drain state machine beyond existing `stop_engine` + management-until-flat semantics (`disarm` command kind still absent from `CommandKind`).
+8. Admin HTTP schema first-class exposure of WP-1.2+ keys (still Stage 2 track per §7.4).
+
+### 11.3 Preserve rule (unchanged)
+
+- Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
+- Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
+
+---
+
+## 12. Stage 1 gate report — execution safety (consolidated)
+
+**Date (IST context):** 2026-09-09  
+**Scope of Stage 1 (Cursor execution plan):** WP-1.1 → WP-1.5 backend execution safety on isolated FakeBroker / temp DBs.  
+**Exit gate (plan):** Isolated critical fault tests green; PAPER FakeBroker exercises partials / rejects / gaps.  
+**Verdict:** **PASS with explicit remaining gaps** — Stage 1 work packages WP-1.1–WP-1.5 are accepted with the 212-test evidence below. Items outside Stage 1 (control-plane APIs, UI, arming product model, observation wait states, sector map) are **deferred**, not marked complete. Untested host-live reconcile of the ADANIPORTS evidence row is **not** claimed complete.
+
+**Aggregate acceptance command (WP-1.5 final):**
+
+```text
+python3 -m unittest \
+  tests.test_trading_engine_risk \
+  tests.test_trading_engine_wp12_risk \
+  tests.test_trading_engine_wp11_lifecycle \
+  tests.test_trading_engine_wp13_trail \
+  tests.test_trading_engine_wp14_close \
+  tests.test_trading_engine_wp15_reconcile \
+  tests.test_trading_engine_cycle \
+  tests.test_trading_engine_store \
+  tests.test_trading_engine_broker \
+  tests.test_admin_config_store \
+  tests.test_trading_engine_loop \
+  tests.test_trading_engine_handoff \
+  tests.test_nse_trading_calendar \
+  -q
+
+Ran 212 tests in 47.428s
+OK
+```
+
+**Preserve:** Host `daily_loss_cap_inr=2995` and trading history untouched (no live DB migration / deploy / real orders in Stage 1).
+
+### 12.1 Frozen Stage 1 work packages → evidence
+
+| WP | Requirement (frozen plan / contract) | Implementation | Test evidence | Status |
+|---|---|---|---|---|
+| **1.1** | Durable lifecycle: submission unknown, partial entry, independent protection on fill, partial exit, closed, reconciliation_required; intent-before-place; reconcile-before-retry | `trading_engine_{types,store,cycle,broker}.py` | `tests.test_trading_engine_wp11_lifecycle` (+ cycle/broker/store) | **COMPLETE** (accepted `92e91b0` / prior WP-1.1 commits) |
+| **1.1** | Entry auth ≠ position management: pause must not zero filled qty / erase possible exposure; reconcile uncertain submissions before skip | cycle pause/submit paths | wp11 pause-hidden-fill / remainder-after-stop tests | **COMPLETE** |
+| **1.1** | Trade provenance fields `run_id`, `entry_live_orders_enabled` on new trades | store + cycle stamp | wp11 / store coverage | **COMPLETE** for new trades; **host ADANIPORTS row still provenance-unknown** (ops gap — do not auto-reconcile) |
+| **1.2** | Risk reservation: pending+partial+open downside+costs; concurrency 2; 5 distinct setup fills/day; 1/symbol; notional≤capital; no 5× live BP; Saved≠Effective (explicit arm) | `trading_engine_risk.py`, admin store/defaults | `tests.test_trading_engine_wp12_risk`, `tests.test_trading_engine_risk`, `tests.test_admin_config_store` | **COMPLETE** (accepted `5e1bbde`) |
+| **1.2** | Durable per-order exit reconciliation (qty+₹ snapshot; missing-order preserve) | cycle exit accounting | wp12 + cycle | **COMPLETE** |
+| **1.3** | Protect filled qty immediately; 5s protection deadline → pause + emergency flatten; staged-R trailing; never widen; confirm-before-advance; remainder cancel from intent | cycle + FakeBroker/`KiteBroker.flatten_mis` | `tests.test_trading_engine_wp13_trail` | **COMPLETE** (accepted `655c3b0`) |
+| **1.4** | Close Position / Close All; entry cutoff before ingest+submit; square-off; active-exit tracking; calendar + explicit special-session schedule; strict HHMM | cycle + `nse_trading_calendar.py` + admin store | `tests.test_trading_engine_wp14_close`, `tests.test_nse_trading_calendar` | **COMPLETE** (accepted `71265c4`) |
+| **1.4** | Stop Engine ≠ Close All (disarm+drain vs liquidate) | `stop_engine` continues management; close_all liquidates | cycle + wp14 close paths; Stop Engine formal drain FSM still thin | **PARTIAL** — semantic split enforced in cycle; formal `disarm` kind / drain FSM deferred |
+| **1.5** | qty_mismatch → pause entries + durable incident / `reconciliation_required` (not log-only) — G8 | `_raise_broker_truth_incident` | `test_qty_mismatch_pauses_and_marks_reconciliation` | **COMPLETE** |
+| **1.5** | External flatten / stop cancel / stop widen matrix | `_reconcile_external_exit`, `_drive_protected` | wp15 external flatten/cancel/widen tests | **COMPLETE** (FakeBroker matrix) |
+| **1.5** | Restart → entry-paused recovery; local lock if canonical pause fails | `enforce_restart_recovery` + `_local_entries_lock` | restart pause + pause-store failure tests | **COMPLETE** |
+| **1.5** | Feed age: 5s pause entries/trails; 30s managed exit; trading window only; unknown/invalid fail-closed; launcher wired | `feed_age_seconds_fn` + `live_trading_engine` | wp15 feed/launcher/pre-open/serialization tests | **COMPLETE** |
+| **1.5** | PAPER hard-block Kite order writes; PAPER selects FakeBroker; protective stop allowed on FakeBroker — G6 | `KiteBroker` refuse + `_make_broker(False)` | `Wp15PaperHardBlockTests` | **COMPLETE** |
+
+### 12.2 Stage 0 gap inventory (§2.2) mapping
+
+| ID | Gap | Stage 1 claim | Evidence / note |
+|---|---|---|---|
+| G1 | Partial-fill quantity model | **COMPLETE** | WP-1.1 |
+| G2 | Close Position / Close All & Pause | **COMPLETE** (engine + `CommandKind`) | WP-1.4; Admin HTTP Close All UX still Stage 2/3 |
+| G3 | Session square-off / entry cutoff | **COMPLETE** | WP-1.4 |
+| G4 | MANUAL approval / preview / arming product | **DEFERRED** Stage 2+ | Contract frozen §3.5; not implemented |
+| G5 | Named PAPER/LIVE × MANUAL/AUTOPILOT SessionArm | **DEFERRED** Stage 2 | Launcher live flag + `entries_paused` only |
+| G6 | PAPER hard-block Kite writes | **COMPLETE** | WP-1.5 adapter + launcher FakeBroker path |
+| G7 | Max concurrent / five-setup fill cap | **COMPLETE** | WP-1.2 risk module |
+| G8 | qty_mismatch pause + incident | **COMPLETE** | WP-1.5 |
+| G9 | Command API immediate `"success": True` | **DEFERRED** Stage 2 | Outcome state machine not on HTTP surface |
+| G10 | Observation start ≠ 09:00 waiting | **DEFERRED** Stage 2 | Engine feed window uses 09:15–15:15; observation API wait states not done |
+| G11 | Sector map versioned beside universe | **DEFERRED** (parallel/Stage 3 prep) | Module absent |
+| G12 | Stale logical open trade (ADANIPORTS) | **NOT COMPLETE** | Restart/pause class covered in FakeBroker; **host row not reconciled**; provenance rule still binds ops |
+| G13 | Trade audit incomplete vs V1 Desk | **PARTIAL** | Qty/provenance/stop/trail events advanced in WP-1.1–1.3; full immutable setup blob / Desk fields incomplete |
+| G14 | Admin config keys incomplete vs Trading Bot Values | **PARTIAL** | Store/defaults expanded (WP-1.2/1.4); Admin HTTP schema still legacy five keys (§7.4) |
+
+### 12.3 Frozen control / safety semantics (§3.4 / §3.10–3.14) — Stage 1 engine claims
+
+| Requirement | Claim | Evidence |
+|---|---|---|
+| Pause Entries blocks new risk; continues protection/exits | **COMPLETE** (engine) | wp11/wp15; cycle gates |
+| Close All & Pause liquidates + cancels entry remainders (incl. zero-fill) | **COMPLETE** (engine) | wp14 |
+| Restart recovery starts entry-paused; manages existing exposure | **COMPLETE** (engine) | wp15 restart + local lock |
+| Independent qty vs protection dimensions | **COMPLETE** | WP-1.1 |
+| PAPER refuses Kite writes; may sim via FakeBroker | **COMPLETE** | WP-1.5 |
+| Pre-09:15 silence must not trigger stale-feed exits | **COMPLETE** (engine) | `test_pre_open_does_not_apply_stale_feed_exit_or_unknown_pause` |
+| Staged-R trailing policy | **COMPLETE** (engine) | WP-1.3 |
+| Status strip / SessionArm / TradePreview / command outcome HTTP | **DEFERRED** Stage 2–3 | Contracts only |
+| Disarm / Switch to Manual / Stop Engine formal drain FSM | **PARTIAL / DEFERRED** | `stop_engine` + pause/close exist; `disarm` / Manual switch / full drain states not first-class |
+
+### 12.4 Remaining gaps & deferred items (explicit — do not treat as Stage 1 complete)
+
+**Still open inside “execution safety” adjacent concerns:**
+
+1. **Host ADANIPORTS `protected_open` (G12)** — provenance unknown; never auto-delete; live reconcile not performed in Stage 1.
+2. **Formal Stop Engine drain / `disarm` command kind** — semantic split present; full state machine incomplete.
+3. **Trade audit completeness (G13)** — Desk-grade immutable setup blob / full P&L field set incomplete.
+4. **Serialized exit owners** covered for durable market exits including `feed_stale`; competing protective-stop vs market-exit edge cases beyond current matrix remain watch items for Stage 4 fault injection.
+
+**Deferred by stage plan (correctly out of Stage 1):**
+
+5. Stage 2 — control-plane APIs, command outcome states on HTTP, SessionArm, Effective config read for strip, observation 09:00 wait messages, Admin schema expansion.
+6. Stage 3 — status strip UI, Desk/Admin/Radar/Checklist redesign, sector board.
+7. Stage 4 — integrated PAPER session + broader fault injection report.
+8. Stage 5 — supervised LIVE pilot (explicitly not authorized by this gate).
+
+### 12.5 Gate decision
+
+| Criterion | Result |
+|---|---|
+| WP-1.1–WP-1.5 accepted with isolated FakeBroker evidence | **PASS** |
+| 212-test aggregate suite green | **PASS** (`47.428s`, OK) |
+| PAPER Kite write hard-block proven | **PASS** |
+| ₹2,995 preserve rule honored (no host admin/trading DB mutation) | **PASS** |
+| Untested / deferred items marked complete | **NO** — see §12.2–12.4 |
+| Stage 2 implementation started | **NO** (per owner order) |
+| Deployment / live DB migration / real orders | **NO** |
+
+**Stage 1 exit: READY FOR OWNER REVIEW** — authorize Stage 2 (control-plane APIs) only after this report is accepted. Not a live-trading or deploy authorization.
