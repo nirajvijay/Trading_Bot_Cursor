@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle, snapshot_dict
+from tests.engine_lifecycle_fixture import TradingEngineCycle
 from trading_engine_store import TradingEngineStore
 
 _IST = ZoneInfo("Asia/Kolkata")
@@ -318,7 +319,7 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(broker.market_place_count, first_count)
         # Entry remains on trade tag; protective stop uses attempt-specific tag.
         self.assertEqual(
-            len([o for o in broker.orders_by_tag(tag) if o.order_type == "MARKET"]),
+            len([o for o in broker.orders_by_tag(tag) if o.order_type == "LIMIT"]),
             1,
         )
         self.assertEqual(broker.slm_place_count, 1)

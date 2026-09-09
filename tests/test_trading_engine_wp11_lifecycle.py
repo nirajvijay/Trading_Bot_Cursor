@@ -11,6 +11,7 @@ from typing import Any, Optional
 from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle
+from tests.engine_lifecycle_fixture import TradingEngineCycle
 from trading_engine_risk import is_unprotected
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import BrokerOrder, PositionQuote, TradeRecord
@@ -34,7 +35,7 @@ class _IntentBoundaryBroker:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.inner, name)
 
-    def place_market_mis(self, **kwargs: Any) -> BrokerOrder:
+    def place_limit_mis(self, **kwargs: Any) -> BrokerOrder:
         self.place_calls += 1
         tag = kwargs.get("tag") or ""
         # Locate trade by broker tag prefix.
@@ -45,7 +46,7 @@ class _IntentBoundaryBroker:
                 found_intent = "entry_intent" in actions
                 break
         self.intent_present_at_place = found_intent
-        return self.inner.place_market_mis(**kwargs)
+        return self.inner.place_limit_mis(**kwargs)
 
 
 class Wp11ReviewFixTests(unittest.TestCase):

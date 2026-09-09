@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import uuid
@@ -134,6 +135,14 @@ def validate_config_values(
             raise ValueError(f"incomplete_config:{','.join(missing)}")
         merged = {k: float(provided[k]) for k in _CONFIG_KEYS}
 
+    if any(not math.isfinite(float(value)) for value in merged.values()):
+        raise ValueError("configuration must contain finite values")
+    for key in ("max_concurrent_positions", "max_filled_setups_per_day"):
+        if not float(merged[key]).is_integer():
+            raise ValueError(f"{key} must be an integer")
+    for key, maximum in (("setup_expiry_seconds", 300), ("max_quote_age_seconds", 30), ("max_entry_drift_r", 1)):
+        if not 0 < float(merged[key]) <= maximum:
+            raise ValueError(f"{key} out of range")
     per_trade = float(merged["per_trade_risk_cap_inr"])
     limited = float(merged["limited_per_trade_risk_cap_inr"])
     daily = float(merged["daily_loss_cap_inr"])
@@ -193,6 +202,9 @@ def validate_config_values(
         warnings.append("daily_cap_below_per_trade_cap")
 
     normalized = {
+        "setup_expiry_seconds": float(merged["setup_expiry_seconds"]),
+        "max_quote_age_seconds": float(merged["max_quote_age_seconds"]),
+        "max_entry_drift_r": float(merged["max_entry_drift_r"]),
         "per_trade_risk_cap_inr": per_trade,
         "limited_per_trade_risk_cap_inr": limited,
         "daily_loss_cap_inr": daily,

@@ -14,6 +14,7 @@ from api.admin_config.store import AdminConfigStore
 from nse_trading_calendar import SpecialSessionSchedule
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle
+from tests.engine_lifecycle_fixture import TradingEngineCycle
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import CommandKind
 

@@ -19,6 +19,7 @@ from trading_engine_broker import (
     PositionQuote,
 )
 from trading_engine_cycle import TradingEngineCycle
+from tests.engine_lifecycle_fixture import TradingEngineCycle
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import FEED_STALE_EXIT_SECONDS, FEED_STALE_PAUSE_SECONDS
 

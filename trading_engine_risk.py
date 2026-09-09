@@ -271,7 +271,9 @@ def trade_remaining_risk(
     qty = _reserved_qty(trade)
     open_risk = 0.0
     if qty > 0:
-        entry = trade.entry_fill if trade.entry_fill is not None else trade.entry_estimate
+        entry = trade.entry_fill if trade.entry_fill is not None else (trade.entry_limit_price or trade.entry_estimate)
+        if trade.remaining_entry_qty > 0 and trade.entry_limit_price is not None:
+            entry = max(entry, trade.entry_limit_price) if trade.direction == "UP" else min(entry, trade.entry_limit_price)
         stop = trade.current_stop if trade.current_stop is not None else trade.initial_stop
         downside = remaining_downside_risk(
             direction=trade.direction,
@@ -424,7 +426,9 @@ def open_notional_total(trades: Sequence[TradeRecord]) -> float:
     for trade in trades:
         if not counts_toward_concurrency(trade):
             continue
-        entry = trade.entry_fill if trade.entry_fill is not None else trade.entry_estimate
+        entry = trade.entry_fill if trade.entry_fill is not None else (trade.entry_limit_price or trade.entry_estimate)
+        if trade.remaining_entry_qty > 0 and trade.entry_limit_price is not None:
+            entry = max(entry, trade.entry_limit_price)
         qty = _reserved_qty(trade)
         if entry is not None and qty > 0:
             total += float(entry) * float(qty)

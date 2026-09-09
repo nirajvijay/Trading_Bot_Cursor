@@ -203,6 +203,9 @@ class TradeRecord:
     # WP-1.4: active market-exit attempt (never confuse with older failed links).
     active_exit_order_id: Optional[str] = None
     active_exit_kind: Optional[str] = None
+    entry_limit_price: Optional[float] = None
+    risk_cap_used_inr: Optional[float] = None
+    admin_config_version_id: Optional[str] = None
 
 
 TERMINAL_FLAT_STATES: FrozenSet[str] = frozenset({"closed", "skipped", "rejected"})

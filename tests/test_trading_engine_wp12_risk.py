@@ -12,6 +12,7 @@ from api.admin_config.defaults import DEFAULT_ADMIN_CONFIG_VALUES
 from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle
+from tests.engine_lifecycle_fixture import TradingEngineCycle
 from trading_engine_risk import (
     estimated_cost_per_share,
     open_notional_total,

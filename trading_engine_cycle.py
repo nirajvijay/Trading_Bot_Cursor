@@ -24,6 +24,7 @@ from nse_trading_calendar import (
     validate_session_gate_hhmm_pair,
 )
 from trading_engine_broker import (
+    EntryAcceptedVisibilityUnknown,
     BrokerOrder,
     BrokerPort,
     FakeBroker,
@@ -31,6 +32,7 @@ from trading_engine_broker import (
     _is_stop_order,
     parse_timestamp_text,
 )
+from trading_engine_quotes import EntryLimitDecision, bounded_entry_limit
 from trading_engine_handoff import (
     VWAP_RULE_VERSION,
     VwapLookupError,
@@ -46,6 +48,7 @@ from trading_engine_risk import (
     live_pnl,
     margin_blocked,
     open_pnl,
+    open_notional_total,
     realised_pnl,
     realised_pnl_from_values,
     remaining_downside_risk,
@@ -811,9 +814,11 @@ class TradingEngineCycle:
                 self._apply_entry_order(trade, polled)
                 return True
         existing = [
-            o for o in self.broker.orders_by_tag(trade.broker_tag) if o.order_type == "MARKET"
+            o for o in self.broker.orders_by_tag(trade.broker_tag)
+            if o.order_type in {"MARKET", "LIMIT"} and o.tradingsymbol == trade.symbol
+            and o.transaction_type == _entry_side(trade.direction)
         ]
-        if existing:
+        if len(existing) == 1:
             self.store.append_event(
                 trade.trade_id, "reconcile", payload={"order_id": existing[0].order_id}
             )
@@ -1200,6 +1205,41 @@ class TradingEngineCycle:
             return filled > 0 and pending > 0
         return False
 
+    def _entry_limit_decision(self, trade: TradeRecord) -> EntryLimitDecision:
+        cfg = self._admin_store.load_effective_payload()
+        try:
+            quote = self.broker.touch_quote(trade.symbol)
+        except Exception:
+            quote = None
+        return bounded_entry_limit(now=self._now_ist(), trigger_time=trade.trigger_time,
+            trigger=trade.entry_estimate, stop=trade.initial_stop, tick=trade.tick_size,
+            direction=trade.direction, quote=quote,
+            expiry=float(cfg["setup_expiry_seconds"]),
+            max_quote_age=float(cfg["max_quote_age_seconds"]),
+            drift_r=float(cfg["max_entry_drift_r"]))
+
+    def _reject_entry_gate(self, trade: TradeRecord, reason: str) -> None:
+        self.store.update_trade(trade.trade_id, status="skipped", skip_reason=reason,
+            qty=0, intended_qty=0, remaining_entry_qty=0, notional=0, margin_blocked=0)
+        self.store.append_event(trade.trade_id, "skipped", payload={"reason": reason})
+
+    def _resize_for_limit(self, trade: TradeRecord, price: float) -> Optional[TradeRecord]:
+        """Revalidate at the actual limit. Never increase the approved quantity."""
+        cfg = self._admin_store.load_effective_payload()
+        peers = [t for t in self.store.list_trades(self.session_date) if t.trade_id != trade.trade_id]
+        snap = risk_snapshot(peers, daily_loss_cap=float(cfg["daily_loss_cap_inr"]))
+        cap = min(float(cfg["per_trade_risk_cap_inr"]), trade.risk_cap_used_inr or float(cfg["per_trade_risk_cap_inr"]))
+        charge, slip = trade_cost_profile(trade)
+        per_share = abs(price - trade.initial_stop) + price * (charge + slip) / 10000
+        capital = max(0., float(cfg["allocated_capital_inr"]) - open_notional_total(peers))
+        qty = min(trade.qty, int(min(cap, snap.remaining_daily) / per_share), int(capital / price))
+        if qty <= 0:
+            self._reject_entry_gate(trade, "limit_price_risk_budget")
+            return None
+        return self.store.update_trade(trade.trade_id, qty=qty, intended_qty=qty,
+            remaining_entry_qty=qty, entry_limit_price=price, notional=qty*price,
+            margin_blocked=qty*price/(1 if self.live_orders_enabled else self.leverage_factor))
+
     def _submit_entry(self, trade: TradeRecord) -> None:
         # Always reconcile before pause/skip or any new write — lost responses may already be filled.
         if self._reconcile_entry_from_broker(trade):
@@ -1254,6 +1294,15 @@ class TradingEngineCycle:
                 "skipped",
                 payload={"reason": block, "phase": "pre_entry_intent"},
             )
+            return
+
+        limit = self._entry_limit_decision(trade)
+        if limit.reason:
+            self._reject_entry_gate(trade, limit.reason)
+            return
+
+        trade = self._resize_for_limit(trade, limit.price)
+        if trade is None:
             return
 
         if self.live_orders_enabled:
@@ -1312,6 +1361,8 @@ class TradingEngineCycle:
                 "run_id": trade.run_id or self.run_id,
                 "live_orders": bool(self.live_orders_enabled),
                 "submitted_at": submitted_at,
+                "order_type": "LIMIT",
+                "limit_price": limit.price,
             },
         )
         if not trade.entry_submitted_at:
@@ -1342,12 +1393,31 @@ class TradingEngineCycle:
             )
             return
         try:
-            order = self.broker.place_market_mis(
+            # Quote/time can change while checking margin or persisting intent.
+            latest = self._entry_limit_decision(trade)
+            if latest.reason:
+                self._reject_entry_gate(trade, latest.reason)
+                return
+            trade = self._resize_for_limit(trade, latest.price)
+            if trade is None:
+                return
+            self.store.append_event(trade.trade_id, "entry_limit_validated", payload={
+                "price": latest.price, "signal_age": latest.signal_age, "quote_age": latest.quote_age})
+            block = self._new_entry_block_reason()
+            if block is not None:
+                self._reject_entry_gate(trade, block)
+                return
+            order = self.broker.place_limit_mis(
                 tradingsymbol=trade.symbol,
                 transaction_type=_entry_side(trade.direction),
                 quantity=trade.qty,
                 tag=trade.broker_tag,
+                price=latest.price,
             )
+        except EntryAcceptedVisibilityUnknown as exc:
+            self.store.update_trade(trade.trade_id, status="submission_unknown", entry_order_id=exc.order_id)
+            self.store.append_event(trade.trade_id, "submission_unknown", payload={"order_id": exc.order_id})
+            return
         except Exception as exc:  # noqa: BLE001
             self.store.update_trade(trade.trade_id, status="submission_unknown")
             self.store.append_event(
@@ -3894,7 +3964,7 @@ class TradingEngineCycle:
                     elif tag == owner.broker_tag and str(order.transaction_type) == _entry_side(owner.direction):
                         linked = str(order.order_type) in {"MARKET", "LIMIT"}
                     elif _is_stop_order(order) and str(order.transaction_type) == _stop_side(owner.direction):
-                        linked = self._attempt_id_for_sl_order(owner, order) is not None
+                        linked = self._attempt_id_for_sl_order(owner.trade_id, oid, order=order) is not None
                     if linked:
                         break
                 if linked:

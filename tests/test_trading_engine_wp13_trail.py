@@ -17,6 +17,7 @@ from api.admin_config.defaults import DEFAULT_ADMIN_CONFIG_VALUES
 from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import FakeBroker, BrokerPort
 from trading_engine_cycle import TradingEngineCycle
+from tests.engine_lifecycle_fixture import TradingEngineCycle
 from trading_engine_risk import (
     cost_adjusted_break_even,
     freeze_r_value,

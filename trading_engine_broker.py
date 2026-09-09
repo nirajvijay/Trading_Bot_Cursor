@@ -12,6 +12,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from continuation_features import price_to_ticks, ticks_to_price
+from trading_engine_quotes import TouchQuote
 
 from trading_engine_types import (
     STOP_ORDER_TYPES,
@@ -43,6 +44,12 @@ class SlPlaceAcceptedVisibilityUnknown(RuntimeError):
     ) -> None:
         self.order_id = str(order_id)
         super().__init__(message)
+
+
+class EntryAcceptedVisibilityUnknown(RuntimeError):
+    def __init__(self, order_id: str) -> None:
+        self.order_id = order_id
+        super().__init__("entry_accepted_visibility_unknown")
 
 
 def _utc_now_iso() -> str:
@@ -88,6 +95,11 @@ def normalize_broker_timestamp(
 
 
 class BrokerPort(Protocol):
+    def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]: ...
+
+    def place_limit_mis(self, *, tradingsymbol: str, transaction_type: str,
+                        quantity: int, tag: str, price: float) -> BrokerOrder: ...
+
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]: ...
 
     def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]: ...
@@ -304,6 +316,18 @@ class FakeBroker:
     # When unset (Ellipsis sentinel via margins_unavailable / available_margin fields):
     available_margin: Optional[float] = None
     margins_unavailable: bool = False
+    touch_quotes: Dict[str, TouchQuote] = field(default_factory=dict)
+    limit_place_count: int = 0
+
+    def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
+        # No synthetic fresh timestamp or LTP-as-touch in the execution adapter.
+        return self.touch_quotes.get(tradingsymbol)
+
+    def place_limit_mis(self, *, tradingsymbol: str, transaction_type: str,
+                        quantity: int, tag: str, price: float) -> BrokerOrder:
+        return self._place_entry_mis(tradingsymbol=tradingsymbol,
+            transaction_type=transaction_type, quantity=quantity, tag=tag,
+            order_type="LIMIT", price=price)
 
     def _stamp(self) -> str:
         if self.next_order_timestamp is not None:
@@ -351,7 +375,7 @@ class FakeBroker:
             if o.tag == tag and str(o.order_id) not in self._hidden_order_ids
         ]
         if self.hide_market_tags and tag in self._hidden_tags:
-            orders = [o for o in orders if o.order_type != "MARKET"]
+            orders = [o for o in orders if o.order_type not in {"MARKET", "LIMIT"}]
         if self.hide_slm_tags and tag in self._hidden_tags:
             orders = [o for o in orders if not _is_stop_order(o)]
         return orders
@@ -385,7 +409,7 @@ class FakeBroker:
             if oid in self._hidden_order_ids:
                 continue
             tag = str(order.tag or "")
-            if self.hide_market_tags and tag in self._hidden_tags and order.order_type == "MARKET":
+            if self.hide_market_tags and tag in self._hidden_tags and order.order_type in {"MARKET", "LIMIT"}:
                 continue
             if self.hide_slm_tags and tag in self._hidden_tags and _is_stop_order(order):
                 continue
@@ -420,18 +444,33 @@ class FakeBroker:
         quantity: int,
         tag: str,
     ) -> BrokerOrder:
+        return self._place_entry_mis(tradingsymbol=tradingsymbol,
+            transaction_type=transaction_type, quantity=quantity, tag=tag,
+            order_type="MARKET", price=None)
+
+    def _place_entry_mis(self, *, tradingsymbol: str, transaction_type: str,
+                         quantity: int, tag: str, order_type: str,
+                         price: Optional[float]) -> BrokerOrder:
         existing = [
             o
             for o in self.orders.values()
             if o.tag == tag
-            and o.order_type == "MARKET"
+            and o.order_type == order_type
             and str(o.status).upper() not in {"REJECTED", "CANCELLED"}
         ]
         if existing:
             return existing[0]
         self.market_place_count += 1
+        if order_type == "LIMIT":
+            self.limit_place_count += 1
         status = "COMPLETE" if self.auto_fill_entry else "OPEN"
         avg = self.last_prices.get(tradingsymbol)
+        if order_type == "LIMIT":
+            quote = self.touch_quote(tradingsymbol)
+            touch = (quote.ask if transaction_type == "BUY" else quote.bid) if quote else None
+            marketable = touch is not None and (price >= touch if transaction_type == "BUY" else price <= touch)
+            status = "COMPLETE" if self.auto_fill_entry and marketable else "OPEN"
+            avg = touch
         filled = quantity if status == "COMPLETE" else 0
         pending = 0 if status == "COMPLETE" else quantity
         order = BrokerOrder(
@@ -439,7 +478,8 @@ class FakeBroker:
             tag=tag,
             tradingsymbol=tradingsymbol,
             transaction_type=transaction_type,
-            order_type="MARKET",
+            order_type=order_type,
+            price=price,
             quantity=quantity,
             status=status,
             average_price=avg if status == "COMPLETE" else None,
@@ -1005,6 +1045,42 @@ class KiteBroker:
         self.live_orders_enabled = live_orders_enabled
         self._positions_payload: Optional[object] = None
         self._positions_failed = False
+
+    def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
+        raw = self._kite.quote([f"NSE:{tradingsymbol}"])
+        item = raw.get(f"NSE:{tradingsymbol}") if isinstance(raw, dict) else None
+        if not isinstance(item, dict):
+            return None
+        depth = item.get("depth") or {}
+        bids, asks = depth.get("buy") or [], depth.get("sell") or []
+        def touch(rows):
+            if not rows or not rows[0].get("quantity"):
+                return None
+            return _optional_float(rows[0].get("price"))
+        return TouchQuote(touch(bids), touch(asks), normalize_broker_timestamp(
+            item.get("timestamp"), naive_tz=KITE_EXCHANGE_TZ))
+
+    def place_limit_mis(self, *, tradingsymbol: str, transaction_type: str,
+                        quantity: int, tag: str, price: float) -> BrokerOrder:
+        self._require_live()
+        existing = [o for o in self.orders_by_tag(tag) if o.order_type == "LIMIT"
+                    and o.tradingsymbol == tradingsymbol and o.transaction_type == transaction_type]
+        if len(existing) > 1:
+            raise RuntimeError("entry_identity_ambiguous")
+        if existing:
+            return existing[0]
+        result = self._kite.place_order(variety="regular", exchange="NSE",
+            tradingsymbol=tradingsymbol, transaction_type=transaction_type,
+            quantity=quantity, product="MIS", order_type="LIMIT", price=price,
+            validity="DAY", tag=tag)
+        order_id = str(result["order_id"] if isinstance(result, dict) else result)
+        try:
+            polled = self.poll_order(order_id)
+        except Exception as exc:
+            raise EntryAcceptedVisibilityUnknown(order_id) from exc
+        if polled is None:
+            raise EntryAcceptedVisibilityUnknown(order_id)
+        return polled
 
     def clear_quote_cache(self) -> None:
         self._positions_payload = None

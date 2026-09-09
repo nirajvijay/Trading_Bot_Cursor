@@ -18,6 +18,7 @@ from api.admin_config.defaults import DEFAULT_ADMIN_CONFIG_VALUES
 from api.admin_config.store import AdminConfigStore
 from trading_engine_broker import FakeBroker, KiteBroker, _is_stop_order as _is_stop
 from trading_engine_cycle import TradingEngineCycle
+from tests.engine_lifecycle_fixture import TradingEngineCycle
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import BrokerOrder
 
