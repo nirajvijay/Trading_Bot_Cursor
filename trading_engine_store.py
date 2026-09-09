@@ -239,6 +239,7 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         entry_limit_price=_row_optional_float(row, "entry_limit_price"),
         risk_cap_used_inr=_row_optional_float(row, "risk_cap_used_inr"),
         admin_config_version_id=row["admin_config_version_id"] if "admin_config_version_id" in keys else None,
+        risk_limits_json=row["risk_limits_json"] if "risk_limits_json" in keys else None,
         slippage_bps=_row_optional_float(row, "slippage_bps"),
         exit_confirmed_qty=_row_optional_int(row, "exit_confirmed_qty"),
         exit_est_qty=_row_optional_int(row, "exit_est_qty"),
@@ -325,6 +326,7 @@ class TradingEngineStore:
         )
         for col, ddl in (
             ("entry_limit_price", "REAL"),
+            ("risk_limits_json", "TEXT"),
             ("admin_config_version_id", "TEXT"),
             ("risk_cap_used_inr", "REAL"),
             ("daily_loss_cap_inr", "REAL"),

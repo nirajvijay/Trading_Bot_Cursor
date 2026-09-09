@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Optional, Sequence, Set
 
@@ -30,6 +31,50 @@ from trading_engine_types import (
     TradeRecord,
     TriggerCandidate,
 )
+
+
+@dataclass(frozen=True)
+class PostFillRiskDecision:
+    state: str
+    reasons: tuple[str, ...] = ()
+
+
+def post_fill_risk_decision(trade: TradeRecord, trades: Sequence[TradeRecord],
+                            limits: dict) -> PostFillRiskDecision:
+    """Confirmed cap violations and incomplete information are different states.
+
+    Limits are the profile frozen before the entry write; later Admin reductions
+    restrict new admissions but do not retroactively liquidate accepted positions.
+    """
+    if trade.filled_qty <= 0:
+        return PostFillRiskDecision("safe")
+    reasons = []
+    if trade.filled_qty > trade.intended_qty:
+        reasons.append("filled_quantity_exceeds_intent")
+    required = ("per_trade_risk_cap_inr", "daily_loss_cap_inr", "allocated_capital_inr",
+                "max_concurrent_positions", "max_filled_setups_per_day")
+    if any(key not in limits or not math.isfinite(float(limits[key])) or float(limits[key]) <= 0 for key in required):
+        return PostFillRiskDecision("breach" if reasons else "unknown", tuple(reasons or ["risk_profile_unknown"]))
+    if concurrent_position_count(trades) > int(limits["max_concurrent_positions"]):
+        reasons.append("concurrency_limit")
+    if len(reserved_setup_ids(trades)) > int(limits["max_filled_setups_per_day"]):
+        reasons.append("setup_limit")
+    peers = [t for t in trades if t.symbol == trade.symbol and counts_toward_concurrency(t)]
+    if bool(limits.get("one_position_or_unresolved_entry_per_symbol", True)) and len(peers) > 1:
+        reasons.append("symbol_limit")
+    priced = all(t.filled_qty <= 0 or (t.entry_value_est <= 0 and t.entry_fill is not None
+                 and math.isfinite(t.entry_fill) and t.entry_fill > 0) for t in trades if counts_toward_concurrency(t))
+    if not priced:
+        return PostFillRiskDecision("breach" if reasons else "unknown", tuple(reasons or ["entry_price_unresolved"]))
+    cap = min(float(limits["per_trade_risk_cap_inr"]), trade.risk_cap_used_inr or float(limits["per_trade_risk_cap_inr"]))
+    if trade_remaining_risk(trade) > cap + 1e-9:
+        reasons.append("per_trade_risk_limit")
+    snap = risk_snapshot(trades, daily_loss_cap=float(limits["daily_loss_cap_inr"]))
+    if snap.closed_loss_today + snap.committed_risk > float(limits["daily_loss_cap_inr"]) + 1e-9:
+        reasons.append("daily_risk_limit")
+    if open_notional_total(trades) > float(limits["allocated_capital_inr"]) + 1e-9:
+        reasons.append("notional_limit")
+    return PostFillRiskDecision("breach" if reasons else "safe", tuple(reasons))
 
 
 def structural_stop_price(

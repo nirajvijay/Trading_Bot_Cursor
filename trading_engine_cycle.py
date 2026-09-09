@@ -49,6 +49,7 @@ from trading_engine_risk import (
     margin_blocked,
     open_pnl,
     open_notional_total,
+    post_fill_risk_decision,
     realised_pnl,
     realised_pnl_from_values,
     remaining_downside_risk,
@@ -104,6 +105,7 @@ EXIT_ORDER_TYPES = frozenset(set(STOP_ORDER_TYPES) | {"MARKET", "LIMIT"})
 # Durable market-exit owners: (reason, kind). Shared by request serialization,
 # active-exit ownership, and resume — keep a single source of truth.
 DURABLE_MARKET_EXIT_OWNERS: tuple[tuple[str, str], ...] = (
+    ("post_fill_risk_breach", "risk_breach"),
     ("protection_deadline", "emergency"),
     ("feed_stale", "emergency"),
     ("trail_through_exit", "trail_through"),
@@ -404,6 +406,7 @@ class TradingEngineCycle:
         self._local_entries_lock_reason: Optional[str] = None
         # Idempotent keys for recovery findings already durably surfaced this process.
         self._recovery_finding_keys: set[str] = set()
+        self._postfill_active: set[str] = set()
 
     def total_capital(self) -> float:
         return self.store.get_total_capital(self.run_id)
@@ -491,6 +494,12 @@ class TradingEngineCycle:
             self.enforce_restart_recovery()
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
+            self._engage_local_entries_lock("recovery_failed")
+        try:
+            self.enforce_postfill_risk()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self._engage_local_entries_lock("post_fill_risk_unknown")
         try:
             self.enforce_feed_staleness()
         except Exception as exc:  # noqa: BLE001
@@ -521,6 +530,11 @@ class TradingEngineCycle:
             self.enforce_protection_deadlines()
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
+        try:
+            self.enforce_postfill_risk()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self._engage_local_entries_lock("post_fill_risk_unknown")
         try:
             self.enforce_square_off()
         except Exception as exc:  # noqa: BLE001
@@ -798,6 +812,7 @@ class TradingEngineCycle:
             entry_live_orders_enabled=1 if self.live_orders_enabled else 0,
             charge_bps=stamp_charge,
             slippage_bps=stamp_slip,
+            risk_limits_json=json.dumps(admin_payload, sort_keys=True),
             **snapshot.provenance_fields(),
         )
         self.store.append_event(trade.trade_id, "entry_submitting")
@@ -1238,6 +1253,7 @@ class TradingEngineCycle:
             return None
         return self.store.update_trade(trade.trade_id, qty=qty, intended_qty=qty,
             remaining_entry_qty=qty, entry_limit_price=price, notional=qty*price,
+            risk_limits_json=trade.risk_limits_json or json.dumps(cfg, sort_keys=True),
             margin_blocked=qty*price/(1 if self.live_orders_enabled else self.leverage_factor))
 
     def _submit_entry(self, trade: TradeRecord) -> None:
@@ -1565,6 +1581,37 @@ class TradingEngineCycle:
         refreshed = self.store.get_trade(trade.trade_id)
         if refreshed and rem_pos > 0:
             self._ensure_protection(refreshed)
+            self._revalidate_postfill(self.store.get_trade(trade.trade_id) or refreshed)
+
+    def _revalidate_postfill(self, trade: TradeRecord) -> None:
+        if trade.trade_id in self._postfill_active or trade.filled_qty <= 0:
+            return
+        if trade.status in {"closed", "skipped", "rejected"}:
+            return
+        self._postfill_active.add(trade.trade_id)
+        try:
+            limits = json.loads(trade.risk_limits_json or "{}")
+            peers = [t for t in self._iter_management_trades() if self._is_positively_owned_engine_trade(t)]
+            decision = post_fill_risk_decision(trade, peers, limits)
+            breached = self._has_trade_event(trade.trade_id, "post_fill_risk_breach")
+            if decision.state == "safe" and not breached:
+                return
+            reason = "post_fill_risk_breach" if breached or decision.state == "breach" else "post_fill_risk_unknown"
+            self._engage_local_entries_lock(reason)
+            self._pause_entries_for(reason)
+            if not self._has_trade_event(trade.trade_id, reason):
+                self.store.append_event(trade.trade_id, reason, payload={"reasons": decision.reasons})
+            if reason == "post_fill_risk_breach":
+                self._request_market_exit(trade, reason=reason, kind="risk_breach")
+            else:
+                self.store.update_trade(trade.trade_id, status="reconciliation_required")
+        finally:
+            self._postfill_active.discard(trade.trade_id)
+
+    def enforce_postfill_risk(self) -> None:
+        for trade in self._iter_management_trades():
+            if self._is_positively_owned_engine_trade(trade):
+                self._revalidate_postfill(trade)
 
     def _ensure_protection(self, trade: TradeRecord) -> None:
         pos = int(trade.remaining_position_qty or 0)

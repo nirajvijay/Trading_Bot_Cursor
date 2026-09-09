@@ -29,6 +29,16 @@ All test databases are temporary/local. Host history and saved ₹2,995 were not
 - Deployment and rendered/private UI verification.
 - Real supervised LIVE pilot prohibited by current authorization.
 
+## WP1.9 checkpoint
+
+Post-fill cap validation now uses frozen acceptance limits. Confirmed breaches
+pause entries and share the durable serialized exit path; unresolved prices pause
+without inventing a breach. Rechecks run on fills, before admission, and after
+remainder cancellation. Restart/hidden-stop/competing-close regressions pass.
+Combined WP1.1–19/admin/calendar suite: 280 tests, 3.224s, OK locally.
+Historical lifecycle fixture isolates post-fill policy for intentionally injected
+overfills; WP19 tests exercise the real production cycle.
+
 ## External interface reference
 
 Kite full quotes supply `timestamp` (quote packet exchange time) and buy/sell depth;

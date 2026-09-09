@@ -10,6 +10,11 @@ from trading_engine_broker import FakeBroker
 
 
 class TradingEngineCycle(RealCycle):
+    def _revalidate_postfill(self, trade):
+        # Older execution-accounting regressions intentionally inject overfills.
+        # The breach response is independently exercised with the real cycle in WP19.
+        return None
+
     def _entry_limit_decision(self, trade):
         price = trade.entry_estimate
         if isinstance(self.broker, FakeBroker):
