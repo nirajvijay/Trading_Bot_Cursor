@@ -496,6 +496,7 @@ Mirror shorts; persist extreme; ≤1 modify / 2s / ≥2 ticks improvement; never
 | 1.2 | 2026-09-08 | Cursor | **WP-1.1 accepted** (dev checkpoint). See §7. |
 | 1.3 | 2026-09-08 | Cursor | **WP-1.2 accepted** (dev checkpoint). See §8. |
 | 1.4 | 2026-09-09 | Cursor | **WP-1.3 accepted** (dev checkpoint). See §9. |
+| 1.5 | 2026-09-09 | Cursor | **WP-1.4 accepted** (dev checkpoint). See §10. |
 
 Astra remains product authority; this file is the Stage 0 evidence + implementation contract freeze for Cursor.
 
@@ -620,9 +621,9 @@ Ran 162 tests in 30.548s
 OK (expected failures=2)
 ```
 
-### 9.2 Deferred expected-failure placeholders (WP-1.4)
+### 9.2 Deferred expected-failure placeholders (resolved in WP-1.4)
 
-These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_lifecycle.py` (`PendingGapRegressionTests`) until WP-1.4:
+Previously `@unittest.expectedFailure` in `PendingGapRegressionTests`; now real assertions (see §10):
 
 1. `test_close_all_command_kind_exists` — Close All / close-position command surface.
 2. `test_square_off_helpers_present_in_cycle` — session square-off / cutoff helpers.
@@ -630,4 +631,51 @@ These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_life
 ### 9.3 Preserve rule (unchanged)
 
 - Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
+- Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
+
+---
+
+## 10. WP-1.4 development checkpoint (accepted)
+
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
+**Scope:** Close Position / Close All, entry cutoff before ingest+submit, session square-off, durable active-exit tracking (no stale rejection clears newer attempts), calendar-aware entry gates (session-date / holiday / special-session), explicit `SpecialSessionSchedule` (open/cutoff/square-off — date allowlist alone never authorizes), strict HHMM validation for schedule + Admin gates (`parse_hhmm` / `validate_session_gate_hhmm_pair`), recovery of existing exposure while new entries remain blocked on invalid sessions.  
+**Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
+
+### 10.1 Acceptance test command and results
+
+```text
+python3 -m unittest \
+  tests.test_trading_engine_risk \
+  tests.test_trading_engine_wp12_risk \
+  tests.test_trading_engine_wp11_lifecycle \
+  tests.test_trading_engine_wp13_trail \
+  tests.test_trading_engine_wp14_close \
+  tests.test_trading_engine_cycle \
+  tests.test_trading_engine_store \
+  tests.test_trading_engine_broker \
+  tests.test_admin_config_store \
+  tests.test_trading_engine_loop \
+  tests.test_trading_engine_handoff \
+  tests.test_nse_trading_calendar \
+  -q
+
+Ran 190 tests in 38.645s
+OK
+```
+
+Injected session clocks used across affected cycle/WP modules. Prior deferred placeholders in `PendingGapRegressionTests` (`close_all` / square-off helpers) now assert as real surfaces (no longer `@expectedFailure`).
+
+### 10.2 Deferred gaps (WP-1.5+)
+
+Broker-truth reconciliation and recovery remain Stage 1 follow-on:
+
+1. External position / stop change matrix with durable incidents.
+2. Quantity-mismatch → pause entries + unresolved incident (not log-only).
+3. Restart → entry-paused recovery before rearm.
+4. Feed-staleness rules (5s pause trailing/entries; 30s managed exit when broker data available).
+5. PAPER hard-block on real Kite order-write endpoints.
+
+### 10.3 Preserve rule (unchanged)
+
+- Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations (new `entry_cutoff_ist` / `square_off_ist` keys fill only when absent).
 - Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
