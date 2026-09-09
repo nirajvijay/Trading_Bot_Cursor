@@ -363,10 +363,10 @@ Per trade, persist and display:
 
 **Provenance (required going forward):**
 
-- `run_id` of the engine run that created the trade  
-- `entry_live_orders_enabled` (bool) — mode at entry submit  
-- `entry_order_id`, `sl_order_id`, `broker_tag`  
-- Never assume mode from “latest run on session date” alone  
+- `run_id` of the engine run that created the trade
+- `entry_live_orders_enabled` (bool) — mode at entry submit
+- `entry_order_id`, `sl_order_id`, `broker_tag`
+- Never assume mode from “latest run on session date” alone
 
 **Immutable original machine setup** (written once at accept/submit; never overwritten):
 
@@ -386,10 +386,10 @@ Entry progress and protection progress are **independent dimensions** (not a sin
 
 **Quantity fields (required):**
 
-- `intended_qty` — sized target at submit  
-- `filled_qty` — broker-confirmed entry fills so far  
-- `remaining_entry_qty` — still working / unfilled entry remainder  
-- `protected_qty` — quantity covered by a working/confirmed protective stop  
+- `intended_qty` — sized target at submit
+- `filled_qty` — broker-confirmed entry fills so far
+- `remaining_entry_qty` — still working / unfilled entry remainder
+- `protected_qty` — quantity covered by a working/confirmed protective stop
 
 **Rules:**
 
@@ -399,7 +399,7 @@ Entry progress and protection progress are **independent dimensions** (not a sin
 
 **Status vocabulary (overall phase labels):**
 
-`candidate` → `entry_submitting` / `submission_unknown` → `partial_entry` → `entry_filled` (remainder done) → … → `exit_pending` / `partial_exit` → `closed`  
+`candidate` → `entry_submitting` / `submission_unknown` → `partial_entry` → `entry_filled` (remainder done) → … → `exit_pending` / `partial_exit` → `closed`
 Plus: `protection_pending` (filled but stop not yet confirmed), `protected_open`, `skipped`, `rejected`, `reconciliation_required`.
 
 Protection may advance to `protected_open` (or equivalent protected condition) **while** entry status is still `partial_entry`.
@@ -506,8 +506,8 @@ Astra remains product authority; this file is the Stage 0 evidence + implementat
 
 ## 7. WP-1.1 development checkpoint (accepted)
 
-**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
-**Scope:** Durable trade lifecycle, independent qty/protection model, exit attribution, provisional vs confirmed P&L, Kite modify state machine, IST broker timestamp convention.  
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).
+**Scope:** Durable trade lifecycle, independent qty/protection model, exit attribution, provisional vs confirmed P&L, Kite modify state machine, IST broker timestamp convention.
 **Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes.
 
 ### 7.1 Acceptance test command and results
@@ -558,8 +558,8 @@ Do **not** expand frontend Admin forms in Stage 1/WP-1.2. Partial PATCH continue
 
 ## 8. WP-1.2 development checkpoint (accepted)
 
-**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
-**Scope:** Risk reservations & sizing — pending+filled qty/notional, daily setup slots, LIVE margin gate, separated charges vs slippage, Saved≠Effective apply policy (explicit arm only), per-trade cost profile, durable per-order exit reconciliation (qty+₹ same snapshot; missing-order preserve; authoritative price corrections).  
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).
+**Scope:** Risk reservations & sizing — pending+filled qty/notional, daily setup slots, LIVE margin gate, separated charges vs slippage, Saved≠Effective apply policy (explicit arm only), per-trade cost profile, durable per-order exit reconciliation (qty+₹ same snapshot; missing-order preserve; authoritative price corrections).
 **Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
 
 ### 8.1 Acceptance test command and results
@@ -599,8 +599,8 @@ These remain `@unittest.expectedFailure` in `tests/test_trading_engine_wp11_life
 
 ## 9. WP-1.3 development checkpoint (accepted)
 
-**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
-**Scope:** Protection confirm deadline (pause + durable emergency flatten); entry-remainder cancel from submission intent (incl. zero-fill); staged-R trailing (extreme-based stages, confirm-before-advance, owner-disable durable); broker-port `flatten_mis` on FakeBroker + KiteBroker; durable exit lifecycle (intent → confirmed stop cancel → submit-attempt before write → no duplicate on lost response / hidden tag; known-stop visibility gap blocks competing flatten).  
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).
+**Scope:** Protection confirm deadline (pause + durable emergency flatten); entry-remainder cancel from submission intent (incl. zero-fill); staged-R trailing (extreme-based stages, confirm-before-advance, owner-disable durable); broker-port `flatten_mis` on FakeBroker + KiteBroker; durable exit lifecycle (intent → confirmed stop cancel → submit-attempt before write → no duplicate on lost response / hidden tag; known-stop visibility gap blocks competing flatten).
 **Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
 
 ### 9.1 Acceptance test command and results
@@ -639,8 +639,8 @@ Previously `@unittest.expectedFailure` in `PendingGapRegressionTests`; now real 
 
 ## 10. WP-1.4 development checkpoint (accepted)
 
-**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
-**Scope:** Close Position / Close All, entry cutoff before ingest+submit, session square-off, durable active-exit tracking (no stale rejection clears newer attempts), calendar-aware entry gates (session-date / holiday / special-session), explicit `SpecialSessionSchedule` (open/cutoff/square-off — date allowlist alone never authorizes), strict HHMM validation for schedule + Admin gates (`parse_hhmm` / `validate_session_gate_hhmm_pair`), recovery of existing exposure while new entries remain blocked on invalid sessions.  
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).
+**Scope:** Close Position / Close All, entry cutoff before ingest+submit, session square-off, durable active-exit tracking (no stale rejection clears newer attempts), calendar-aware entry gates (session-date / holiday / special-session), explicit `SpecialSessionSchedule` (open/cutoff/square-off — date allowlist alone never authorizes), strict HHMM validation for schedule + Admin gates (`parse_hhmm` / `validate_session_gate_hhmm_pair`), recovery of existing exposure while new entries remain blocked on invalid sessions.
 **Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
 
 ### 10.1 Acceptance test command and results
@@ -667,9 +667,9 @@ OK
 
 Injected session clocks used across affected cycle/WP modules. Prior deferred placeholders in `PendingGapRegressionTests` (`close_all` / square-off helpers) now assert as real surfaces (no longer `@expectedFailure`).
 
-### 10.2 Deferred gaps (WP-1.5+)
+### 10.2 Deferred gaps (resolved in WP-1.5)
 
-Broker-truth reconciliation and recovery remain Stage 1 follow-on:
+Previously listed WP-1.5 follow-ons; now accepted — see §11:
 
 1. External position / stop change matrix with durable incidents.
 2. Quantity-mismatch → pause entries + unresolved incident (not log-only).
@@ -686,8 +686,8 @@ Broker-truth reconciliation and recovery remain Stage 1 follow-on:
 
 ## 11. WP-1.5 development checkpoint (accepted)
 
-**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).  
-**Scope:** Broker-truth reconciliation — qty mismatch / external stop cancel / external stop widen → pause entries + `reconciliation_required`; clean external flatten closes without qty incident; restart recovery engages local entry lock before canonical pause (fail-closed on pause-store failure); feed-age from `runner_status.json` (launcher-wired); trading-window-only 5s pause / 30s managed `feed_stale` exit; unknown/NaN/error freshness blocks new risk in-window; `feed_stale` registered in `DURABLE_MARKET_EXIT_OWNERS` and routed via `_request_market_exit` (serialized with Close/square-off); PAPER → FakeBroker selection + Kite write endpoints refuse when `live_orders_enabled=False` (incl. protective stop path).  
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).
+**Scope:** Broker-truth reconciliation — qty mismatch / external stop cancel / external stop widen → pause entries + `reconciliation_required`; clean external flatten closes without qty incident; restart recovery engages local entry lock before canonical pause (fail-closed on pause-store failure); feed-age from `runner_status.json` (launcher-wired); trading-window-only 5s pause / 30s managed `feed_stale` exit; unknown/NaN/error freshness blocks new risk in-window; `feed_stale` registered in `DURABLE_MARKET_EXIT_OWNERS` and routed via `_request_market_exit` (serialized with Close/square-off); PAPER → FakeBroker selection + Kite write endpoints refuse when `live_orders_enabled=False` (incl. protective stop path).
 **Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
 
 ### 11.1 Acceptance test command and results
@@ -735,9 +735,9 @@ Implementation commit: `c47d32e04fc4d8d5043425df221f5c9e1cf6f596`.
 
 ## 12. Stage 1 gate report — execution safety (consolidated)
 
-**Date (IST context):** 2026-09-09  
-**Scope of Stage 1 (Cursor execution plan):** WP-1.1 → WP-1.5 backend execution safety on isolated FakeBroker / temp DBs.  
-**Exit gate (plan):** Isolated critical fault tests green; PAPER FakeBroker exercises partials / rejects / gaps.  
+**Date (IST context):** 2026-09-09
+**Scope of Stage 1 (Cursor execution plan):** WP-1.1 → WP-1.5 backend execution safety on isolated FakeBroker / temp DBs.
+**Exit gate (plan):** Isolated critical fault tests green; PAPER FakeBroker exercises partials / rejects / gaps.
 **Verdict:** **PASS with explicit remaining gaps** — Stage 1 work packages WP-1.1–WP-1.5 are accepted with the 212-test evidence below. Items outside Stage 1 (control-plane APIs, UI, arming product model, observation wait states, sector map) are **deferred**, not marked complete. Untested host-live reconcile of the ADANIPORTS evidence row is **not** claimed complete.
 
 **Aggregate acceptance command (WP-1.5 final):**
