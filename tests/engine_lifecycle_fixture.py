@@ -10,6 +10,11 @@ from trading_engine_broker import FakeBroker
 
 
 class TradingEngineCycle(RealCycle):
+    def enforce_daily_loss(self):
+        # Historical unit fixtures do not supply liquidation quotes / cost profiles.
+        # WP110 exercises complete daily-loss accounting with the real cycle.
+        return None
+
     def _revalidate_postfill(self, trade):
         # Older execution-accounting regressions intentionally inject overfills.
         # The breach response is independently exercised with the real cycle in WP19.

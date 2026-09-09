@@ -33,6 +33,7 @@ from trading_engine_broker import (
     parse_timestamp_text,
 )
 from trading_engine_quotes import EntryLimitDecision, bounded_entry_limit
+from trading_engine_loss import trade_loss_slice
 from trading_engine_handoff import (
     VWAP_RULE_VERSION,
     VwapLookupError,
@@ -105,6 +106,7 @@ EXIT_ORDER_TYPES = frozenset(set(STOP_ORDER_TYPES) | {"MARKET", "LIMIT"})
 # Durable market-exit owners: (reason, kind). Shared by request serialization,
 # active-exit ownership, and resume — keep a single source of truth.
 DURABLE_MARKET_EXIT_OWNERS: tuple[tuple[str, str], ...] = (
+    ("daily_loss_breach", "daily_loss"),
     ("post_fill_risk_breach", "risk_breach"),
     ("protection_deadline", "emergency"),
     ("feed_stale", "emergency"),
@@ -407,6 +409,8 @@ class TradingEngineCycle:
         # Idempotent keys for recovery findings already durably surfaced this process.
         self._recovery_finding_keys: set[str] = set()
         self._postfill_active: set[str] = set()
+        self.loss_halt_snapshot: dict[str, Any] = {"complete": False, "reason": "not_calculated"}
+        self._loss_check_active = False
 
     def total_capital(self) -> float:
         return self.store.get_total_capital(self.run_id)
@@ -504,6 +508,11 @@ class TradingEngineCycle:
             self.enforce_feed_staleness()
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
+        try:
+            self.enforce_daily_loss()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self._engage_local_entries_lock("loss_accounting_unknown")
         # Session/cutoff gates before any new-entry ingest or drive.
         try:
             self.enforce_entry_session_calendar()
@@ -539,6 +548,11 @@ class TradingEngineCycle:
             self.enforce_square_off()
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
+        try:
+            self.enforce_daily_loss()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self._engage_local_entries_lock("loss_accounting_unknown")
         try:
             self.resume_pending_market_exits()
         except Exception as exc:  # noqa: BLE001
@@ -1288,6 +1302,7 @@ class TradingEngineCycle:
             return
 
         # Block new broker writes on pause / calendar / cutoff before any intent.
+        self.enforce_daily_loss()
         block = self._new_entry_block_reason()
         if block is not None:
             self.store.update_trade(
@@ -1612,6 +1627,68 @@ class TradingEngineCycle:
         for trade in self._iter_management_trades():
             if self._is_positively_owned_engine_trade(trade):
                 self._revalidate_postfill(trade)
+
+    def enforce_daily_loss(self) -> None:
+        if self._loss_check_active:
+            return
+        self._loss_check_active = True
+        try:
+            self._enforce_daily_loss_inner()
+        finally:
+            self._loss_check_active = False
+
+    def _enforce_daily_loss_inner(self) -> None:
+        cfg = self._admin_store.load_effective_payload()
+        cap = float(cfg["daily_loss_cap_inr"])
+        trades = self.store.list_trades(self.session_date)
+        realised = 0.
+        unrealised = 0.
+        complete = True
+        realised_complete = True
+        missing = []
+        for trade in trades:
+            if trade.filled_qty <= 0:
+                continue
+            if not self._is_positively_owned_engine_trade(trade):
+                if trade.entry_live_orders_enabled is None:
+                    complete = realised_complete = False
+                    missing.append({"trade_id": trade.trade_id, "reason": "provenance_unknown"})
+                continue
+            try:
+                quote = self.broker.touch_quote(trade.symbol) if trade.remaining_position_qty > 0 else None
+            except Exception:
+                quote = None
+            value = trade_loss_slice(trade, quote, self._now_ist(), float(cfg["max_quote_age_seconds"]))
+            realised += value.realised_net
+            unrealised += value.unrealised or 0.
+            complete = complete and value.complete
+            realised_complete = realised_complete and value.realised_complete
+            if value.realised_complete:
+                self.store.update_trade(trade.trade_id, halt_realised_net=value.realised_net)
+            if not value.complete:
+                missing.append({"trade_id": trade.trade_id, "reason": value.reason})
+        latched = any(r["action"] == "daily_loss_halt" and
+            self._parse_event_payload(r).get("session_date") == self.session_date and
+            self._parse_event_payload(r).get("live_orders_enabled") == bool(self.live_orders_enabled)
+            for r in self.store.list_events(RECOVERY_EVENTS_TRADE_ID))
+        hit = (realised_complete and -realised >= cap - 1e-9) or (complete and -(realised + unrealised) >= cap - 1e-9)
+        self.loss_halt_snapshot = {"complete": complete, "realised_complete": realised_complete,
+            "realised_net": realised, "unrealised": unrealised if complete else None,
+            "net_session_pnl": realised + unrealised if complete else None,
+            "daily_cap": cap, "halted": latched or hit, "missing": missing,
+            "as_of": self._now_ist().isoformat(), "charges": "stamped_estimate_once"}
+        if hit and not latched:
+            self._engage_local_entries_lock("daily_loss_breach")
+            self.store.append_event(RECOVERY_EVENTS_TRADE_ID, "daily_loss_halt", payload={
+                **self.loss_halt_snapshot, "session_date":self.session_date,
+                "live_orders_enabled":bool(self.live_orders_enabled)})
+        if hit or latched:
+            self._pause_entries_for("daily_loss_breach")
+            for trade in self._iter_management_trades():
+                if self._is_manageable_engine_trade(trade):
+                    self._request_market_exit(trade, reason="daily_loss_breach", kind="daily_loss")
+        elif not complete:
+            self._pause_entries_for("loss_accounting_unknown")
 
     def _ensure_protection(self, trade: TradeRecord) -> None:
         pos = int(trade.remaining_position_qty or 0)
@@ -2305,6 +2382,9 @@ class TradingEngineCycle:
         if remaining <= 0:
             return 0
         if not trade.entry_order_id:
+            if not self._has_entry_intent(trade.trade_id):
+                self.store.update_trade(trade.trade_id, remaining_entry_qty=0)
+                return 0
             return remaining
         cancelled = self.broker.cancel_order(trade.entry_order_id)
         if cancelled is None:
@@ -5786,4 +5866,5 @@ class TradingEngineCycle:
         snap["updated_at"] = _now()
         snap["running"] = self.running
         snap["consume_new_triggers"] = self.consume_new_triggers
+        snap["loss_halt"] = self.loss_halt_snapshot
         write_heartbeat(self.status_file, snap)
