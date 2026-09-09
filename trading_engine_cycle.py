@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from nse_trading_calendar import (
     validate_session_gate_hhmm_pair,
 )
 from trading_engine_broker import (
+    BrokerOrder,
     BrokerPort,
     FakeBroker,
     SlPlaceAcceptedVisibilityUnknown,
@@ -117,6 +118,8 @@ VWAP_SKIP_BY_CLASS = {
 }
 # NSE cash session calendar day for attribution checks.
 _SESSION_TZ = ZoneInfo("Asia/Kolkata")
+# Durable orphan / recovery findings without a local trade row (no FK on events).
+RECOVERY_EVENTS_TRADE_ID = "__recovery__"
 
 
 def _parse_aware_instant(raw: object) -> Optional[datetime]:
@@ -396,6 +399,8 @@ class TradingEngineCycle:
         # Local entry lock survives pause-store failures (fail-closed for new risk).
         self._local_entries_lock = False
         self._local_entries_lock_reason: Optional[str] = None
+        # Idempotent keys for recovery findings already durably surfaced this process.
+        self._recovery_finding_keys: set[str] = set()
 
     def total_capital(self) -> float:
         return self.store.get_total_capital(self.run_id)
@@ -2548,7 +2553,19 @@ class TradingEngineCycle:
         )
 
     def drive_open(self) -> None:
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            # Provenance-unknown / mode-mismatch with filled or prior-session exposure:
+            # surface only — never broker-manage. Unstamped current-session entry intents
+            # still flow through submit/skip gates.
+            if not self._is_positively_owned_engine_trade(trade):
+                if self._unknown_requires_reconciliation_hold(trade):
+                    if self._trade_has_recoverable_exposure(trade):
+                        if trade.status != "reconciliation_required":
+                            self.store.update_trade(
+                                trade.trade_id, status="reconciliation_required"
+                            )
+                    continue
+                # fall through for current-session zero-fill unsigned intents
             if trade.status == "closed":
                 self._refresh_closed_exit_snapshot(trade)
                 continue
@@ -3289,7 +3306,9 @@ class TradingEngineCycle:
             self.consume_new_triggers = False
             self.store.set_consume_triggers(self.run_id, False)
         # Serialized: one trade at a time through the durable exit path.
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             if trade.status in {"closed", "skipped", "rejected"}:
                 continue
             if int(trade.remaining_position_qty or 0) <= 0 and int(
@@ -3303,6 +3322,18 @@ class TradingEngineCycle:
     def close_position(self, trade_id: str, *, actor: str = "user") -> None:
         trade = self.store.get_trade(trade_id)
         if trade is None:
+            return
+        if not self._is_positively_owned_engine_trade(trade):
+            self.store.append_event(
+                trade_id,
+                "close_blocked_unresolved_ownership",
+                actor=actor,
+                payload={
+                    "run_id": trade.run_id,
+                    "entry_live_orders_enabled": trade.entry_live_orders_enabled,
+                    "engine_live_orders_enabled": bool(self.live_orders_enabled),
+                },
+            )
             return
         self.store.append_event(
             trade_id, "close_position_requested", actor=actor
@@ -3329,7 +3360,9 @@ class TradingEngineCycle:
         self.consume_new_triggers = False
         self.store.set_consume_triggers(self.run_id, False)
         self._cancel_pending_vwap_on_pause()
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             if trade.status in {"closed", "skipped", "rejected"}:
                 continue
             if int(trade.remaining_position_qty or 0) <= 0 and int(
@@ -3536,7 +3569,9 @@ class TradingEngineCycle:
     def enforce_entry_remainder_cancels(self) -> None:
         """Cancel working entry remainders after submission-intent deadline."""
         limit = self._remainder_cancel_seconds()
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             rem = int(trade.remaining_entry_qty or 0)
             if rem <= 0 or not trade.entry_order_id:
                 continue
@@ -3561,7 +3596,9 @@ class TradingEngineCycle:
 
     def enforce_protection_deadlines(self) -> None:
         """Unprotected past deadline → pause entries + durable emergency flatten."""
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             if trade.status in {"closed", "skipped", "rejected"}:
                 continue
             pos = int(trade.remaining_position_qty or 0)
@@ -3674,43 +3711,473 @@ class TradingEngineCycle:
                     status="reconciliation_required",
                 )
 
+    def _trade_has_recoverable_exposure(self, trade: TradeRecord) -> bool:
+        if trade.status not in ACTIVE_STATES:
+            return False
+        if int(trade.remaining_position_qty or 0) > 0:
+            return True
+        if int(trade.remaining_entry_qty or 0) > 0:
+            return True
+        if trade.status in {
+            "entry_submitting",
+            "submission_unknown",
+            "exit_pending",
+            "reconciliation_required",
+        }:
+            return True
+        return False
+
+    def _trade_provenance_known(self, trade: TradeRecord) -> bool:
+        run_id = str(trade.run_id or "").strip()
+        return bool(run_id) and trade.entry_live_orders_enabled is not None
+
+    def _trade_mode_matches_engine(self, trade: TradeRecord) -> bool:
+        if trade.entry_live_orders_enabled is None:
+            return False
+        return bool(trade.entry_live_orders_enabled) == bool(self.live_orders_enabled)
+
+    def _is_positively_owned_engine_trade(self, trade: TradeRecord) -> bool:
+        """True when provenance positively identifies engine ownership in this mode."""
+        return self._trade_provenance_known(trade) and self._trade_mode_matches_engine(
+            trade
+        )
+
+    def _is_manageable_engine_trade(self, trade: TradeRecord) -> bool:
+        """Continue protection/exits only for positively identified same-mode exposure."""
+        return self._is_positively_owned_engine_trade(
+            trade
+        ) and self._trade_has_recoverable_exposure(trade)
+
+    def _iter_management_trades(self) -> List[TradeRecord]:
+        """Current-session trades plus prior-session positively owned exposure."""
+        current: List[TradeRecord] = []
+        prior: List[TradeRecord] = []
+        for trade in self.store.list_trades(None):
+            if trade.session_date == self.session_date:
+                current.append(trade)
+                continue
+            if self._is_manageable_engine_trade(trade):
+                prior.append(trade)
+        return current + prior
+
     def _session_has_recoverable_exposure(self) -> bool:
         for trade in self.store.list_trades(self.session_date):
-            if trade.status not in ACTIVE_STATES:
-                continue
-            if int(trade.remaining_position_qty or 0) > 0:
-                return True
-            if int(trade.remaining_entry_qty or 0) > 0:
-                return True
-            if trade.status in {
-                "entry_submitting",
-                "submission_unknown",
-                "exit_pending",
-                "reconciliation_required",
-            }:
+            if self._trade_has_recoverable_exposure(trade):
                 return True
         return False
 
+    def _collect_linked_order_ids_and_tags(self) -> Tuple[set[str], set[str]]:
+        order_ids: set[str] = set()
+        tags: set[str] = set()
+        for trade in self.store.list_trades(None):
+            for link in self.store.list_order_links(trade.trade_id):
+                order_ids.add(str(link["order_id"]))
+            if trade.broker_tag:
+                tags.add(str(trade.broker_tag))
+            for oid in (
+                trade.entry_order_id,
+                trade.sl_order_id,
+                trade.active_exit_order_id,
+            ):
+                if oid:
+                    order_ids.add(str(oid))
+            for row in self.store.list_events(trade.trade_id):
+                action = str(row["action"] or "")
+                try:
+                    payload = json.loads(str(row["payload_json"] or "{}"))
+                except json.JSONDecodeError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    continue
+                for key in ("order_id", "accepted_order_id", "entry_order_id", "sl_order_id"):
+                    val = payload.get(key)
+                    if val:
+                        order_ids.add(str(val))
+                for key in ("tag", "attempt_tag", "trade_tag"):
+                    val = payload.get(key)
+                    if val:
+                        tags.add(str(val))
+                if action == "sl_submit_attempt":
+                    tag = payload.get("tag")
+                    if tag:
+                        tags.add(str(tag))
+        return order_ids, tags
+
+    def _broker_discovery_snapshot(
+        self,
+    ) -> Tuple[Optional[List[BrokerOrder]], Optional[Dict[str, int]], Optional[str]]:
+        """Return (orders, positions, error). Error ⇒ fail-closed entry block."""
+        list_orders = getattr(self.broker, "list_orders", None)
+        list_positions = getattr(self.broker, "list_net_positions", None)
+        if not callable(list_orders) or not callable(list_positions):
+            return None, None, "broker_discovery_unsupported"
+        try:
+            raw_orders = list_orders()
+            if not isinstance(raw_orders, (list, tuple)):
+                raise ValueError("invalid_orders_snapshot")
+            orders = list(raw_orders)
+            if any(not isinstance(order, BrokerOrder) for order in orders):
+                raise ValueError("invalid_order_record")
+        except Exception as exc:  # noqa: BLE001
+            return None, None, f"orders_discovery_failed:{exc}"
+        try:
+            raw_positions = list_positions()
+            if not isinstance(raw_positions, dict):
+                raise ValueError("invalid_positions_snapshot")
+            positions = dict(raw_positions)
+            for symbol, qty in positions.items():
+                if not isinstance(symbol, str) or not symbol.strip():
+                    raise ValueError("invalid_position_symbol")
+                if isinstance(qty, bool) or not isinstance(qty, int):
+                    raise ValueError("invalid_position_quantity")
+        except Exception as exc:  # noqa: BLE001
+            return None, None, f"positions_discovery_failed:{exc}"
+        return orders, positions, None
+
+    def _scan_recovery_state(self) -> dict[str, Any]:
+        """Cross-session + orphan discovery (never auto-adopt / flatten / delete)."""
+        cross_session: List[TradeRecord] = []
+        provenance_unknown: List[TradeRecord] = []
+        mode_mismatch: List[TradeRecord] = []
+        owned_recoverable: List[TradeRecord] = []
+        for trade in self.store.list_trades(None):
+            if not self._trade_has_recoverable_exposure(trade):
+                continue
+            if trade.session_date != self.session_date:
+                cross_session.append(trade)
+            if not self._trade_provenance_known(trade):
+                if self._unknown_requires_reconciliation_hold(trade):
+                    provenance_unknown.append(trade)
+                continue
+            if not self._trade_mode_matches_engine(trade):
+                if self._unknown_requires_reconciliation_hold(trade):
+                    mode_mismatch.append(trade)
+                continue
+            owned_recoverable.append(trade)
+
+        linked_ids, linked_tags = self._collect_linked_order_ids_and_tags()
+        # Any local ACTIVE trade claims its symbol for position orphan checks.
+        # Qty fields can lag a broker fill by one tick (cancel-time fill → protect);
+        # absence of a local trade is the orphan signal, not a transient qty gap.
+        claimed_symbols: set[str] = set()
+        for trade in self.store.list_trades(None):
+            if trade.status in ACTIVE_STATES:
+                claimed_symbols.add(str(trade.symbol))
+            elif self._trade_has_recoverable_exposure(trade):
+                claimed_symbols.add(str(trade.symbol))
+
+        orphan_orders: List[dict[str, Any]] = []
+        orphan_stops: List[dict[str, Any]] = []
+        orphan_positions: List[dict[str, Any]] = []
+        discovery_error: Optional[str] = None
+        orders, positions, discovery_error = self._broker_discovery_snapshot()
+        if discovery_error is None and orders is not None and positions is not None:
+            for order in orders:
+                oid = str(order.order_id or "")
+                tag = str(order.tag or "")
+                # A tag from another symbol/mode is not ownership. Scope every
+                # candidate to a positively identified trade before ignoring it.
+                linked = False
+                for owner in self.store.list_trades(None):
+                    if not self._is_positively_owned_engine_trade(owner):
+                        continue
+                    if str(order.tradingsymbol) != owner.symbol or order.product != "MIS":
+                        continue
+                    link = self.store.get_order_link(oid)
+                    if link is not None and str(link["trade_id"]) == owner.trade_id:
+                        expected_side = _entry_side(owner.direction) if link["role"] == "entry" else _stop_side(owner.direction)
+                        linked = str(order.transaction_type) == expected_side
+                    elif oid == owner.entry_order_id:
+                        linked = str(order.transaction_type) == _entry_side(owner.direction)
+                    elif oid in {owner.sl_order_id, owner.active_exit_order_id}:
+                        linked = str(order.transaction_type) == _stop_side(owner.direction)
+                    elif tag == owner.broker_tag and str(order.transaction_type) == _entry_side(owner.direction):
+                        linked = str(order.order_type) in {"MARKET", "LIMIT"}
+                    elif _is_stop_order(order) and str(order.transaction_type) == _stop_side(owner.direction):
+                        linked = self._attempt_id_for_sl_order(owner, order) is not None
+                    if linked:
+                        break
+                if linked:
+                    continue
+                body = {
+                    "order_id": oid,
+                    "tag": tag,
+                    "symbol": str(order.tradingsymbol or ""),
+                    "order_type": str(order.order_type or ""),
+                    "status": str(order.status or ""),
+                    "transaction_type": str(order.transaction_type or ""),
+                    "quantity": int(order.quantity or 0),
+                    "pending_quantity": broker_order_pending_qty(order),
+                    "filled_quantity": broker_order_filled_qty(order),
+                }
+                if _is_stop_order(order):
+                    # Working + terminal unlinked stops (historical-stop discovery).
+                    orphan_stops.append(body)
+                    continue
+                # Non-stop: only working unmatched orders are live orphan risk.
+                # COMPLETE day-book fills (e.g. external flatten about to attribute)
+                # must not latch entry pause before reconcile.
+                st = str(order.status or "").upper()
+                pending = broker_order_pending_qty(order)
+                if pending > 0 or st in ENTRY_WORKING | SL_TRIGGERED_WORKING | {
+                    "TRIGGER PENDING",
+                }:
+                    orphan_orders.append(body)
+            for symbol, qty in positions.items():
+                if int(qty) == 0:
+                    continue
+                if str(symbol) in claimed_symbols:
+                    continue
+                orphan_positions.append({"symbol": str(symbol), "quantity": int(qty)})
+
+        blocks_entries = bool(
+            cross_session
+            or provenance_unknown
+            or mode_mismatch
+            or orphan_orders
+            or orphan_stops
+            or orphan_positions
+            or discovery_error
+            or self._session_has_recoverable_exposure()
+        )
+        ownership_unresolved = bool(
+            cross_session
+            or provenance_unknown
+            or mode_mismatch
+            or orphan_orders
+            or orphan_stops
+            or orphan_positions
+            or discovery_error
+        )
+        return {
+            "cross_session": cross_session,
+            "provenance_unknown": provenance_unknown,
+            "mode_mismatch": mode_mismatch,
+            "owned_recoverable": owned_recoverable,
+            "orphan_orders": orphan_orders,
+            "orphan_stops": orphan_stops,
+            "orphan_positions": orphan_positions,
+            "discovery_error": discovery_error,
+            "blocks_entries": blocks_entries,
+            "ownership_unresolved": ownership_unresolved,
+            "session_recoverable": self._session_has_recoverable_exposure(),
+        }
+
+    def _recovery_pause_detail(self, state: dict[str, Any]) -> str:
+        if state.get("discovery_error"):
+            return "recovery_discovery_failed"
+        if state.get("orphan_stops") or state.get("orphan_orders") or state.get(
+            "orphan_positions"
+        ):
+            return "orphan_recovery"
+        if state.get("provenance_unknown") or state.get("mode_mismatch"):
+            return "provenance_recovery"
+        if state.get("cross_session"):
+            return "cross_session_recovery"
+        return "restart_recovery"
+
+    def _unknown_requires_reconciliation_hold(self, trade: TradeRecord) -> bool:
+        """Hold only filled/prior-session unknown exposure — not unstamped entry intents."""
+        if trade.session_date != self.session_date:
+            return True
+        if int(trade.remaining_position_qty or 0) > 0:
+            return True
+        if int(trade.filled_qty or 0) > 0:
+            return True
+        return False
+
+    def _surface_recovery_findings(self, state: dict[str, Any]) -> None:
+        """Persist discovery events; never adopt, flatten, or delete orphans."""
+        for trade in state["provenance_unknown"]:
+            if not self._unknown_requires_reconciliation_hold(trade):
+                continue
+            key = f"provenance_unknown:{trade.trade_id}"
+            if key not in self._recovery_finding_keys and not self._has_trade_event(
+                trade.trade_id, "provenance_unknown"
+            ):
+                self.store.append_event(
+                    trade.trade_id,
+                    "provenance_unknown",
+                    payload={
+                        "session_date": trade.session_date,
+                        "symbol": trade.symbol,
+                        "run_id": trade.run_id,
+                        "entry_live_orders_enabled": trade.entry_live_orders_enabled,
+                    },
+                )
+                self._recovery_finding_keys.add(key)
+            if trade.status != "reconciliation_required":
+                self.store.update_trade(
+                    trade.trade_id, status="reconciliation_required"
+                )
+
+        for trade in state["mode_mismatch"]:
+            if not self._unknown_requires_reconciliation_hold(trade):
+                continue
+            key = f"mode_mismatch:{trade.trade_id}"
+            if key not in self._recovery_finding_keys and not self._has_trade_event(
+                trade.trade_id, "mode_mismatch_recovery"
+            ):
+                self.store.append_event(
+                    trade.trade_id,
+                    "mode_mismatch_recovery",
+                    payload={
+                        "session_date": trade.session_date,
+                        "symbol": trade.symbol,
+                        "entry_live_orders_enabled": trade.entry_live_orders_enabled,
+                        "engine_live_orders_enabled": bool(self.live_orders_enabled),
+                    },
+                )
+                self._recovery_finding_keys.add(key)
+            if trade.status != "reconciliation_required":
+                self.store.update_trade(
+                    trade.trade_id, status="reconciliation_required"
+                )
+
+        for trade in state["cross_session"]:
+            key = f"cross_session:{trade.trade_id}"
+            if key not in self._recovery_finding_keys and not self._has_trade_event(
+                trade.trade_id, "cross_session_recovery"
+            ):
+                self.store.append_event(
+                    trade.trade_id,
+                    "cross_session_recovery",
+                    payload={
+                        "trade_session_date": trade.session_date,
+                        "engine_session_date": self.session_date,
+                        "symbol": trade.symbol,
+                        "manageable": self._is_manageable_engine_trade(trade),
+                    },
+                )
+                self._recovery_finding_keys.add(key)
+
+        if state.get("discovery_error"):
+            key = f"discovery_error:{state['discovery_error']}"
+            if key not in self._recovery_finding_keys:
+                self.store.append_event(
+                    RECOVERY_EVENTS_TRADE_ID,
+                    "recovery_discovery_failed",
+                    payload={"error": str(state["discovery_error"])},
+                )
+                self._recovery_finding_keys.add(key)
+
+        for body in state["orphan_positions"]:
+            key = f"orphan_position:{body.get('symbol')}:{body.get('quantity')}"
+            if key in self._recovery_finding_keys:
+                continue
+            if any(
+                str(r["action"]) == "orphan_broker_position"
+                and json.loads(str(r["payload_json"] or "{}")).get("symbol")
+                == body.get("symbol")
+                for r in self.store.list_events(RECOVERY_EVENTS_TRADE_ID)
+            ):
+                self._recovery_finding_keys.add(key)
+                continue
+            self.store.append_event(
+                RECOVERY_EVENTS_TRADE_ID,
+                "orphan_broker_position",
+                payload={**body, "action_policy": "pause_only_no_auto_adopt_flatten"},
+            )
+            self._recovery_finding_keys.add(key)
+
+        for body in state["orphan_stops"]:
+            key = f"orphan_stop:{body.get('order_id') or body.get('tag')}"
+            if key in self._recovery_finding_keys:
+                continue
+            if any(
+                str(r["action"]) == "unlinked_historical_stop"
+                and json.loads(str(r["payload_json"] or "{}")).get("order_id")
+                == body.get("order_id")
+                for r in self.store.list_events(RECOVERY_EVENTS_TRADE_ID)
+                if body.get("order_id")
+            ):
+                self._recovery_finding_keys.add(key)
+                continue
+            self.store.append_event(
+                RECOVERY_EVENTS_TRADE_ID,
+                "unlinked_historical_stop",
+                payload={**body, "action_policy": "pause_only_no_auto_adopt_flatten"},
+            )
+            self._recovery_finding_keys.add(key)
+
+        for body in state["orphan_orders"]:
+            key = f"orphan_order:{body.get('order_id') or body.get('tag')}"
+            if key in self._recovery_finding_keys:
+                continue
+            if any(
+                str(r["action"]) == "orphan_broker_order"
+                and json.loads(str(r["payload_json"] or "{}")).get("order_id")
+                == body.get("order_id")
+                for r in self.store.list_events(RECOVERY_EVENTS_TRADE_ID)
+                if body.get("order_id")
+            ):
+                self._recovery_finding_keys.add(key)
+                continue
+            self.store.append_event(
+                RECOVERY_EVENTS_TRADE_ID,
+                "orphan_broker_order",
+                payload={**body, "action_policy": "pause_only_no_auto_adopt_flatten"},
+            )
+            self._recovery_finding_keys.add(key)
+
     def enforce_restart_recovery(self) -> None:
-        """Pause entries while exposure needs management; retry until pause sticks."""
+        """WP-1.7: pause entries while cross-session / orphan / restart exposure exists.
+
+        Positively identified same-mode engine trades continue under management.
+        Unmatched / provenance-unknown exposure is surfaced only — never auto-adopted,
+        flattened, or deleted.
+
+        Latch semantics (WP-1.5 compatible): same-session exposure discovered only after
+        the first empty tick does not re-pause mid-run. Ownership/orphan unresolved
+        always re-asserts the entry block (including after Admin resume).
+        """
+        state = self._scan_recovery_state()
+        self._surface_recovery_findings(state)
+
+        if state["ownership_unresolved"]:
+            detail = self._recovery_pause_detail(state)
+            if not self._entries_paused():
+                self._engage_local_entries_lock(detail)
+                if not self._pause_entries_for(detail):
+                    self._restart_recovery_done = False
+                    return
+            elif not self._restart_recovery_done:
+                self._engage_local_entries_lock(detail)
+                if not self._pause_entries_for(detail):
+                    self._restart_recovery_done = False
+                    return
+            self._restart_recovery_done = True
+            for trade in state["owned_recoverable"]:
+                if not self._has_trade_event(trade.trade_id, "restart_recovery"):
+                    self.store.append_event(
+                        trade.trade_id,
+                        "restart_recovery",
+                        payload={
+                            "entries_paused": True,
+                            "session_date": trade.session_date,
+                            "engine_session_date": self.session_date,
+                        },
+                    )
+            return
+
+        # Same-session restart latch only (no ownership/orphan issues).
         if self._restart_recovery_done:
             return
-        if not self._session_has_recoverable_exposure():
+        if not state["session_recoverable"]:
             self._restart_recovery_done = True
             return
-        # Engage local lock before attempting canonical pause (fail-closed).
         self._engage_local_entries_lock("restart_recovery")
         if not self._pause_entries_for("restart_recovery"):
-            # Pause store failed or unconfirmed — keep local lock; retry next tick.
             return
         self._restart_recovery_done = True
         for trade in self.store.list_trades(self.session_date):
             if trade.status in ACTIVE_STATES:
-                self.store.append_event(
-                    trade.trade_id,
-                    "restart_recovery",
-                    payload={"entries_paused": True},
-                )
+                if not self._has_trade_event(trade.trade_id, "restart_recovery"):
+                    self.store.append_event(
+                        trade.trade_id,
+                        "restart_recovery",
+                        payload={"entries_paused": True},
+                    )
 
     def _session_open_minutes(self) -> Optional[int]:
         sched = self._configured_special_schedule()
@@ -3773,7 +4240,9 @@ class TradingEngineCycle:
             self._pause_entries_for("feed_stale")
         if age < FEED_STALE_EXIT_SECONDS:
             return
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             if trade.status in {"closed", "skipped", "rejected"}:
                 continue
             pos = int(trade.remaining_position_qty or 0)
@@ -4401,7 +4870,9 @@ class TradingEngineCycle:
 
     def resume_pending_market_exits(self) -> None:
         """Continue durable emergency/trail-through exits after intent is persisted."""
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             if trade.status in {"closed", "skipped", "rejected"}:
                 continue
             rem_entry = int(trade.remaining_entry_qty or 0)
@@ -4838,7 +5309,9 @@ class TradingEngineCycle:
     def apply_auto_trails(self) -> None:
         if self._feed_blocks_price_actions():
             return
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             if not trade.auto_trail_enabled:
                 continue
             if bool(trade.auto_trail_owner_disabled):
@@ -4947,7 +5420,9 @@ class TradingEngineCycle:
                 )
 
     def mark_to_market(self) -> None:
-        for trade in self.store.list_trades(self.session_date):
+        for trade in self._iter_management_trades():
+            if not self._is_positively_owned_engine_trade(trade):
+                continue
             if trade.status not in ACTIVE_STATES:
                 continue
             if self.live_orders_enabled:

@@ -1520,6 +1520,8 @@ class Wp16KiteBrokerNoBlindRetryTests(unittest.TestCase):
 
         kite_broker = KiteBroker(kite, live_orders_enabled=True)
         cycle.broker = kite_broker
+        # LIVE Kite path requires LIVE trade provenance (WP-1.7 PAPER/LIVE separation).
+        store.update_trade(trade.trade_id, entry_live_orders_enabled=1)
         deadline = store.get_trade(trade.trade_id).protection_deadline_at  # type: ignore[union-attr]
         cycle._ensure_protection(store.get_trade(trade.trade_id))  # type: ignore[arg-type]
         self.assertEqual(place_count["n"], 1)

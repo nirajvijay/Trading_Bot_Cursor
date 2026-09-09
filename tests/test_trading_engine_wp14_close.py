@@ -487,6 +487,7 @@ class Wp14CloseAndSessionGateTests(unittest.TestCase):
         admin.close()
 
         # Explicit schedule required; uses schedule hours, not normal 14:45/15:15.
+        store3.close()
         self.te.unlink(missing_ok=True)
         admin = AdminConfigStore(self.admin)
         admin.set_entries_paused(False)
@@ -559,6 +560,8 @@ class Wp14CloseAndSessionGateTests(unittest.TestCase):
             entry_fill=110.0,
             protected_qty=0,
             status="protected_open",
+            run_id=cycle5.run_id,
+            entry_live_orders_enabled=0,
         )
         # Seed broker long so flatten has something to exit.
         broker.place_market_mis(

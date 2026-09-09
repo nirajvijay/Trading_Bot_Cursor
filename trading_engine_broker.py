@@ -92,6 +92,14 @@ class BrokerPort(Protocol):
 
     def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]: ...
 
+    def list_orders(self) -> List[BrokerOrder]:
+        """All visible broker orders for orphan / recovery discovery."""
+        ...
+
+    def list_net_positions(self) -> Dict[str, int]:
+        """Net MIS qty by tradingsymbol for orphan / recovery discovery."""
+        ...
+
     def place_market_mis(
         self,
         *,
@@ -369,6 +377,40 @@ class FakeBroker:
             if o.tradingsymbol == tradingsymbol
             and str(o.order_id) not in self._hidden_order_ids
         ]
+
+    def list_orders(self) -> List[BrokerOrder]:
+        out: List[BrokerOrder] = []
+        for order in self.orders.values():
+            oid = str(order.order_id)
+            if oid in self._hidden_order_ids:
+                continue
+            tag = str(order.tag or "")
+            if self.hide_market_tags and tag in self._hidden_tags and order.order_type == "MARKET":
+                continue
+            if self.hide_slm_tags and tag in self._hidden_tags and _is_stop_order(order):
+                continue
+            if self.hide_new_slm_orders and _is_stop_order(order) and oid in self._hidden_order_ids:
+                continue
+            out.append(order)
+        return out
+
+    def list_net_positions(self) -> Dict[str, int]:
+        if self.positions_error:
+            raise RuntimeError("positions_down")
+        symbols = set(self.position_quotes.keys())
+        for order in self.orders.values():
+            if str(order.order_id) in self._hidden_order_ids:
+                continue
+            symbols.add(str(order.tradingsymbol))
+        out: Dict[str, int] = {}
+        for symbol in symbols:
+            qty = self.net_position_qty(symbol)
+            if qty is None:
+                continue
+            if int(qty) == 0 and symbol not in self.position_quotes:
+                continue
+            out[str(symbol)] = int(qty)
+        return out
 
     def place_market_mis(
         self,
@@ -983,6 +1025,42 @@ class KiteBroker:
             for o in raw
             if str(o.get("tradingsymbol") or "") == tradingsymbol
         ]
+
+    def list_orders(self) -> List[BrokerOrder]:
+        raw = self._kite.orders()  # type: ignore[attr-defined]
+        return [_kite_order_to_broker(o) for o in raw]
+
+    def list_net_positions(self) -> Dict[str, int]:
+        data = self._positions()
+        if data is None:
+            raise RuntimeError("positions_down")
+        if not isinstance(data, dict):
+            raise RuntimeError("positions_down")
+        out: Dict[str, int] = {}
+        # A missing net book is unknown, not an empty account. The day book is
+        # execution activity and must never substitute for net exposure.
+        for bucket in ("net",):
+            rows = data.get(bucket)
+            if not isinstance(rows, list):
+                raise RuntimeError("positions_snapshot_invalid")
+            for item in rows:
+                if not isinstance(item, dict):
+                    raise RuntimeError("position_record_invalid")
+                if not item.get("product"):
+                    raise RuntimeError("position_product_unknown")
+                if str(item.get("product")) != "MIS":
+                    continue
+                symbol = str(item.get("tradingsymbol") or "")
+                if not symbol:
+                    continue
+                raw_qty = item.get("quantity")
+                if isinstance(raw_qty, bool) or not isinstance(raw_qty, int):
+                    raise RuntimeError("position_quantity_invalid")
+                qty = raw_qty
+                # Prefer net bucket; day fills gaps only.
+                if bucket == "net" or symbol not in out:
+                    out[symbol] = qty
+        return out
 
     def place_market_mis(
         self,
