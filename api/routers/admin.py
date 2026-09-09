@@ -55,6 +55,7 @@ def _config_response() -> AdminConfigResponse:
         running = is_engine_running()
         snap = load_snapshot(config.trading_engine_db_path(), _today_ist(), running=running)
         values = AdminConfigValues(**raw["values"])
+        effective = store.load_effective_payload()
         return AdminConfigResponse(
             version_id=str(raw["version_id"]),
             entries_paused=bool(raw["entries_paused"]),
@@ -64,6 +65,9 @@ def _config_response() -> AdminConfigResponse:
             warnings=list(raw.get("warnings") or []),
             accepting_triggers=bool(snap.get("accepting_triggers")),
             engine_running=running,
+            effective_values=effective,
+            effective_version_id=store.effective_version_id(),
+            pending_next_arm=[k for k,v in raw["values"].items() if effective.get(k) != v],
         )
     finally:
         store.close()
@@ -112,7 +116,7 @@ def patch_admin_config(
         # omitted keys from code defaults (would reset ₹2,995 etc.).
         try:
             version_id, warnings = store.update_config(
-                body.values.model_dump(),
+                body.values.model_dump(exclude_unset=True),
                 actor=_username(ctx),
                 expected_version_id=body.expected_version_id,
                 comment=body.comment,
@@ -164,7 +168,7 @@ def pause_trading(
     )
 
 
-@router.post("/trading/resume", response_model=AdminActionResponse)
+@router.post("/trading/resume", response_model=AdminActionResponse, status_code=202)
 def resume_trading(
     request: Request,
     ctx: WebAuthContext = Depends(require_step_up),
@@ -184,21 +188,23 @@ def resume_trading(
             store.close()
         raise HTTPException(status_code=409, detail=blocked)
     store = _store()
+    engine = TradingEngineStore(config.trading_engine_db_path())
     try:
-        store.set_entries_paused(False)
-        store.append_control_log(
-            actor_username=_username(ctx),
-            action="resume_entries",
-            result="ok",
-        )
-        write_audit("admin_entries_resumed")
+        run = engine.latest_run()
+        if run is None:
+            raise HTTPException(status_code=409, detail="engine_not_running")
+        arm = engine.session_arm(_today_ist())
+        payload = {"run_id":str(run["run_id"]),"config_version_id":store.active_version_id(),
+            "execution_mode":"LIVE" if run["live_orders_enabled"] else "PAPER",
+            "entry_mode":arm["entry_mode"] if arm else "MANUAL", "live_confirmation":False}
+        command_id = engine.enqueue_command("arm_session", payload=payload, actor=_username(ctx))
+        paused = store.read_entries_paused()
     finally:
+        engine.close()
         store.close()
-    _enqueue_engine_command("resume_entries")
     return AdminActionResponse(
-        success=True,
-        message="Entries resumed",
-        entries_paused=False,
+        success=True, message="Re-arm queued; entries remain blocked until engine validation",
+        entries_paused=paused, command_id=command_id, state="queued",
     )
 
 

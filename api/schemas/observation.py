@@ -13,6 +13,7 @@ class ObservationReadinessResponse(BaseModel):
     checklist_ok: bool
     checklist_status: ChecklistStatus
     market_open: bool
+    observation_start_window: bool = False
     runner_running: bool
     can_start: bool
     reason: str = ""

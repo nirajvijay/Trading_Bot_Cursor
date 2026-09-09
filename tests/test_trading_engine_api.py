@@ -54,7 +54,7 @@ class TradingEngineApiTests(unittest.TestCase):
         self.assertEqual(body["state"], "stopped")
         self.assertEqual(body["total_capital"], DEFAULT_TOTAL_CAPITAL)
         self.assertFalse(body["engine_running"])
-        self.assertTrue(body["can_confirm_live"])
+        self.assertFalse(body["can_confirm_live"])
         self.assertFalse(body["accepting_triggers"])
         self.assertTrue(body["require_vwap_accept"])
 
@@ -105,7 +105,7 @@ class TradingEngineApiTests(unittest.TestCase):
         cmd = popen.call_args[0][0]
         self.assertNotIn("--live-orders", cmd)
 
-    def test_live_start_follows_ui_checkbox_not_env(self) -> None:
+    def test_live_start_requires_explicit_server_authorization(self) -> None:
         os.environ["TRADING_ENGINE_LIVE_ORDERS"] = "false"
         with patch("api.services.trading_engine_runner.subprocess.Popen") as popen:
             popen.return_value.pid = 4243
@@ -113,10 +113,8 @@ class TradingEngineApiTests(unittest.TestCase):
                 "/api/v1/trading-engine/start",
                 json={"confirm_live_orders": True, "session_date": "2026-08-17"},
             )
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(res.json()["success"])
-        cmd = popen.call_args[0][0]
-        self.assertIn("--live-orders", cmd)
+        self.assertEqual(res.status_code, 400)
+        popen.assert_not_called()
 
     def test_capital_and_trail(self) -> None:
         cap = self.client.post("/api/v1/trading-engine/capital", json={"total_capital": 250000})
@@ -146,7 +144,8 @@ class TradingEngineApiTests(unittest.TestCase):
             f"/api/v1/trading-engine/trades/{trade.trade_id}/trail-stop",
             json={"new_stop": 105},
         )
-        self.assertEqual(trail.status_code, 200)
+        self.assertEqual(trail.status_code, 202)
+        self.assertEqual(trail.json()["state"],"queued")
         store = TradingEngineStore(self.db)
         cmds = store.pending_commands()
         self.assertEqual(cmds[0].kind, "trail_stop")
@@ -163,16 +162,16 @@ class TradingEngineApiTests(unittest.TestCase):
             f"/api/v1/trading-engine/trades/{trade.trade_id}/auto-trail",
             json={"enabled": True},
         )
-        self.assertEqual(auto.status_code, 200)
+        self.assertEqual(auto.status_code, 202)
         store = TradingEngineStore(self.db)
         kinds = [c.kind for c in store.pending_commands()]
         self.assertIn("set_auto_trail", kinds)
         store.close()
 
-    def test_stop_writes_file(self) -> None:
+    def test_normal_stop_does_not_write_abrupt_termination_file(self) -> None:
         res = self.client.post("/api/v1/trading-engine/stop")
         self.assertEqual(res.status_code, 200)
-        self.assertTrue((self.root / "te.stop").exists())
+        self.assertFalse((self.root / "te.stop").exists())
         store = TradingEngineStore(self.db)
         self.assertEqual([c.kind for c in store.pending_commands()], [])
         store.close()

@@ -94,7 +94,7 @@ class ObservationRunnerTests(unittest.TestCase):
             "session_date": "2026-08-03",
             "reason_summary": "",
         }
-        result = compute_readiness("2026-08-03")
+        result = compute_readiness("2026-08-03", now=datetime(2026, 8, 3, 8, 59, tzinfo=IST))
         self.assertTrue(result["checklist_ok"])
         self.assertFalse(result["market_open"])
         self.assertFalse(result["can_start"])
@@ -111,7 +111,7 @@ class ObservationRunnerTests(unittest.TestCase):
             "session_date": "2026-08-03",
             "reason_summary": "Historical candles: missing data",
         }
-        result = compute_readiness("2026-08-03")
+        result = compute_readiness("2026-08-03", now=datetime(2026, 8, 3, 10, tzinfo=IST))
         self.assertFalse(result["checklist_ok"])
         self.assertFalse(result["can_start"])
         self.assertIn("Historical candles", result["reason"])
@@ -127,7 +127,7 @@ class ObservationRunnerTests(unittest.TestCase):
             "session_date": "2026-08-03",
             "reason_summary": "Run Pre-Market Checklist",
         }
-        result = compute_readiness("2026-08-03")
+        result = compute_readiness("2026-08-03", now=datetime(2026, 8, 3, 10, tzinfo=IST))
         self.assertFalse(result["can_start"])
         self.assertEqual(result["reason"], "Run Pre-Market Checklist")
 
@@ -142,7 +142,7 @@ class ObservationRunnerTests(unittest.TestCase):
             "session_date": "2026-08-03",
             "reason_summary": "",
         }
-        result = compute_readiness("2026-08-03")
+        result = compute_readiness("2026-08-03", now=datetime(2026, 8, 3, 10, tzinfo=IST))
         self.assertTrue(result["can_start"])
         self.assertEqual(result["reason"], "")
         self.assertIsNotNone(result["expected_stop_at"])
@@ -162,7 +162,7 @@ class ObservationRunnerTests(unittest.TestCase):
         ), patch(
             "api.queries.checklist.fetch_premarket_checklist"
         ) as mock_full:
-            result = compute_readiness("2026-08-03")
+            result = compute_readiness("2026-08-03", now=datetime(2026, 8, 3, 10, tzinfo=IST))
             self.assertTrue(result["can_start"])
             mock_full.assert_not_called()
 

@@ -208,6 +208,7 @@ class TradeRecord:
     admin_config_version_id: Optional[str] = None
     risk_limits_json: Optional[str] = None
     halt_realised_net: Optional[float] = None
+    original_setup_json: Optional[str] = None
 
 
 TERMINAL_FLAT_STATES: FrozenSet[str] = frozenset({"closed", "skipped", "rejected"})

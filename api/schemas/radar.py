@@ -70,6 +70,8 @@ class RunnerStatus(BaseModel):
     last_tick_time: Optional[str] = None
     updated_at: Optional[str] = None
     runner_state: RunnerState = "stopped"
+    websocket_connected: Optional[bool] = None
+    observation_phase: str = "unknown"
     vwap_qualifier: Optional[VwapQualifierStatus] = None
 
 

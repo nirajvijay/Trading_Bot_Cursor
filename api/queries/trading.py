@@ -48,13 +48,14 @@ def load_snapshot(db_path: Path, session_date: str, *, running: bool) -> dict[st
         date = session_date
         admin_store = AdminConfigStore(config.admin_config_db_path(), read_only=True)
         try:
-            admin_payload = admin_store.load_active_payload()
+            admin_payload = admin_store.load_effective_payload()
             entries_paused = admin_store.read_entries_paused()
         finally:
             admin_store.close()
         require_vwap = True
         if "require_vwap_accept" in run.keys() and run["require_vwap_accept"] is not None:
             require_vwap = bool(run["require_vwap_accept"])
+        arm = store.session_arm(date)
         return snapshot_dict(
             store,
             session_date=date,
@@ -63,7 +64,7 @@ def load_snapshot(db_path: Path, session_date: str, *, running: bool) -> dict[st
             live_orders_enabled=bool(run["live_orders_enabled"]),
             running=running,
             last_error=None if run["last_error"] is None else str(run["last_error"]),
-            accepting_triggers=bool(running and not entries_paused),
+            accepting_triggers=bool(running and not entries_paused and arm and arm["armed"] and arm["run_id"] == run["run_id"]),
             require_vwap_accept=require_vwap,
             daily_loss_cap=float(admin_payload["daily_loss_cap_inr"]),
             per_trade_cap=float(admin_payload["per_trade_risk_cap_inr"]),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -32,7 +32,7 @@ from trading_engine_broker import (
     _is_stop_order,
     parse_timestamp_text,
 )
-from trading_engine_quotes import EntryLimitDecision, bounded_entry_limit
+from trading_engine_quotes import EntryLimitDecision, bounded_entry_limit, age_seconds
 from trading_engine_loss import trade_loss_slice
 from trading_engine_handoff import (
     VWAP_RULE_VERSION,
@@ -411,6 +411,10 @@ class TradingEngineCycle:
         self._postfill_active: set[str] = set()
         self.loss_halt_snapshot: dict[str, Any] = {"complete": False, "reason": "not_calculated"}
         self._loss_check_active = False
+        self.draining = False
+        self._manual_overrides: dict[str, Any] = {}
+        self.last_broker_sync_at: Optional[str] = None
+        self.recovery_unresolved = True
 
     def total_capital(self) -> float:
         return self.store.get_total_capital(self.run_id)
@@ -575,6 +579,8 @@ class TradingEngineCycle:
         return bool(self._pending_vwap)
 
     def ingest_triggers(self) -> None:
+        if self._entry_mode() != "AUTOPILOT":
+            return
         candidates = fetch_triggered_since(self.live_db, created_at_gte=self.started_at)
         for candidate in candidates:
             self._handle_candidate(candidate)
@@ -711,6 +717,8 @@ class TradingEngineCycle:
         *,
         per_trade_risk_cap: float = PER_TRADE_RISK_CAP,
     ) -> None:
+        if self._entry_mode() == "MANUAL" and not self._manual_overrides:
+            return
         if self._new_entry_block_reason() is not None:
             return
         snapshot = self._admin_store.capture_snapshot(
@@ -796,6 +804,26 @@ class TradingEngineCycle:
             self.store.append_event(trade.trade_id, status, payload={"reason": decision.reason})
             return
 
+        requested_qty = self._manual_overrides.get("qty_override")
+        requested_stop = self._manual_overrides.get("stop_tighten")
+        selected_qty = decision.qty
+        selected_stop = decision.initial_stop
+        if requested_qty is not None:
+            if isinstance(requested_qty, bool) or not isinstance(requested_qty, int) or not 0 < requested_qty <= decision.qty:
+                self._reject_entry_gate(trade, "quantity_override_exceeds_risk_size")
+                return
+            selected_qty = requested_qty
+        if requested_stop is not None:
+            if not isinstance(requested_stop, (int, float)) or not math.isfinite(requested_stop):
+                self._reject_entry_gate(trade, "stop_override_invalid")
+                return
+            valid = (decision.initial_stop <= requested_stop < candidate.trigger_price if candidate.direction == "UP"
+                     else candidate.trigger_price < requested_stop <= decision.initial_stop)
+            if not valid or abs(_align_stop(requested_stop, candidate.tick_size) - requested_stop) > 1e-9:
+                self._reject_entry_gate(trade, "stop_override_must_tighten_on_tick")
+                return
+            selected_stop = requested_stop
+
         if isinstance(self.broker, FakeBroker) and candidate.last_price:
             self.broker.last_prices.setdefault(candidate.tradingsymbol, candidate.last_price)
         elif isinstance(self.broker, FakeBroker):
@@ -809,16 +837,16 @@ class TradingEngineCycle:
         )
         trade = self.store.update_trade(
             trade.trade_id,
-            qty=decision.qty,
-            intended_qty=decision.qty,
+            qty=selected_qty,
+            intended_qty=selected_qty,
             filled_qty=0,
             exited_qty=0,
-            remaining_entry_qty=decision.qty,
+            remaining_entry_qty=selected_qty,
             remaining_position_qty=0,
             protected_qty=0,
             qty_model_version=1,
             initial_stop=decision.initial_stop,
-            current_stop=decision.initial_stop,
+            current_stop=selected_stop,
             notional=decision.notional,
             margin_blocked=decision.margin_blocked,
             status="entry_submitting",
@@ -827,10 +855,65 @@ class TradingEngineCycle:
             charge_bps=stamp_charge,
             slippage_bps=stamp_slip,
             risk_limits_json=json.dumps(admin_payload, sort_keys=True),
+            original_setup_json=json.dumps({"machine_setup":asdict(candidate),
+                "initial_sizing":asdict(decision),"config":admin_payload,
+                "config_version_id":snapshot.admin_config_version_id,
+                "entry_mode":self._entry_mode(),"owner_overrides":dict(self._manual_overrides),
+                "trail_profile":"staged-r-v1"}, sort_keys=True),
             **snapshot.provenance_fields(),
         )
         self.store.append_event(trade.trade_id, "entry_submitting")
         self._submit_entry(trade)
+
+    def _entry_mode(self) -> str:
+        arm = self.store.session_arm(self.session_date)
+        return str(arm["entry_mode"]) if arm else "MANUAL"
+
+    def _entry_arm_block_reason(self) -> Optional[str]:
+        arm = self.store.session_arm(self.session_date)
+        if not arm or not arm["armed"]:
+            return "session_disarmed"
+        if arm["run_id"] != self.run_id:
+            return "restart_rearm_required"
+        if arm["execution_mode"] != ("LIVE" if self.live_orders_enabled else "PAPER"):
+            return "execution_mode_mismatch"
+        if self.draining:
+            return "engine_draining"
+        return None
+
+    def _arming_readiness(self) -> bool:
+        from api.services.observation_runner import fetch_checklist_summary
+        return fetch_checklist_summary(self.session_date).get("overall_status") == "ok"
+
+    def approve_setup(self, payload: dict, *, actor: str, first: bool) -> dict:
+        setup_id = str(payload.get("setup_id") or "")
+        rule = str(payload.get("continuation_rule_version") or "")
+        trade = self.store.find_trade(setup_id, rule) if rule else None
+        if first:
+            if self._entry_mode() != "MANUAL":
+                raise ValueError("manual_mode_required")
+            block = self._new_entry_block_reason()
+            if block:
+                raise ValueError(block)
+            if trade:
+                raise ValueError("setup_already_processed")
+            candidates = [c for c in fetch_triggered_since(self.live_db, created_at_gte=self.started_at)
+                          if c.setup_id == setup_id and c.continuation_rule_version == rule and c.session_date == self.session_date]
+            if len(candidates) != 1:
+                raise ValueError("setup_missing_or_ambiguous")
+            self._manual_overrides = payload
+            try:
+                self._apply_vwap_gate(candidates[0], first_seen=self._monotonic(), deadline_expired=True)
+            finally:
+                self._manual_overrides = {}
+            trade = self.store.find_trade(setup_id, rule)
+        if trade is None:
+            return {"state":"unknown_needs_reconcile", "reason":"entry_result_unavailable"}
+        if trade.status in {"skipped","rejected"}:
+            return {"state":"failed", "trade_id":trade.trade_id,"reason":trade.skip_reason or trade.reject_reason}
+        if trade.filled_qty > 0 and trade.remaining_entry_qty == 0 and trade.protected_qty == trade.remaining_position_qty:
+            return {"state":"succeeded", "trade_id":trade.trade_id,"broker_order_ids":[trade.entry_order_id,trade.sl_order_id]}
+        return {"state":"awaiting_broker", "trade_id":trade.trade_id,"broker_order_ids":[trade.entry_order_id]}
 
     def _has_entry_intent(self, trade_id: str) -> bool:
         return any(str(r["action"]) == "entry_intent" for r in self.store.list_events(trade_id))
@@ -1646,6 +1729,7 @@ class TradingEngineCycle:
         complete = True
         realised_complete = True
         missing = []
+        mark_ages = []
         for trade in trades:
             if trade.filled_qty <= 0:
                 continue
@@ -1659,6 +1743,10 @@ class TradingEngineCycle:
             except Exception:
                 quote = None
             value = trade_loss_slice(trade, quote, self._now_ist(), float(cfg["max_quote_age_seconds"]))
+            if quote:
+                age = age_seconds(self._now_ist(),quote.as_of)
+                if age is not None:
+                    mark_ages.append(age)
             realised += value.realised_net
             unrealised += value.unrealised or 0.
             complete = complete and value.complete
@@ -1677,6 +1765,7 @@ class TradingEngineCycle:
             "net_session_pnl": realised + unrealised if complete else None,
             "daily_cap": cap, "halted": latched or hit, "missing": missing,
             "as_of": self._now_ist().isoformat(), "charges": "stamped_estimate_once"}
+        self.loss_halt_snapshot["mark_age_seconds"] = max(mark_ages) if mark_ages else (0 if complete else None)
         if hit and not latched:
             self._engage_local_entries_lock("daily_loss_breach")
             self.store.append_event(RECOVERY_EVENTS_TRADE_ID, "daily_loss_halt", payload={
@@ -3068,69 +3157,8 @@ class TradingEngineCycle:
             )
 
     def process_commands(self) -> None:
-        for command in self.store.pending_commands():
-            if command.kind == "stop_engine":
-                if command.created_at < self.started_at:
-                    self.store.mark_command_processed(command.command_id)
-                    continue
-                self.consume_new_triggers = False
-                self.store.set_consume_triggers(self.run_id, False)
-                self.store.mark_command_processed(command.command_id)
-                self._cancel_pending_vwap_on_pause()
-                continue
-            if command.kind == "pause_entries":
-                self.consume_new_triggers = False
-                self.store.set_consume_triggers(self.run_id, False)
-                self._cancel_pending_vwap_on_pause()
-                self.store.mark_command_processed(command.command_id)
-                continue
-            if command.kind == "resume_entries":
-                self._clear_local_entries_lock()
-                self.consume_new_triggers = True
-                self.store.set_consume_triggers(self.run_id, True)
-                self.store.mark_command_processed(command.command_id)
-                continue
-            if command.kind == "trail_stop" and command.trade_id:
-                payload = json.loads(command.payload_json or "{}")
-                try:
-                    self.apply_trail(
-                        command.trade_id,
-                        float(payload["new_stop"]),
-                        last_price=payload.get("last_price"),
-                        actor="user",
-                    )
-                except ValueError as exc:
-                    self.store.append_event(
-                        command.trade_id,
-                        "error",
-                        actor="user",
-                        payload={"reason": str(exc)},
-                    )
-                self.store.mark_command_processed(command.command_id)
-                continue
-            if command.kind == "set_auto_trail" and command.trade_id:
-                payload = json.loads(command.payload_json or "{}")
-                try:
-                    self.set_auto_trail(
-                        command.trade_id, enabled=bool(payload.get("enabled"))
-                    )
-                except ValueError as exc:
-                    self.store.append_event(
-                        command.trade_id,
-                        "error",
-                        actor="user",
-                        payload={"reason": str(exc)},
-                    )
-                self.store.mark_command_processed(command.command_id)
-                continue
-            if command.kind == "close_position" and command.trade_id:
-                self.close_position(command.trade_id, actor="user")
-                self.store.mark_command_processed(command.command_id)
-                continue
-            if command.kind == "close_all":
-                self.close_all(actor="user")
-                self.store.mark_command_processed(command.command_id)
-                continue
+        from trading_engine_control import process_commands
+        process_commands(self)
 
     def apply_trail(
         self,
@@ -3405,6 +3433,9 @@ class TradingEngineCycle:
         """Combined gate for new entry risk (pause, calendar, open, cutoff)."""
         if self._entries_paused():
             return "entries_paused"
+        arm_block = self._entry_arm_block_reason()
+        if arm_block:
+            return arm_block
         feed_block = self._feed_entry_block_reason()
         if feed_block is not None:
             return feed_block
@@ -3415,6 +3446,8 @@ class TradingEngineCycle:
         if admin_gate is not None:
             return admin_gate
         sched = self._configured_special_schedule()
+        if sched is None and self._ist_minutes_now() < 9 * 60 + 15:
+            return "session_not_open"
         if sched is not None:
             open_m = parse_hhmm(sched.session_open_ist)
             if open_m is None:
@@ -4029,6 +4062,7 @@ class TradingEngineCycle:
                     raise ValueError("invalid_position_quantity")
         except Exception as exc:  # noqa: BLE001
             return None, None, f"positions_discovery_failed:{exc}"
+        self.last_broker_sync_at = self._now_ist().isoformat()
         return orders, positions, None
 
     def _scan_recovery_state(self) -> dict[str, Any]:
@@ -4329,6 +4363,7 @@ class TradingEngineCycle:
         always re-asserts the entry block (including after Admin resume).
         """
         state = self._scan_recovery_state()
+        self.recovery_unresolved = bool(state["ownership_unresolved"])
         self._surface_recovery_findings(state)
 
         if state["ownership_unresolved"]:
@@ -5867,4 +5902,7 @@ class TradingEngineCycle:
         snap["running"] = self.running
         snap["consume_new_triggers"] = self.consume_new_triggers
         snap["loss_halt"] = self.loss_halt_snapshot
+        snap["broker_sync_at"] = self.last_broker_sync_at
+        snap["recovery_unresolved"] = self.recovery_unresolved
+        snap["draining"] = self.draining
         write_heartbeat(self.status_file, snap)

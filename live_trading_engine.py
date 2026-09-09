@@ -101,6 +101,8 @@ def _make_broker(live: bool, total_capital: float):
             auto_confirm_sl=True,
             remaining_capital=total_capital,
         )
+    if os.environ.get("NIFTY_RADAR_LIVE_WRITES_AUTHORIZED") != "1":
+        raise RuntimeError("LIVE execution is locked; supervised live authorization required")
     from login import _get_kite
 
     kite = _get_kite()
@@ -182,10 +184,12 @@ def run(args: argparse.Namespace) -> int:
     poll_seconds = max(0.2, float(args.poll_seconds))
     last_full: Optional[float] = None
     try:
-        while not _stop_requested(stop_file):
+        drain_requested = False
+        while cycle.running:
             now = time.monotonic()
-            if deadline is not None and now >= deadline:
-                break
+            if (_stop_requested(stop_file) or (deadline is not None and now >= deadline)) and not drain_requested:
+                store.enqueue_command("stop_engine", payload={"run_id":run_id})
+                drain_requested = True
             do_full = last_full is None or (now - last_full) >= poll_seconds
             try:
                 if do_full:

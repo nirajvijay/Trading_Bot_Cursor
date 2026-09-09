@@ -241,6 +241,7 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         admin_config_version_id=row["admin_config_version_id"] if "admin_config_version_id" in keys else None,
         risk_limits_json=row["risk_limits_json"] if "risk_limits_json" in keys else None,
         halt_realised_net=_row_optional_float(row, "halt_realised_net"),
+        original_setup_json=row["original_setup_json"] if "original_setup_json" in keys else None,
         slippage_bps=_row_optional_float(row, "slippage_bps"),
         exit_confirmed_qty=_row_optional_int(row, "exit_confirmed_qty"),
         exit_est_qty=_row_optional_int(row, "exit_est_qty"),
@@ -319,6 +320,21 @@ class TradingEngineStore:
             + CREATE_COMMANDS_SQL
             + CREATE_ORDER_LINKS_SQL
         )
+        for col, ddl in (("state", "TEXT NOT NULL DEFAULT 'queued'"),
+                         ("client_command_id", "TEXT"), ("actor", "TEXT"),
+                         ("updated_at", "TEXT"), ("result_json", "TEXT")):
+            self._ensure_column("engine_commands", col, ddl)
+        self._conn.executescript("""
+            CREATE UNIQUE INDEX IF NOT EXISTS engine_command_client_id
+            ON engine_commands(client_command_id) WHERE client_command_id IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS session_arms (
+                session_date TEXT PRIMARY KEY, arm_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                execution_mode TEXT NOT NULL, entry_mode TEXT NOT NULL, armed INTEGER NOT NULL,
+                config_version_id TEXT NOT NULL, actor TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+        """)
+        self._conn.execute("UPDATE engine_commands SET state='succeeded' WHERE processed_at IS NOT NULL AND state='queued'")
+        self._conn.commit()
         self._ensure_column("trades", "auto_trail_enabled", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("trades", "auto_trail_ticks", "INTEGER")
         self._ensure_column("trades", "auto_trail_extreme", "REAL")
@@ -329,6 +345,7 @@ class TradingEngineStore:
             ("entry_limit_price", "REAL"),
             ("risk_limits_json", "TEXT"),
             ("halt_realised_net", "REAL"),
+            ("original_setup_json", "TEXT"),
             ("admin_config_version_id", "TEXT"),
             ("risk_cap_used_inr", "REAL"),
             ("daily_loss_cap_inr", "REAL"),
@@ -372,6 +389,15 @@ class TradingEngineStore:
         ):
             self._ensure_column("trade_order_links", col, ddl)
         self._migrate_qty_model_v1()
+        self._conn.executescript("""
+            CREATE TRIGGER IF NOT EXISTS immutable_original_setup
+            BEFORE UPDATE OF original_setup_json ON trades
+            WHEN OLD.original_setup_json IS NOT NULL
+                 AND NEW.original_setup_json IS NOT OLD.original_setup_json
+            BEGIN
+                SELECT RAISE(ABORT, 'original_setup_is_immutable');
+            END;
+        """)
         # Closed rows: align exited_qty with cumulative entry fills (flat). Do not invent for open.
         self._conn.execute(
             """
@@ -695,14 +721,30 @@ class TradingEngineStore:
         *,
         trade_id: Optional[str] = None,
         payload: Optional[Mapping[str, Any]] = None,
+        client_command_id: Optional[str] = None,
+        actor: str = "owner",
     ) -> int:
-        cur = self._conn.execute(
+        encoded = json.dumps(payload or {}, sort_keys=True)
+        if client_command_id:
+            row = self._conn.execute("SELECT * FROM engine_commands WHERE client_command_id=?", (client_command_id,)).fetchone()
+            if row:
+                if row["kind"] != kind or row["trade_id"] != trade_id or row["payload_json"] != encoded:
+                    raise ValueError("idempotency_key_conflict")
+                return int(row["command_id"])
+        try:
+            cur = self._conn.execute(
             """
-            INSERT INTO engine_commands (kind, trade_id, payload_json, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO engine_commands (kind, trade_id, payload_json, created_at, client_command_id, actor, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (kind, trade_id, json.dumps(payload or {}), _utc_now()),
-        )
+            (kind, trade_id, encoded, _utc_now(), client_command_id, actor, _utc_now()),
+            )
+        except sqlite3.IntegrityError:
+            self._conn.rollback()
+            if client_command_id:
+                return self.enqueue_command(kind, trade_id=trade_id, payload=payload,
+                    client_command_id=client_command_id, actor=actor)
+            raise
         self._conn.commit()
         return int(cur.lastrowid)
 
@@ -727,10 +769,51 @@ class TradingEngineStore:
 
     def mark_command_processed(self, command_id: int) -> None:
         self._conn.execute(
-            "UPDATE engine_commands SET processed_at = ? WHERE command_id = ?",
+            "UPDATE engine_commands SET processed_at = ?, state='succeeded' WHERE command_id = ?",
             (_utc_now(), command_id),
         )
         self._conn.commit()
+
+    def command_record(self, command_id: int) -> Optional[dict]:
+        row = self._conn.execute("SELECT * FROM engine_commands WHERE command_id=?", (command_id,)).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), "payload": json.loads(row["payload_json"] or "{}"),
+                "result": json.loads(row["result_json"] or "{}")}
+
+    def command_records(self, limit: int = 100) -> List[dict]:
+        rows = self._conn.execute("SELECT command_id FROM engine_commands ORDER BY command_id DESC LIMIT ?", (limit,)).fetchall()
+        return [self.command_record(row["command_id"]) for row in rows]
+
+    def set_command_state(self, command_id: int, state: str, result: Optional[dict] = None) -> None:
+        if state not in {"queued", "running", "awaiting_broker", "succeeded", "failed", "cancelled", "unknown_needs_reconcile"}:
+            raise ValueError("invalid_command_state")
+        terminal = state in {"succeeded", "failed", "cancelled"}
+        self._conn.execute("UPDATE engine_commands SET state=?, result_json=?, updated_at=?, processed_at=? WHERE command_id=?",
+            (state, json.dumps(result or {}, sort_keys=True), _utc_now(), _utc_now() if terminal else None, command_id))
+        self._conn.commit()
+
+    def session_arm(self, session_date: str) -> Optional[dict]:
+        row = self._conn.execute("SELECT * FROM session_arms WHERE session_date=?", (session_date,)).fetchone()
+        return dict(row) if row else None
+
+    def save_session_arm(self, *, session_date: str, run_id: str, execution_mode: str,
+                         entry_mode: str, config_version_id: str, actor: str) -> dict:
+        if execution_mode not in {"PAPER", "LIVE"} or entry_mode not in {"MANUAL", "AUTOPILOT"}:
+            raise ValueError("invalid_session_mode")
+        self._conn.execute("""INSERT INTO session_arms VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(session_date) DO UPDATE SET arm_id=excluded.arm_id, run_id=excluded.run_id,
+            execution_mode=excluded.execution_mode, entry_mode=excluded.entry_mode, armed=1,
+            config_version_id=excluded.config_version_id, actor=excluded.actor, updated_at=excluded.updated_at""",
+            (session_date, uuid.uuid4().hex, run_id, execution_mode, entry_mode, config_version_id, actor, _utc_now()))
+        self._conn.commit()
+        self.append_event("__control__", "session_armed", actor=actor, payload=self.session_arm(session_date))
+        return self.session_arm(session_date)
+
+    def disarm_session(self, session_date: str, *, actor: str = "owner") -> None:
+        self._conn.execute("UPDATE session_arms SET armed=0, updated_at=? WHERE session_date=?", (_utc_now(), session_date))
+        self._conn.commit()
+        self.append_event("__control__", "session_disarmed", actor=actor, payload={"session_date":session_date})
 
     def ack_pending_commands(self, kind: str) -> int:
         cur = self._conn.execute(

@@ -10,6 +10,12 @@ from trading_engine_broker import FakeBroker
 
 
 class TradingEngineCycle(RealCycle):
+    def _entry_mode(self):
+        return "AUTOPILOT"
+
+    def _entry_arm_block_reason(self):
+        return None
+
     def enforce_daily_loss(self):
         # Historical unit fixtures do not supply liquidation quotes / cost profiles.
         # WP110 exercises complete daily-loss accounting with the real cycle.

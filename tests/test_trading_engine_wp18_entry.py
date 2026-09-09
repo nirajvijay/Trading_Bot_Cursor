@@ -67,6 +67,8 @@ class EntryIntegrationTests(unittest.TestCase):
         self.broker = FakeBroker(last_prices={"AAA":110})
         self.broker.touch_quotes["AAA"] = TouchQuote(110,110,NOW.isoformat())
         self.run = self.store.start_run(session_date="2026-08-17", live_orders_enabled=False, pid=1)
+        self.store.save_session_arm(session_date="2026-08-17", run_id=self.run,
+            execution_mode="PAPER", entry_mode="MANUAL", config_version_id="fixture", actor="test")
         self.cycle = self.make_cycle()
         self.trade = self.store.insert_candidate(setup_id="one", continuation_rule_version="v1",
             session_date="2026-08-17", symbol="AAA", instrument_token=1, direction="UP",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,32 @@ class TradingTrailRequest(BaseModel):
 
 class TradingAutoTrailRequest(BaseModel):
     enabled: bool
+
+
+class TradingCommandRequest(BaseModel):
+    model_config = {"extra":"forbid", "allow_inf_nan":False}
+    client_command_id: str = Field(..., min_length=8, max_length=128)
+    kind: Literal["arm_session","approve_entry","pause_entries","disarm","stop_engine",
+                  "switch_manual","close_position","close_all","trail_stop","set_auto_trail","reconcile_now"]
+    trade_id: Optional[str] = None
+    setup_id: Optional[str] = None
+    continuation_rule_version: Optional[str] = None
+    execution_mode: Literal["PAPER","LIVE"] = "PAPER"
+    entry_mode: Literal["MANUAL","AUTOPILOT"] = "MANUAL"
+    live_confirmation: bool = False
+    config_version_id: Optional[str] = None
+    qty_override: Optional[int] = Field(None, strict=True, gt=0)
+    stop_tighten: Optional[float] = Field(None, gt=0)
+    new_stop: Optional[float] = Field(None, gt=0)
+    enabled: Optional[bool] = None
+
+
+class TradingPreviewRequest(BaseModel):
+    model_config = {"extra":"forbid", "allow_inf_nan":False}
+    setup_id: str
+    continuation_rule_version: str
+    qty_override: Optional[int] = Field(None, strict=True, gt=0)
+    stop_tighten: Optional[float] = Field(None, gt=0)
 
 
 class TradingStatusResponse(BaseModel):

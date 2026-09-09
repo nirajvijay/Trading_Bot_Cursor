@@ -70,3 +70,23 @@ Kite full quotes supply `timestamp` (quote packet exchange time) and buy/sell de
 LTP/last-trade time is not the quote freshness source:
 https://kite.trade/docs/connect/v3/market-quotes/
 LIMIT order payload contract: https://kite.trade/docs/connect/v3/orders/
+
+## Stage2 control-plane development checkpoint
+
+Implemented durable idempotent commands and explicit SessionArm, MANUAL preview /
+approval through the same execution path as AUTOPILOT, Saved/Effective HTTP fields,
+run-bound restart locks, broker-confirmed close/trail outcomes, and Stop Engine
+drain semantics. LIVE starts/arming remain locked unless independently authorized
+in the server environment; that authorization has not been enabled.
+
+Original setup snapshots are write-once at the database layer. Mode changes to
+AUTOPILOT require flat/reconciled state. Safety switch to MANUAL leaves entries
+paused. Observation can connect from 09:00 on the current regular trading day;
+connection-without-ticks is reported separately from disconnection. Holidays,
+session-date mismatch and unconfigured special sessions do not unlock observation.
+
+Local `.venv/bin/python -m unittest discover -s tests -q`: **740 tests in 7.339s,
+OK**. Fault-injection tests intentionally print simulated failures. This does not
+prove deployed behavior. Stage2 is not yet an overall completion claim: persistent
+PAPER runtime, remaining recovery/control integration, frontend binding and
+end-to-end sessions still require implementation/verification.

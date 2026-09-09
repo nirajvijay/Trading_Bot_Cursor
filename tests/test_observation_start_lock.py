@@ -62,6 +62,7 @@ class ObservationStartLockTests(unittest.TestCase):
                 "api.services.observation_runner.compute_readiness",
                 return_value={
                     "checklist_ok": True,
+                    "can_start": True,
                     "market_open": True,
                     "runner_running": False,
                     "reason": "",

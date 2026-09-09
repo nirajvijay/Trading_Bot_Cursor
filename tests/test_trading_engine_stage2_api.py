@@ -1,0 +1,66 @@
+import unittest
+from unittest.mock import patch
+from api import config
+from api.admin_config.store import AdminConfigStore
+from trading_engine_store import TradingEngineStore
+from tests import test_trading_engine_api as fixture
+
+
+class ControlApiTests(unittest.TestCase):
+    setUp = fixture.TradingEngineApiTests.setUp
+    tearDown = fixture.TradingEngineApiTests.tearDown
+
+    def test_command_returns_acceptance_and_deduplicates(self):
+        body={"kind":"pause_entries","client_command_id":"one-operation"}
+        first=self.client.post("/api/v1/trading-engine/commands",json=body)
+        second=self.client.post("/api/v1/trading-engine/commands",json=body)
+        self.assertEqual(first.status_code,202,first.text)
+        self.assertEqual(first.json()["state"],"queued")
+        self.assertEqual(first.json()["command_id"],second.json()["command_id"])
+        read=self.client.get(f'/api/v1/trading-engine/commands/{first.json()["command_id"]}')
+        self.assertEqual(read.json()["state"],"queued")
+        conflict=self.client.post("/api/v1/trading-engine/commands",json={**body,"kind":"disarm"})
+        self.assertEqual(conflict.status_code,409)
+
+    def test_live_arm_rejected_without_authorization(self):
+        response=self.client.post("/api/v1/trading-engine/commands",json={
+            "kind":"arm_session","client_command_id":"live-attempt","execution_mode":"LIVE",
+            "live_confirmation":True,"config_version_id":"v1"})
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(response.json()["detail"],"live_execution_not_authorized")
+
+    def test_approval_requires_running_engine_and_whole_quantity(self):
+        body={"kind":"approve_entry","client_command_id":"approve-1","setup_id":"s","continuation_rule_version":"v1"}
+        response=self.client.post("/api/v1/trading-engine/commands",json=body)
+        self.assertEqual(response.status_code,409)
+        response=self.client.post("/api/v1/trading-engine/commands",json={**body,"qty_override":1.5})
+        self.assertEqual(response.status_code,422)
+
+    def test_control_without_fresh_heartbeat_never_reports_healthy_pnl(self):
+        response=self.client.get("/api/v1/trading-engine/control")
+        self.assertEqual(response.status_code,200,response.text)
+        strip=response.json()["strip"]
+        self.assertIsNone(strip["open_pnl"])
+        self.assertIsNone(strip["sync_age_seconds"])
+        self.assertEqual(strip["entry_permission"],"disarmed")
+
+    def test_admin_exposes_effective_and_preserves_omitted_keys(self):
+        admin=AdminConfigStore(config.admin_config_db_path())
+        admin.update_config({"daily_loss_cap_inr":2995,"allocated_capital_inr":200000},actor="test")
+        admin.arm_effective_config(actor="test")
+        admin.close()
+        old=self.client.get("/api/v1/admin/config").json()
+        request={"values":{k:old["values"][k] for k in (
+            "per_trade_risk_cap_inr","limited_per_trade_risk_cap_inr","daily_loss_cap_inr",
+            "vwap_accept_gap_exclusive_max","vwap_limited_gap_inclusive_max")},
+            "expected_version_id":old["version_id"]}
+        response=self.client.patch("/api/v1/admin/config",json=request)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()["values"]["allocated_capital_inr"],200000)
+        self.assertEqual(response.json()["effective_values"]["daily_loss_cap_inr"],2995)
+        request["values"]["allocated_capital_inr"]=300000
+        request["expected_version_id"]=response.json()["version_id"]
+        changed=self.client.patch("/api/v1/admin/config",json=request)
+        self.assertEqual(changed.status_code,200,changed.text)
+        self.assertEqual(changed.json()["effective_values"]["allocated_capital_inr"],200000)
+        self.assertIn("allocated_capital_inr",changed.json()["pending_next_arm"])

@@ -75,5 +75,7 @@ def read_runner_status(
         last_tick_time=data.get("last_tick_time"),
         updated_at=data.get("updated_at"),
         runner_state=state,
+        websocket_connected=data.get("websocket_connected") if state == "running" else None,
+        observation_phase=data.get("observation_phase", "unknown") if state == "running" else "stopped",
         vwap_qualifier=vwap,
     )

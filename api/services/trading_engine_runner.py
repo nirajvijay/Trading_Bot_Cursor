@@ -122,6 +122,8 @@ def start_trading_engine(
     if is_engine_running(session_date=date):
         return False, "Trading engine is already running", None
     live_wanted = bool(confirm_live_orders)
+    if live_wanted and os.environ.get("NIFTY_RADAR_LIVE_WRITES_AUTHORIZED") != "1":
+        return False, "LIVE execution is locked; supervised live authorization required", None
 
     try:
         lock_file = acquire_start_lock(date)
@@ -181,9 +183,7 @@ def _ack_pending_stop_engine() -> None:
 
 
 def stop_trading_engine() -> Tuple[bool, str]:
-    path = _stop_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("stop\n", encoding="utf-8")
+    # A normal stop must drain, not terminate the process with live exposure.
     if is_engine_running():
         try:
             from trading_engine_store import TradingEngineStore
@@ -197,4 +197,4 @@ def stop_trading_engine() -> Tuple[bool, str]:
                     store.close()
         except OSError:
             pass
-    return True, "Stop requested. Open positions are not flattened."
+    return True, "Drain requested. Entries disarm; protection continues until flat and reconciled."

@@ -146,6 +146,10 @@ class TickReceiver:
         return (time.monotonic() - last_tick) > threshold
 
     @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
     def last_tick_at(self) -> Optional[datetime]:
         return self._last_tick_at
 

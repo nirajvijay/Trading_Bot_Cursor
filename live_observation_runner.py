@@ -737,8 +737,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             if args.status_file is not None:
                 last_tick = receiver.last_tick_at
-                if last_tick is None:
+                if not receiver.connected:
                     feed_status = "DISCONNECTED"
+                elif last_tick is None:
+                    feed_status = "WAITING"
                 elif receiver.is_feed_stale():
                     feed_status = "STALE"
                 else:
@@ -754,6 +756,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     subscribed_tokens=len(tokens),
                     feed_status=feed_status,
                     last_tick_time=last_tick.isoformat() if last_tick else None,
+                    websocket_connected=receiver.connected,
                     vwap_qualifier=vwap_payload,
                 )
 

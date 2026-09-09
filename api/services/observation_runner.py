@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from api import config
+from nse_trading_calendar import is_nse_trading_day, is_special_session_day
 from api.services.checklist_cache import read_checklist_cache
 from api.services.observation_start_lock import (
     ObservationStartBusy,
@@ -65,10 +66,21 @@ def _today_ist() -> str:
 def is_market_open(now: Optional[datetime] = None) -> bool:
     """Return True during NSE cash session hours (weekdays 09:15–15:30 IST)."""
     dt = _normalize_ist(now or datetime.now(IST))
-    if dt.weekday() >= 5:
+    if not is_nse_trading_day(dt.date()) or is_special_session_day(dt.date()):
         return False
     minutes = dt.hour * 60 + dt.minute
     return SESSION_OPEN_MINUTE <= minutes < SESSION_CLOSE_MINUTE
+
+
+def observation_start_allowed(session_date: str, now: Optional[datetime] = None) -> bool:
+    """Connect from 09:00 on the current regular session; never imply live ticks."""
+    dt = _normalize_ist(now or datetime.now(IST))
+    return (
+        session_date == dt.date().isoformat()
+        and is_nse_trading_day(dt.date())
+        and not is_special_session_day(dt.date())
+        and 9 * 60 <= dt.hour * 60 + dt.minute < SESSION_CLOSE_MINUTE
+    )
 
 
 def is_status_heartbeat_fresh(
@@ -168,11 +180,13 @@ def fetch_checklist_summary(session_date: Optional[str] = None) -> dict:
     }
 
 
-def compute_readiness(session_date: Optional[str] = None) -> dict:
-    date = session_date or _today_ist()
+def compute_readiness(session_date: Optional[str] = None, *, now: Optional[datetime] = None) -> dict:
+    instant = _normalize_ist(now or datetime.now(IST))
+    date = session_date or instant.date().isoformat()
     checklist = fetch_checklist_summary(date)
     checklist_ok = checklist["overall_status"] == "ok"
-    market_open = is_market_open()
+    market_open = is_market_open(instant)
+    start_window = observation_start_allowed(date, instant)
     runner_running = is_runner_running(session_date=date)
 
     if runner_running:
@@ -181,22 +195,23 @@ def compute_readiness(session_date: Optional[str] = None) -> dict:
     elif not checklist_ok:
         reason = str(checklist.get("reason_summary") or "Complete Pre-Market Checklist first")
         can_start = False
-    elif not market_open:
-        reason = "Market closed — available 09:15–15:30 IST on weekdays"
+    elif not start_window:
+        reason = "Market closed — observation starts 09:00–15:30 IST on the current regular trading day"
         can_start = False
     else:
-        reason = ""
+        reason = "" if market_open else "Ready to connect; waiting for regular market data at 09:15 IST"
         can_start = True
 
     return {
         "checklist_ok": checklist_ok,
         "checklist_status": checklist["overall_status"],
         "market_open": market_open,
+        "observation_start_window": start_window,
         "runner_running": runner_running,
         "can_start": can_start,
         "reason": reason,
         "session_date": checklist["session_date"],
-        "expected_stop_at": expected_stop_at_iso() if market_open else None,
+        "expected_stop_at": expected_stop_at_iso(instant) if start_window else None,
     }
 
 
@@ -213,7 +228,7 @@ def start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, 
         return False, readiness["reason"], None
     if not readiness["checklist_ok"]:
         return False, readiness["reason"], None
-    if not readiness["market_open"]:
+    if not readiness["can_start"]:
         return False, readiness["reason"], None
 
     try:
