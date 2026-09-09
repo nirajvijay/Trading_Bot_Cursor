@@ -90,3 +90,23 @@ OK**. Fault-injection tests intentionally print simulated failures. This does no
 prove deployed behavior. Stage2 is not yet an overall completion claim: persistent
 PAPER runtime, remaining recovery/control integration, frontend binding and
 end-to-end sessions still require implementation/verification.
+
+## Durable PAPER runtime checkpoint
+
+The launcher now supplies a separate persistent PAPER account beside the trading
+database. Local orders, fills, stop state and write counts survive restart; a
+single-writer lease prevents concurrent simulator processes. The quote provider
+uses Kite read-only full quotes, while place/modify/cancel stay local. Missing or
+stale quotes do not fabricate fills. A stop LIMIT can trigger and remain unfilled
+through a gap. Trailing marks refresh from liquidation touch, not the last fill.
+
+The simulator assumes the full executable remainder fills at touch; it does not
+model depth, queue priority or guarantee live outcomes. Nine dedicated tests cover
+durability, gap behavior, missing quotes, lost-stop acceptance, read-only broker
+boundary and real-cycle manual approval / protection / restart / re-arm / close.
+Full isolated discovery: **749 tests in 7.248s, OK**. No deployment or real orders.
+
+Launcher failure no longer acknowledges pending Stop Engine commands as drained.
+It records error / reconciliation-needed rather than broker-confirmed completion.
+Remaining: frontend/sector integration, broader PAPER session/fault report,
+release/deployment verification and the separately prohibited real LIVE pilot.

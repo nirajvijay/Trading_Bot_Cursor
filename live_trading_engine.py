@@ -2,7 +2,7 @@
 Live trading-engine process. Consumes continuation TRIGGERED rows and
 owns demo (or gated live) trade state. Observation runner is untouched.
 
-Default: FakeBroker, TRADING_ENGINE_LIVE_ORDERS=false. No kite.place_order.
+Default: durable PaperBroker with read-only quotes. No kite.place_order.
 """
 
 from __future__ import annotations
@@ -93,9 +93,16 @@ def next_loop_sleep_seconds(
     return until_full
 
 
-def _make_broker(live: bool, total_capital: float):
-    """PAPER → FakeBroker only; LIVE → KiteBroker with order writes enabled."""
+def _make_broker(live: bool, total_capital: float, *, paper_db: Optional[Path] = None):
+    """Runtime PAPER uses a durable local account; omitted path is isolated-test mode."""
     if not live:
+        if paper_db is not None:
+            from trading_engine_paper import PaperBroker
+            # Lazily obtain only a quote function. PAPER never delegates order methods.
+            def quote(symbol):
+                from login import _get_kite
+                return KiteBroker(_get_kite(), live_orders_enabled=False).touch_quote(symbol)
+            return PaperBroker(paper_db, quote_provider=quote, total_capital=total_capital)
         return FakeBroker(
             auto_fill_entry=True,
             auto_confirm_sl=True,
@@ -145,7 +152,8 @@ def run(args: argparse.Namespace) -> int:
         require_vwap_accept=require_vwap,
     )
     store.set_consume_triggers(run_id, consume)
-    broker = _make_broker(live, float(args.total_capital))
+    broker = _make_broker(live, float(args.total_capital),
+                          paper_db=trading_db.with_name(trading_db.stem + "_paper_account.db"))
 
     def _feed_age() -> Optional[float]:
         return feed_age_seconds_from_runner_status(
@@ -183,6 +191,7 @@ def run(args: argparse.Namespace) -> int:
 
     poll_seconds = max(0.2, float(args.poll_seconds))
     last_full: Optional[float] = None
+    failed = False
     try:
         drain_requested = False
         while cycle.running:
@@ -198,6 +207,7 @@ def run(args: argparse.Namespace) -> int:
                 elif cycle.has_pending_vwap():
                     cycle.poll_pending_vwap()
             except Exception as exc:  # noqa: BLE001
+                failed = True
                 cycle.last_error = str(exc)
                 store.set_run_status(run_id, "error", last_error=str(exc))
                 cycle.write_status()
@@ -215,10 +225,17 @@ def run(args: argparse.Namespace) -> int:
         cycle.running = False
         cycle.consume_new_triggers = False
         store.set_consume_triggers(run_id, False)
-        store.ack_pending_commands("stop_engine")
-        store.set_run_status(run_id, "stopped", stopped=True)
+        # Never acknowledge a drain as successful merely because the process exits.
+        if failed:
+            for pending in store.pending_commands():
+                if pending.kind == "stop_engine":
+                    store.set_command_state(pending.command_id, "unknown_needs_reconcile",
+                                            {"reason": "engine_failed_before_confirmed_drain"})
+        store.set_run_status(run_id, "error" if failed else "stopped", stopped=True)
         cycle.write_status()
         cycle.close()
+        if hasattr(broker, "close"):
+            broker.close()
         admin_store.close()
         store.close()
     return 0
