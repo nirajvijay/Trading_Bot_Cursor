@@ -28,6 +28,23 @@ SL_CANCELLED = {"CANCELLED", "REJECTED"}
 KITE_EXCHANGE_TZ = ZoneInfo("Asia/Kolkata")
 
 
+class SlPlaceAcceptedVisibilityUnknown(RuntimeError):
+    """Broker accepted the SL place, but the order row is not yet poll-visible.
+
+    Carries the accepted ``order_id`` so the engine can durably bind attempt identity
+    without inventing OPEN state or placing a second stop.
+    """
+
+    def __init__(
+        self,
+        order_id: str,
+        *,
+        message: str = "sl_place_accepted_visibility_unknown",
+    ) -> None:
+        self.order_id = str(order_id)
+        super().__init__(message)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -258,8 +275,14 @@ class FakeBroker:
     auto_fill_exit: bool = True
     # One-shot: place MARKET then raise (lost-response after broker accept).
     market_place_error: Optional[str] = None
+    # One-shot: place SL then raise (lost-response after broker accept).
+    slm_place_error: Optional[str] = None
     # Delay tag visibility for MARKET orders until reveal_tag() (lost-response tests).
     hide_market_tags: bool = False
+    # Delay tag visibility for SL/SL-M orders until reveal_tag() (lost-SL tests).
+    hide_slm_tags: bool = False
+    # Hide each newly placed SL by order id only (older same-tag stops stay visible).
+    hide_new_slm_orders: bool = False
     _hidden_tags: set = field(default_factory=set)
     # Temporarily omit specific order ids from poll/list visibility (gap tests).
     _hidden_order_ids: set = field(default_factory=set)
@@ -314,22 +337,23 @@ class FakeBroker:
         return
 
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]:
-        if self.hide_market_tags and tag in self._hidden_tags:
-            return [
-                o
-                for o in self.orders.values()
-                if o.tag == tag
-                and o.order_type != "MARKET"
-                and str(o.order_id) not in self._hidden_order_ids
-            ]
-        return [
+        orders = [
             o
             for o in self.orders.values()
             if o.tag == tag and str(o.order_id) not in self._hidden_order_ids
         ]
+        if self.hide_market_tags and tag in self._hidden_tags:
+            orders = [o for o in orders if o.order_type != "MARKET"]
+        if self.hide_slm_tags and tag in self._hidden_tags:
+            orders = [o for o in orders if not _is_stop_order(o)]
+        return orders
 
     def reveal_tag(self, tag: str) -> None:
         self._hidden_tags.discard(tag)
+        # Tag-level hide also suppresses poll_order; reveal restores those ids.
+        for oid, order in list(self.orders.items()):
+            if str(order.tag or "") == str(tag):
+                self._hidden_order_ids.discard(str(oid))
 
     def hide_order(self, order_id: str) -> None:
         """Omit an order from poll/list results until ``reveal_order``."""
@@ -433,6 +457,22 @@ class FakeBroker:
             order_timestamp=self._stamp(),
         )
         self.orders[order.order_id] = order
+        if self.hide_slm_tags:
+            self._hidden_tags.add(tag)
+            # Lost tag visibility must also hide poll-by-id (accepted id retained).
+            self._hidden_order_ids.add(str(order.order_id))
+        if self.hide_new_slm_orders:
+            self._hidden_order_ids.add(str(order.order_id))
+        if self.slm_place_error:
+            msg = str(self.slm_place_error)
+            self.slm_place_error = None
+            # Accept-then-lose-response: preserve order id for durable reconcile.
+            if msg in {
+                "lost_sl_response",
+                "sl_place_accepted_visibility_unknown",
+            }:
+                raise SlPlaceAcceptedVisibilityUnknown(order.order_id, message=msg)
+            raise RuntimeError(msg)
         return order
 
     def modify_slm(
@@ -1022,6 +1062,8 @@ class KiteBroker:
             for o in self.orders_by_tag(tag)
             if _is_stop_order(o) and o.status.upper() not in (SL_CANCELLED | {"COMPLETE"})
         ]
+        if len(existing) > 1:
+            raise RuntimeError("ambiguous_working_stops_for_tag")
         if existing:
             return existing[0]
         equal = _limit_price_for_stop(
@@ -1030,45 +1072,22 @@ class KiteBroker:
             tick_size=tick_size,
             worse_ticks=0,
         )
-        try:
-            result = self._place_sl_limit(
-                tradingsymbol=tradingsymbol,
-                transaction_type=transaction_type,
-                quantity=quantity,
-                trigger_price=equal,
-                price=equal,
-                tag=tag,
-            )
-        except Exception:  # noqa: BLE001
-            worse = _limit_price_for_stop(
-                transaction_type=transaction_type,
-                trigger_price=trigger_price,
-                tick_size=tick_size,
-                worse_ticks=1,
-            )
-            result = self._place_sl_limit(
-                tradingsymbol=tradingsymbol,
-                transaction_type=transaction_type,
-                quantity=quantity,
-                trigger_price=equal,
-                price=worse,
-                tag=tag,
-            )
+        # Single placement only — never retry with a worse limit after an ambiguous
+        # exception (a lost accept could already have created a working stop).
+        result = self._place_sl_limit(
+            tradingsymbol=tradingsymbol,
+            transaction_type=transaction_type,
+            quantity=quantity,
+            trigger_price=equal,
+            price=equal,
+            tag=tag,
+        )
         order_id = result["order_id"] if isinstance(result, dict) else str(result)
         polled = self.poll_order(str(order_id))
         if polled is not None:
             return polled
-        return BrokerOrder(
-            order_id=str(order_id),
-            tag=tag,
-            tradingsymbol=tradingsymbol,
-            transaction_type=transaction_type,
-            order_type="SL",
-            quantity=quantity,
-            status="OPEN",
-            trigger_price=equal,
-            price=equal,
-        )
+        # Accepted id with no poll visibility — keep the id; do not invent OPEN state.
+        raise SlPlaceAcceptedVisibilityUnknown(str(order_id))
 
     def modify_slm(
         self,

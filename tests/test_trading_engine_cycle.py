@@ -316,7 +316,18 @@ class CycleTests(unittest.TestCase):
         )
         cycle2.tick()
         self.assertEqual(broker.market_place_count, first_count)
-        self.assertEqual(len(broker.orders_by_tag(tag)), 2)  # market + slm
+        # Entry remains on trade tag; protective stop uses attempt-specific tag.
+        self.assertEqual(
+            len([o for o in broker.orders_by_tag(tag) if o.order_type == "MARKET"]),
+            1,
+        )
+        self.assertEqual(broker.slm_place_count, 1)
+        stops = [
+            o
+            for o in broker.orders.values()
+            if str(o.order_type).upper() in {"SL", "SL-M"}
+        ]
+        self.assertEqual(len(stops), 1)
         store2.close()
 
     def test_unprotected_blocks_second_and_snapshot_critical(self) -> None:

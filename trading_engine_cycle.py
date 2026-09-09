@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from continuation_features import price_to_ticks, ticks_to_price
@@ -22,7 +23,13 @@ from nse_trading_calendar import (
     parse_hhmm,
     validate_session_gate_hhmm_pair,
 )
-from trading_engine_broker import BrokerPort, FakeBroker, _is_stop_order, parse_timestamp_text
+from trading_engine_broker import (
+    BrokerPort,
+    FakeBroker,
+    SlPlaceAcceptedVisibilityUnknown,
+    _is_stop_order,
+    parse_timestamp_text,
+)
 from trading_engine_handoff import (
     VWAP_RULE_VERSION,
     VwapLookupError,
@@ -1123,6 +1130,51 @@ class TradingEngineCycle:
     def _remaining_position_from_executions(self, filled_qty: int, exited_qty: int) -> int:
         return max(0, int(filled_qty) - int(exited_qty))
 
+    def _partial_exit_pnl_from_values(
+        self,
+        trade: TradeRecord,
+        *,
+        filled_qty: int,
+        exited_qty: int,
+        entry_confirmed: float,
+        entry_est: float,
+        exit_value: float,
+        exit_provisional: bool,
+    ) -> tuple[bool, float, float]:
+        """Shared confirmed-vs-provisional partial-exit P&L.
+
+        Returns ``(provisional, realised_pnl, closed_loss_contribution)``.
+
+        Confirmed P&L/loss is replaced only when both entry and exit accounting are
+        complete and authoritative. Incomplete entry prices (``entry_est > 0``) keep
+        prior confirmed loss/P&L and mark provisional — never slice
+        ``entry_confirmed * exited / filled`` as if entry were fully priced.
+        """
+        provisional = bool(exit_provisional) or float(entry_est or 0) > 0
+        prev_loss = float(getattr(trade, "closed_loss_contribution", 0) or 0)
+        prev_pnl = float(getattr(trade, "realised_pnl", 0) or 0)
+        if (
+            not provisional
+            and exited_qty > 0
+            and filled_qty > 0
+            and float(entry_confirmed or 0) > 0
+            and float(exit_value or 0) > 0
+        ):
+            entry_slice = float(entry_confirmed) * (
+                float(exited_qty) / float(filled_qty)
+            )
+            partial_pnl = realised_pnl_from_values(
+                direction=trade.direction,
+                entry_value=entry_slice,
+                exit_value=float(exit_value),
+                qty=int(exited_qty),
+            )
+            # Price loss only; residual exit costs stay in exited_cost_reservation.
+            partial_loss = abs(partial_pnl) if partial_pnl < 0 else 0.0
+            return False, float(partial_pnl), float(partial_loss)
+        # Missing entry/exit prices must not zero an existing confirmed loss.
+        return True, prev_pnl, prev_loss
+
     def _broker_is_flat(self, trade: TradeRecord) -> bool:
         net = self.broker.net_position_qty(trade.symbol)
         if net is None:
@@ -1452,14 +1504,78 @@ class TradingEngineCycle:
                 trade.trade_id, status="rejected", reject_reason="missing_stop"
             )
             return
+        if self._blocking_exit_in_progress(trade):
+            return
+
         terminal_sl = SL_CANCELLED | SL_FILLED
-        existing = [
-            o
-            for o in self.broker.orders_by_tag(trade.broker_tag)
-            if _is_stop_order(o) and str(o.status).upper() not in terminal_sl
-        ]
-        if existing:
-            order = existing[0]
+
+        # Outstanding unknown attempt: reconcile attempt-scoped candidates first.
+        if self._sl_submit_unresolved(trade.trade_id):
+            outcome = self._reconcile_outstanding_sl_attempt(trade)
+            refreshed = self.store.get_trade(trade.trade_id)
+            trade = refreshed if refreshed is not None else trade
+            pos = int(trade.remaining_position_qty or 0)
+            if pos <= 0:
+                return
+            if outcome == "resolved_working":
+                # Fall through so pending cover can be resized to remaining position.
+                pass
+            elif outcome == "resolved_terminal_open":
+                # Cleared reject/cancel with open exposure — may place replacement.
+                pass
+            else:
+                # still_unresolved / ambiguous — book older owned stop executions only;
+                # do not place or flatten.
+                self._reconcile_owned_prior_stops_during_unresolved(trade)
+                return
+
+        # Known stop id with lost poll visibility — do not place a second stop.
+        if trade.sl_order_id:
+            polled = self.broker.poll_order(str(trade.sl_order_id))
+            if polled is None:
+                self.store.append_event(
+                    trade.trade_id,
+                    "stop_visibility_unknown",
+                    payload={"order_id": str(trade.sl_order_id)},
+                )
+                self._mark_unresolved_sl_submit(
+                    trade, detail="known_stop_visibility_unknown"
+                )
+                return
+            status = str(polled.status).upper()
+            self._apply_sl_order(trade, polled)
+            refreshed = self.store.get_trade(trade.trade_id)
+            trade = refreshed if refreshed is not None else trade
+            pos = int(trade.remaining_position_qty or 0)
+            if pos <= 0:
+                return
+            if self._sl_submit_unresolved(trade.trade_id):
+                self._mark_unresolved_sl_submit(trade, detail="terminal_not_cleared")
+                return
+            if status in SL_FILLED:
+                return
+            if status not in terminal_sl:
+                pending = broker_order_pending_qty(polled)
+                if pending == pos:
+                    return
+                # Pending cover mismatch — fall through to unique working modify.
+            # CANCELLED/REJECTED cleared — fall through to replacement place.
+
+        # Adopt a unique working stop (never pick arbitrarily among multiples).
+        working = self._working_stops_for_trade(trade, terminal_sl=terminal_sl)
+        if len(working) > 1:
+            self.store.append_event(
+                trade.trade_id,
+                "sl_reconcile_ambiguous",
+                payload={
+                    "detail": "multiple_working_stops",
+                    "order_ids": [str(o.order_id) for o in working],
+                },
+            )
+            self._mark_unresolved_sl_submit(trade, detail="multiple_working_stops")
+            return
+        if len(working) == 1:
+            order = working[0]
             pending = broker_order_pending_qty(order)
             if pending != pos:
                 try:
@@ -1481,7 +1597,6 @@ class TradingEngineCycle:
                         },
                     )
                 except Exception as exc:  # noqa: BLE001
-                    # Ambiguous modify: reconcile before another write.
                     self.store.append_event(
                         trade.trade_id,
                         "sl_modify_ambiguous",
@@ -1493,26 +1608,355 @@ class TradingEngineCycle:
                     return
             self._apply_sl_order(trade, order)
             return
-        order = self.broker.place_slm(
-            tradingsymbol=trade.symbol,
-            transaction_type=_stop_side(trade.direction),
-            quantity=pos,
-            trigger_price=trade.current_stop,
-            tag=trade.broker_tag,
-            tick_size=trade.tick_size,
+
+        if self._sl_submit_unresolved(trade.trade_id):
+            self._mark_unresolved_sl_submit(
+                trade, detail="empty_tag_not_absence"
+            )
+            return
+
+        # Persist intent before any protective-stop broker write.
+        attempt_id = uuid4().hex
+        submitted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        attempt_tag = self._sl_attempt_tag(trade, attempt_id)
+        stop_side = _stop_side(trade.direction)
+        self.store.append_event(
+            trade.trade_id,
+            "sl_submit_attempt",
+            payload={
+                "attempt_id": attempt_id,
+                "requested_qty": pos,
+                "trigger_price": float(trade.current_stop),
+                "symbol": trade.symbol,
+                "transaction_type": stop_side,
+                "tag": attempt_tag,
+                "trade_tag": trade.broker_tag,
+                "submitted_at": submitted_at,
+                "protection_deadline_at": trade.protection_deadline_at,
+            },
         )
+        pending_fields: dict[str, Any] = {
+            "status": "protection_pending",
+            "protected_qty": 0,
+            "qty_model_version": 1,
+        }
+        pending_fields.update(
+            self._protection_state_fields(trade, next_status="protection_pending")
+        )
+        self.store.update_trade(trade.trade_id, **pending_fields)
+        try:
+            order = self.broker.place_slm(
+                tradingsymbol=trade.symbol,
+                transaction_type=stop_side,
+                quantity=pos,
+                trigger_price=trade.current_stop,
+                tag=attempt_tag,
+                tick_size=trade.tick_size,
+            )
+        except SlPlaceAcceptedVisibilityUnknown as exc:
+            accepted_id = str(exc.order_id)
+            self.store.append_event(
+                trade.trade_id,
+                "sl_submission_unknown",
+                payload={
+                    "error": str(exc),
+                    "attempt_id": attempt_id,
+                    "order_id": accepted_id,
+                    "tag": attempt_tag,
+                },
+            )
+            self.store.update_trade(
+                trade.trade_id,
+                status="reconciliation_required",
+                protected_qty=0,
+                sl_order_id=accepted_id,
+            )
+            self.store.append_event(
+                trade.trade_id,
+                "protection_emergency_unresolved",
+                payload={
+                    "reason": "sl_submission_unknown",
+                    "attempt_id": attempt_id,
+                    "order_id": accepted_id,
+                },
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.store.append_event(
+                trade.trade_id,
+                "sl_submission_unknown",
+                payload={"error": str(exc), "attempt_id": attempt_id, "tag": attempt_tag},
+            )
+            self.store.update_trade(
+                trade.trade_id,
+                status="reconciliation_required",
+                protected_qty=0,
+            )
+            self.store.append_event(
+                trade.trade_id,
+                "protection_emergency_unresolved",
+                payload={"reason": "sl_submission_unknown", "attempt_id": attempt_id},
+            )
+            return
         self.store.append_event(
             trade.trade_id,
             "sl_placed",
-            payload={"order_id": order.order_id, "requested_qty": pos},
+            payload={
+                "order_id": order.order_id,
+                "requested_qty": pos,
+                "attempt_id": attempt_id,
+                "tag": attempt_tag,
+            },
         )
+        refreshed = self.store.get_trade(trade.trade_id)
+        trade = refreshed if refreshed is not None else trade
+        self._clear_sl_submit_attempt(
+            trade,
+            outcome="broker_accepted",
+            order_id=str(order.order_id),
+            attempt_id=attempt_id,
+        )
+        refreshed = self.store.get_trade(trade.trade_id)
+        trade = refreshed if refreshed is not None else trade
         self._apply_sl_order(trade, order)
 
     def _place_stop(self, trade: TradeRecord) -> None:
         """Backward-compatible alias: protect current remaining position."""
         self._ensure_protection(trade)
 
+    def _stop_order_engine_owned(
+        self,
+        trade: TradeRecord,
+        order: Any,
+        *,
+        order_attempt_id: Optional[str],
+    ) -> bool:
+        """True when this stop is positively attributed to the trade (link or attempt)."""
+        oid = str(order.order_id)
+        if self._order_owned_by_other_trade(trade, oid):
+            return False
+        link = self.store.get_order_link(oid)
+        if link is not None and str(link["trade_id"]) == str(trade.trade_id):
+            return True
+        if order_attempt_id is not None and str(order_attempt_id).strip():
+            return True
+        tag = str(getattr(order, "tag", "") or "").strip()
+        if not tag:
+            return False
+        for row in self.store.list_events(trade.trade_id):
+            if str(row["action"]) not in {
+                "sl_submit_attempt",
+                "sl_submission_unknown",
+                "sl_placed",
+            }:
+                continue
+            payload = self._parse_event_payload(row)
+            if str(payload.get("tag") or "") == tag:
+                return True
+        return False
+
+    def _reconcile_prior_stop_executions(
+        self,
+        trade: TradeRecord,
+        order: Any,
+        *,
+        order_attempt_id: Optional[str],
+    ) -> None:
+        """Book fills/price corrections from an older stop without mutating attempt B.
+
+        Execution accounting updates remaining position, exit value, and risk P&L.
+        Protection identity (``sl_order_id`` / attempt B) is preserved; A never clears B
+        and never marks B's protection confirmed. Does not place or flatten.
+        """
+        if not _is_stop_order(order):
+            return
+        if not self._stop_order_engine_owned(
+            trade, order, order_attempt_id=order_attempt_id
+        ):
+            return
+        if not self._link_order(
+            trade, str(order.order_id), role="stop", kind="explicit"
+        ):
+            return
+
+        # Clear only the prior attempt that owns this order (never the outstanding B).
+        if order_attempt_id is not None and str(order_attempt_id).strip():
+            self._clear_sl_submit_attempt(
+                trade,
+                outcome="prior_stop_execution_reconciled",
+                order_id=str(order.order_id),
+                attempt_id=str(order_attempt_id),
+                order=order,
+            )
+
+        refreshed = self.store.get_trade(trade.trade_id)
+        trade = refreshed if refreshed is not None else trade
+        preserve_sl = trade.sl_order_id
+        preserve_deadline = trade.protection_deadline_at
+        prev_exited = int(trade.exited_qty or 0)
+        prev_exit_value = float(getattr(trade, "exit_value", 0) or 0)
+        prev_exit_est = float(getattr(trade, "exit_value_est", 0) or 0)
+
+        # Snapshot this order (+ other owned exits) exactly once via durable links.
+        exit_updates = self._sync_exit_values(trade)
+        exited_total = max(
+            prev_exited,
+            int(exit_updates.get("exited_qty", 0) or 0),
+            self._broker_exit_filled_total(trade),
+        )
+        new_exit_value = float(exit_updates.get("exit_value", 0) or 0)
+        new_exit_est = float(exit_updates.get("exit_value_est", 0) or 0)
+        qty_changed = exited_total != prev_exited
+        value_changed = (
+            abs(new_exit_value - prev_exit_value) > 1e-9
+            or abs(new_exit_est - prev_exit_est) > 1e-9
+        )
+
+        filled_qty = int(trade.filled_qty or 0)
+        entry_confirmed = float(getattr(trade, "entry_value", 0) or 0)
+        entry_est = float(getattr(trade, "entry_value_est", 0) or 0)
+        if filled_qty > 0 and trade.entry_order_id:
+            polled_entry = self.broker.poll_order(trade.entry_order_id)
+            if polled_entry is not None:
+                entry_confirmed, entry_est = self._entry_execution_values_from_order(
+                    polled_entry,
+                    filled_qty,
+                    float(
+                        polled_entry.average_price
+                        or trade.entry_fill
+                        or trade.entry_estimate
+                        or 0.0
+                    ),
+                )
+
+        exit_provisional = bool(int(exit_updates.get("pnl_provisional", 0) or 0))
+        provisional, partial_pnl, partial_loss = self._partial_exit_pnl_from_values(
+            trade,
+            filled_qty=filled_qty,
+            exited_qty=exited_total,
+            entry_confirmed=entry_confirmed,
+            entry_est=entry_est,
+            exit_value=new_exit_value,
+            exit_provisional=exit_provisional,
+        )
+
+        # Quantity/value/provisional transitions all warrant a durable update.
+        prev_provisional = bool(int(getattr(trade, "pnl_provisional", 0) or 0))
+        if (
+            not qty_changed
+            and not value_changed
+            and provisional == prev_provisional
+            and abs(partial_pnl - float(getattr(trade, "realised_pnl", 0) or 0)) < 1e-9
+            and abs(
+                partial_loss - float(getattr(trade, "closed_loss_contribution", 0) or 0)
+            )
+            < 1e-9
+        ):
+            return
+
+        rem_pos = self._remaining_position_from_executions(filled_qty, exited_total)
+        display_exit = trade.exit_fill
+        if new_exit_value > 0 and exited_total > 0 and not provisional:
+            display_exit = new_exit_value / float(exited_total)
+        elif new_exit_value + new_exit_est > 0 and exited_total > 0:
+            display_exit = (new_exit_value + new_exit_est) / float(exited_total)
+
+        merged_updates = {
+            k: v
+            for k, v in exit_updates.items()
+            if k not in {"exited_qty", "exit_fill", "pnl_provisional"}
+        }
+        self.store.update_trade(
+            trade.trade_id,
+            status="reconciliation_required",
+            exit_fill=display_exit,
+            filled_qty=filled_qty,
+            exited_qty=exited_total,
+            entry_value=entry_confirmed,
+            entry_value_est=entry_est,
+            remaining_position_qty=rem_pos,
+            realised_pnl=partial_pnl,
+            closed_loss_contribution=partial_loss,
+            pnl_provisional=1 if provisional else 0,
+            # Lock protection identity to outstanding attempt B.
+            sl_order_id=preserve_sl,
+            protected_qty=0,
+            protection_deadline_at=preserve_deadline,
+            qty_model_version=1,
+            **merged_updates,
+        )
+        self.store.append_event(
+            trade.trade_id,
+            "prior_stop_execution_reconciled",
+            payload={
+                "order_id": str(order.order_id),
+                "order_attempt_id": order_attempt_id,
+                "exited_qty": exited_total,
+                "exit_value": new_exit_value,
+                "exit_value_est": new_exit_est,
+                "entry_value": entry_confirmed,
+                "entry_value_est": entry_est,
+                "pnl_provisional": provisional,
+                "remaining_position_qty": rem_pos,
+                "preserved_sl_order_id": preserve_sl,
+            },
+        )
+
+    def _reconcile_owned_prior_stops_during_unresolved(
+        self, trade: TradeRecord
+    ) -> None:
+        """While attempt B is unknown, still reconcile executions on older owned stops."""
+        outstanding = self._latest_unresolved_sl_attempt(trade.trade_id)
+        out_oid = None
+        out_tag = None
+        if outstanding is not None:
+            out_oid = outstanding[1].get("order_id")
+            out_tag = outstanding[1].get("tag")
+        for order in list(self._iter_exit_orders(trade)):
+            if not _is_stop_order(order):
+                continue
+            if out_oid is not None and str(order.order_id) == str(out_oid):
+                continue
+            if (
+                out_tag is not None
+                and str(out_tag).strip()
+                and str(getattr(order, "tag", "") or "") == str(out_tag)
+            ):
+                continue
+            order_aid = self._attempt_id_for_sl_order(
+                trade.trade_id, str(order.order_id), order=order
+            )
+            refreshed = self.store.get_trade(trade.trade_id)
+            trade = refreshed if refreshed is not None else trade
+            self._reconcile_prior_stop_executions(
+                trade, order, order_attempt_id=order_aid
+            )
+
     def _apply_sl_order(self, trade: TradeRecord, order: Any) -> None:
+        # Older stop vs newer unknown attempt: still book executions; never mutate B.
+        outstanding = self._latest_unresolved_sl_attempt(trade.trade_id)
+        if outstanding is not None:
+            ap = outstanding[1]
+            out_aid = str(ap.get("attempt_id") or "")
+            order_aid = self._attempt_id_for_sl_order(
+                trade.trade_id, str(order.order_id), order=order
+            )
+            belongs = False
+            if order_aid and out_aid and order_aid == out_aid:
+                belongs = True
+            elif str(ap.get("order_id") or "") == str(order.order_id):
+                belongs = True
+            elif (
+                str(ap.get("tag") or "").strip()
+                and str(getattr(order, "tag", "") or "") == str(ap.get("tag"))
+            ):
+                belongs = True
+            if not belongs:
+                self._reconcile_prior_stop_executions(
+                    trade, order, order_attempt_id=order_aid
+                )
+                return
+
         self._link_order(trade, str(order.order_id), role="stop", kind="explicit")
         status = str(order.status).upper()
         stop_filled = broker_order_filled_qty(order)
@@ -1586,36 +2030,54 @@ class TradingEngineCycle:
                         filled_qty=filled_qty,
                     )
                 return
-            if trade.status != "reconciliation_required":
-                self.store.update_trade(
-                    trade.trade_id,
-                    status="reconciliation_required",
-                    exit_fill=float(order.average_price or trade.exit_fill or trade.current_stop or 0),
-                    filled_qty=filled_qty,
-                    exited_qty=exited_total,
-                    remaining_position_qty=rem_pos,
-                    remaining_entry_qty=rem_entry,
-                    protected_qty=0,
-                    sl_order_id=None if rem_pos > 0 else trade.sl_order_id,
-                    qty_model_version=1,
-                )
+            # Always detach filled stop before replacement protect (even if already
+            # reconciliation_required — otherwise ensure re-applies the same COMPLETE).
+            self.store.update_trade(
+                trade.trade_id,
+                status="reconciliation_required" if rem_pos > 0 else trade.status,
+                exit_fill=float(order.average_price or trade.exit_fill or trade.current_stop or 0),
+                filled_qty=filled_qty,
+                exited_qty=exited_total,
+                remaining_position_qty=rem_pos,
+                remaining_entry_qty=rem_entry,
+                protected_qty=0,
+                sl_order_id=None if rem_pos > 0 else trade.sl_order_id,
+                qty_model_version=1,
+            )
             if rem_pos > 0:
                 again = self.store.get_trade(trade.trade_id)
                 if again is not None:
+                    self._clear_sl_submit_attempt(
+                        again,
+                        outcome="stop_filled_reconciled",
+                        order_id=str(order.order_id),
+                        order=order,
+                    )
+                    again = self.store.get_trade(trade.trade_id) or again
                     self._ensure_protection(again)
             return
 
         if status in SL_CANCELLED:
+            # Reconcile any cancel-race fills already booked above; then clear the
+            # durable submit attempt so open exposure may re-protect or emergency-exit.
+            # Do NOT reset protection_deadline_at.
             self.store.update_trade(
                 trade.trade_id,
                 status="stop_pending" if rem_pos > 0 else "reconciliation_required",
                 protected_qty=0,
                 exited_qty=exited_total,
                 remaining_position_qty=rem_pos,
+                sl_order_id=None,
                 qty_model_version=1,
             )
             self.store.append_event(
                 trade.trade_id, "stop_pending", payload={"reason": "sl_cancelled"}
+            )
+            self._clear_sl_submit_attempt(
+                trade,
+                outcome="rejected_or_cancelled",
+                order_id=str(order.order_id),
+                order=order,
             )
             if rem_pos > 0:
                 self._raise_broker_truth_incident(
@@ -1692,6 +2154,13 @@ class TradingEngineCycle:
                     "stop_status": status,
                 },
             )
+            if confirmed > 0:
+                self._clear_sl_submit_attempt(
+                    trade,
+                    outcome="working_stop_confirmed",
+                    order_id=str(order.order_id),
+                    order=order,
+                )
             return
 
         # Unconfirmed OPEN (no fills yet) or other non-terminal: order exists but not covering.
@@ -1887,31 +2356,15 @@ class TradingEngineCycle:
                 display_exit = exit_value / float(max(1, int(exit_updates.get("exited_qty", new_exited))))
             elif exit_value + exit_value_est > 0 and new_exited > 0:
                 display_exit = (exit_value + exit_value_est) / float(new_exited)
-            prev_loss = float(getattr(trade, "closed_loss_contribution", 0) or 0)
-            prev_pnl = float(getattr(trade, "realised_pnl", 0) or 0)
-            partial_loss = prev_loss
-            partial_pnl = prev_pnl
-            if (
-                not provisional
-                and new_exited > 0
-                and filled > 0
-                and entry_confirmed > 0
-                and exit_value > 0
-            ):
-                entry_slice = entry_confirmed * (float(new_exited) / float(filled))
-                partial_pnl = realised_pnl_from_values(
-                    direction=trade.direction,
-                    entry_value=entry_slice,
-                    exit_value=exit_value,
-                    qty=new_exited,
-                )
-                # Price loss only here; residual exit costs stay in exited_cost_reservation
-                # until authoritative close (avoids wiping costs at gross BE).
-                partial_loss = abs(partial_pnl) if partial_pnl < 0 else 0.0
-            elif provisional:
-                # Missing prices must not zero an existing confirmed loss.
-                partial_loss = prev_loss
-                partial_pnl = prev_pnl
+            provisional, partial_pnl, partial_loss = self._partial_exit_pnl_from_values(
+                trade,
+                filled_qty=filled,
+                exited_qty=new_exited,
+                entry_confirmed=entry_confirmed,
+                entry_est=entry_est,
+                exit_value=exit_value,
+                exit_provisional=provisional,
+            )
             self.store.update_trade(
                 trade.trade_id,
                 status=next_status,
@@ -1932,7 +2385,12 @@ class TradingEngineCycle:
                     else (None if new_pos > 0 else trade.sl_order_id)
                 ),
                 qty_model_version=1,
-                **{k: v for k, v in exit_updates.items() if k not in {"exited_qty", "exit_fill"}},
+                **{
+                    k: v
+                    for k, v in exit_updates.items()
+                    if k not in {"exited_qty", "exit_fill", "pnl_provisional"}
+                },
+                pnl_provisional=1 if provisional else 0,
             )
             self.store.append_event(
                 trade.trade_id,
@@ -3349,6 +3807,470 @@ class TradingEngineCycle:
         }.get(kind, "X")
         return f"{base}{suffix}"[:20]
 
+    def _sl_attempt_tag(self, trade: TradeRecord, attempt_id: str) -> str:
+        """Attempt-specific Kite tag (max 20) — durable identity for SL reconcile."""
+        base = str(trade.broker_tag or "NR")[:12]
+        return f"{base}P{str(attempt_id)[:7]}"[:20]
+
+    def _protection_lookup_tags(self, trade: TradeRecord) -> list[str]:
+        """Tags that may hold this trade's protective stops (trade + latest attempt)."""
+        tags: list[str] = []
+        seen: set[str] = set()
+
+        def _add(raw: object) -> None:
+            text = str(raw or "").strip()
+            if not text or text in seen:
+                return
+            seen.add(text)
+            tags.append(text)
+
+        _add(trade.broker_tag)
+        for row in reversed(self.store.list_events(trade.trade_id)):
+            if str(row["action"]) != "sl_submit_attempt":
+                continue
+            payload = self._parse_event_payload(row)
+            _add(payload.get("tag"))
+            break
+        return tags
+
+    def _working_stops_for_trade(
+        self, trade: TradeRecord, *, terminal_sl: set[str]
+    ) -> list[Any]:
+        """Unique working stops across trade/attempt tags (deduped by order id)."""
+        by_id: dict[str, Any] = {}
+        for tag in self._protection_lookup_tags(trade):
+            for order in self.broker.orders_by_tag(tag):
+                if not _is_stop_order(order):
+                    continue
+                if str(order.status).upper() in terminal_sl:
+                    continue
+                if str(getattr(order, "tradingsymbol", "") or "") != str(trade.symbol):
+                    continue
+                if str(order.transaction_type).upper() != _stop_side(trade.direction):
+                    continue
+                by_id[str(order.order_id)] = order
+        return list(by_id.values())
+
+    def _sl_submit_unresolved(self, trade_id: str) -> bool:
+        """True when a durable SL place attempt is outstanding (not cleared)."""
+        return self._latest_unresolved_sl_attempt(trade_id) is not None
+
+    def _attempt_ids_cleared(self, trade_id: str) -> set[str]:
+        """Attempt ids that have an explicit ``sl_submit_cleared`` event."""
+        cleared: set[str] = set()
+        for row in self.store.list_events(trade_id):
+            if str(row["action"]) != "sl_submit_cleared":
+                continue
+            payload = self._parse_event_payload(row)
+            aid = payload.get("attempt_id")
+            if aid is not None and str(aid).strip():
+                cleared.add(str(aid))
+        return cleared
+
+    def _attempt_id_for_sl_order(
+        self,
+        trade_id: str,
+        order_id: str,
+        *,
+        order: Any = None,
+    ) -> Optional[str]:
+        """Map a broker stop order to the durable attempt that owns it."""
+        oid = str(order_id)
+        tag = str(getattr(order, "tag", "") or "").strip() if order is not None else ""
+        matched_tag_id: Optional[str] = None
+        for row in self.store.list_events(trade_id):
+            action = str(row["action"])
+            if action not in {
+                "sl_submit_attempt",
+                "sl_submission_unknown",
+                "sl_placed",
+                "sl_submit_cleared",
+            }:
+                continue
+            payload = self._parse_event_payload(row)
+            aid = payload.get("attempt_id")
+            if aid is None or not str(aid).strip():
+                continue
+            aid_s = str(aid)
+            if payload.get("order_id") is not None and str(payload.get("order_id")) == oid:
+                return aid_s
+            if tag and str(payload.get("tag") or "") == tag:
+                matched_tag_id = aid_s
+        return matched_tag_id
+
+    def _latest_unresolved_sl_attempt(
+        self, trade_id: str
+    ) -> Optional[tuple[int, dict[str, Any]]]:
+        """Return (event_index, payload) for the latest uncleared SL submit attempt.
+
+        Clears and unknown merges are attempt-id scoped: a late clear for attempt A
+        never resolves a newer outstanding attempt B.
+
+        Missing-ID attempt/unknown records remain fail-closed (never auto-cleared).
+        """
+        cleared = self._attempt_ids_cleared(trade_id)
+        # key -> (idx, merged_payload); key is attempt_id or __missing:<idx>
+        by_id: dict[str, tuple[int, dict[str, Any]]] = {}
+        order: list[str] = []
+
+        for idx, row in enumerate(self.store.list_events(trade_id)):
+            action = str(row["action"])
+            payload = self._parse_event_payload(row)
+            if action == "sl_submit_attempt":
+                aid = payload.get("attempt_id")
+                if aid is None or not str(aid).strip():
+                    key = f"__missing:{idx}"
+                    body = dict(payload)
+                    body["malformed_missing_attempt_id"] = True
+                    by_id[key] = (idx, body)
+                    if key not in order:
+                        order.append(key)
+                    continue
+                aid_s = str(aid)
+                by_id[aid_s] = (idx, dict(payload))
+                if aid_s not in order:
+                    order.append(aid_s)
+            elif action == "sl_submission_unknown":
+                aid = payload.get("attempt_id")
+                if aid is None or not str(aid).strip():
+                    key = f"__missing:{idx}"
+                    body = dict(payload)
+                    body["malformed_missing_attempt_id"] = True
+                    by_id[key] = (idx, body)
+                    if key not in order:
+                        order.append(key)
+                    continue
+                aid_s = str(aid)
+                if aid_s in cleared:
+                    continue
+                if aid_s not in by_id:
+                    by_id[aid_s] = (idx, dict(payload))
+                    order.append(aid_s)
+                    continue
+                prev_idx, prev = by_id[aid_s]
+                merged = dict(prev)
+                for key_name in ("order_id", "tag", "error"):
+                    if (
+                        payload.get(key_name) is not None
+                        and str(payload.get(key_name)).strip()
+                    ):
+                        merged[key_name] = payload[key_name]
+                by_id[aid_s] = (prev_idx, merged)
+            elif action == "sl_submit_cleared":
+                aid = payload.get("attempt_id")
+                if aid is not None and str(aid).strip():
+                    cleared.add(str(aid))
+
+        for aid_s in reversed(order):
+            if aid_s.startswith("__missing:"):
+                return by_id[aid_s]
+            if aid_s in cleared:
+                continue
+            return by_id[aid_s]
+        return None
+
+    def _order_ids_attributed_before_attempt(
+        self, trade_id: str, attempt_idx: int
+    ) -> set[str]:
+        """Stop order ids already attributed to earlier attempts (must not clear newer)."""
+        attributed: set[str] = set()
+        for idx, row in enumerate(self.store.list_events(trade_id)):
+            if idx >= attempt_idx:
+                break
+            action = str(row["action"])
+            if action not in {"sl_placed", "sl_submit_cleared", "sl_submission_unknown"}:
+                continue
+            payload = self._parse_event_payload(row)
+            oid = payload.get("order_id")
+            if oid is not None and str(oid).strip():
+                attributed.add(str(oid))
+        return attributed
+
+    def _order_matches_sl_attempt(
+        self,
+        trade: TradeRecord,
+        order: Any,
+        attempt_payload: dict[str, Any],
+    ) -> bool:
+        """Fail-closed identity checks: stop type, attempt tag, symbol, side."""
+        if not _is_stop_order(order):
+            return False
+        symbol = str(attempt_payload.get("symbol") or trade.symbol)
+        if str(getattr(order, "tradingsymbol", "") or "") != symbol:
+            return False
+        side = str(
+            attempt_payload.get("transaction_type") or _stop_side(trade.direction)
+        ).upper()
+        if str(order.transaction_type).upper() != side:
+            return False
+        attempt_tag = str(attempt_payload.get("tag") or "").strip()
+        if attempt_tag and str(order.tag or "") != attempt_tag:
+            return False
+        return True
+
+    def _candidates_for_sl_attempt(
+        self,
+        trade: TradeRecord,
+        *,
+        attempt_idx: int,
+        attempt_payload: dict[str, Any],
+    ) -> tuple[str, list[Any]]:
+        """Return (status, orders) for attempt-scoped stop reconcile.
+
+        status: ``unique`` | ``none`` | ``ambiguous``
+
+        Fail-closed:
+        - Prefer durably captured order_id, else attempt-specific tag.
+        - Require symbol + transaction side match.
+        - Reject unknown-time (naive/missing) as sole identity; timed matches do not
+          suppress competing untimed candidates (ambiguity preserved).
+        - Two-second window is supporting evidence only, never unique identity.
+        """
+        prior_ids = self._order_ids_attributed_before_attempt(
+            trade.trade_id, attempt_idx
+        )
+        captured_oid = attempt_payload.get("order_id")
+
+        # Durable accepted order id — poll that identity only.
+        if captured_oid is not None and str(captured_oid).strip():
+            oid = str(captured_oid)
+            if oid in prior_ids:
+                return "none", []
+            order = self.broker.poll_order(oid)
+            if order is None:
+                return "none", []
+            if not self._order_matches_sl_attempt(trade, order, attempt_payload):
+                return "none", []
+            return "unique", [order]
+
+        attempt_tag = str(attempt_payload.get("tag") or "").strip()
+        if not attempt_tag:
+            # No durable tag/order identity — refuse heuristic clearing.
+            return "none", []
+
+        stops = [
+            o
+            for o in self.broker.orders_by_tag(attempt_tag)
+            if str(o.order_id) not in prior_ids
+            and self._order_matches_sl_attempt(trade, o, attempt_payload)
+        ]
+        if not stops:
+            return "none", []
+
+        submitted_at = _parse_aware_instant(attempt_payload.get("submitted_at"))
+        timed: list[Any] = []
+        untimed: list[Any] = []
+        skew = timedelta(seconds=2)
+        for order in stops:
+            ots = _parse_aware_instant(getattr(order, "order_timestamp", None))
+            if ots is None:
+                untimed.append(order)
+                continue
+            if submitted_at is None:
+                # Without aware attempt time, timestamps cannot support filtering.
+                untimed.append(order)
+                continue
+            if ots >= submitted_at - skew:
+                timed.append(order)
+            # Older-than-window under the same attempt tag stays excluded from timed.
+
+        # Fail-closed: any unknown-time candidate keeps the attempt unresolved /
+        # ambiguous; timed hits never silence untimed peers.
+        if untimed:
+            if len(stops) == 1 and not timed:
+                # Single untimed stop is insufficient identity (reject unknown-time fallback).
+                return "none", []
+            return "ambiguous", list(stops)
+        if not timed:
+            return "none", []
+        if len(timed) > 1:
+            return "ambiguous", timed
+        return "unique", timed
+
+    def _reconcile_outstanding_sl_attempt(self, trade: TradeRecord) -> str:
+        """Reconcile durable unknown SL attempt against working+terminal tag stops.
+
+        Returns:
+          ``resolved_working`` — unique working/cover stop applied
+          ``resolved_terminal_open`` — unique reject/cancel cleared; position still open
+          ``resolved_flat`` — unique fill/reconcile left no open position
+          ``still_unresolved`` — none / ambiguous / visibility gap
+        """
+        outstanding = self._latest_unresolved_sl_attempt(trade.trade_id)
+        if outstanding is None:
+            return "still_unresolved"
+        attempt_idx, attempt_payload = outstanding
+        if attempt_payload.get("malformed_missing_attempt_id"):
+            self._mark_unresolved_sl_submit(
+                trade, detail="malformed_sl_attempt_missing_id"
+            )
+            return "still_unresolved"
+        attempt_id = attempt_payload.get("attempt_id")
+        status, candidates = self._candidates_for_sl_attempt(
+            trade, attempt_idx=attempt_idx, attempt_payload=attempt_payload
+        )
+        if status == "none":
+            self._mark_unresolved_sl_submit(
+                trade, detail="empty_tag_not_absence"
+            )
+            return "still_unresolved"
+        if status == "ambiguous":
+            self.store.append_event(
+                trade.trade_id,
+                "sl_reconcile_ambiguous",
+                payload={
+                    "detail": "multiple_attempt_candidates",
+                    "attempt_id": attempt_id,
+                    "order_ids": [str(o.order_id) for o in candidates],
+                },
+            )
+            self._mark_unresolved_sl_submit(
+                trade, detail="ambiguous_attempt_candidates"
+            )
+            return "still_unresolved"
+
+        order = candidates[0]
+        terminal_sl = SL_CANCELLED | SL_FILLED
+        st = str(order.status).upper()
+        self._apply_sl_order(trade, order)
+        refreshed = self.store.get_trade(trade.trade_id)
+        trade = refreshed if refreshed is not None else trade
+        pos = int(trade.remaining_position_qty or 0)
+
+        if st not in terminal_sl:
+            # Working stop uniquely matched this attempt.
+            if self._sl_submit_unresolved(trade.trade_id):
+                self._clear_sl_submit_attempt(
+                    trade,
+                    outcome="reconciled_working",
+                    order_id=str(order.order_id),
+                    attempt_id=str(attempt_id) if attempt_id else None,
+                )
+            return "resolved_working" if pos > 0 else "resolved_flat"
+
+        # Terminal: _apply_sl_order clears on reject/cancel; fills may leave exposure.
+        if pos <= 0:
+            if self._sl_submit_unresolved(trade.trade_id):
+                self._clear_sl_submit_attempt(
+                    trade,
+                    outcome="reconciled_terminal_flat",
+                    order_id=str(order.order_id),
+                    attempt_id=str(attempt_id) if attempt_id else None,
+                )
+            return "resolved_flat"
+        # Reject/cancel with open position should already clear inside apply; if not, clear.
+        if self._sl_submit_unresolved(trade.trade_id) and st in SL_CANCELLED:
+            self._clear_sl_submit_attempt(
+                trade,
+                outcome="reconciled_rejected_or_cancelled",
+                order_id=str(order.order_id),
+                attempt_id=str(attempt_id) if attempt_id else None,
+            )
+        if self._sl_submit_unresolved(trade.trade_id):
+            self._mark_unresolved_sl_submit(trade, detail="terminal_not_cleared")
+            return "still_unresolved"
+        return "resolved_terminal_open"
+
+    def _clear_sl_submit_attempt(
+        self,
+        trade: TradeRecord,
+        *,
+        outcome: str,
+        order_id: Optional[str] = None,
+        attempt_id: Optional[str] = None,
+        order: Any = None,
+    ) -> None:
+        """Clear one durable SL attempt by verified identity only.
+
+        Requires an explicit ``attempt_id`` or an ``order_id`` that positively maps to
+        an attempt. Never infers/clears the latest outstanding attempt. A clear for
+        attempt A never resolves a different outstanding attempt B.
+        """
+        target = str(attempt_id).strip() if attempt_id is not None else ""
+        if target.startswith("__missing:"):
+            self.store.append_event(
+                trade.trade_id,
+                "sl_clear_ignored_missing_identity",
+                payload={
+                    "outcome": outcome,
+                    "detail": "refuses_malformed_attempt_key",
+                    "order_id": order_id,
+                },
+            )
+            return
+        if not target and order_id is not None and str(order_id).strip():
+            found = self._attempt_id_for_sl_order(
+                trade.trade_id, str(order_id), order=order
+            )
+            if found:
+                target = found
+            else:
+                outstanding = self._latest_unresolved_sl_attempt(trade.trade_id)
+                self.store.append_event(
+                    trade.trade_id,
+                    "sl_clear_ignored_unmapped_order",
+                    payload={
+                        "outcome": outcome,
+                        "order_id": str(order_id),
+                        "outstanding_attempt_id": (
+                            None
+                            if outstanding is None
+                            else outstanding[1].get("attempt_id")
+                        ),
+                    },
+                )
+                return
+        if not target:
+            outstanding = self._latest_unresolved_sl_attempt(trade.trade_id)
+            self.store.append_event(
+                trade.trade_id,
+                "sl_clear_ignored_missing_identity",
+                payload={
+                    "outcome": outcome,
+                    "order_id": order_id,
+                    "outstanding_attempt_id": (
+                        None
+                        if outstanding is None
+                        else outstanding[1].get("attempt_id")
+                    ),
+                },
+            )
+            return
+
+        if target in self._attempt_ids_cleared(trade.trade_id):
+            return
+
+        body: dict[str, Any] = {
+            "outcome": outcome,
+            "order_id": order_id,
+            "attempt_id": target,
+            "protection_deadline_at": trade.protection_deadline_at,
+        }
+        self.store.append_event(
+            trade.trade_id,
+            "sl_submit_cleared",
+            payload=body,
+        )
+
+    def _mark_unresolved_sl_submit(
+        self, trade: TradeRecord, *, detail: str
+    ) -> None:
+        """Visibly unresolved protection emergency; preserve protection deadline."""
+        self.store.update_trade(
+            trade.trade_id,
+            status="reconciliation_required",
+            protected_qty=0,
+        )
+        self.store.append_event(
+            trade.trade_id,
+            "protection_emergency_unresolved",
+            payload={"detail": detail},
+        )
+
+    def _unresolved_sl_submit_blocks_flatten(self, trade: TradeRecord) -> bool:
+        """Unknown stop submit blocks competing flatten even without a known stop id."""
+        return self._sl_submit_unresolved(trade.trade_id)
+
     def _has_exit_intent(self, trade_id: str, *, reason: str) -> bool:
         for row in self.store.list_events(trade_id):
             if str(row["action"]) != "exit_intent":
@@ -3512,6 +4434,30 @@ class TradingEngineCycle:
         if trade.status in {"closed", "skipped", "rejected"}:
             return
         pos = int(trade.remaining_position_qty or 0)
+
+        # Unknown protective-stop submission blocks competing flatten even without
+        # a known stop id — a late stop fill could reverse a flatten.
+        if self._unresolved_sl_submit_blocks_flatten(trade):
+            self.store.update_trade(
+                trade.trade_id,
+                status="reconciliation_required",
+                protected_qty=0,
+            )
+            self.store.append_event(
+                trade.trade_id,
+                "flatten_blocked_unknown_stop_submit",
+                payload={
+                    "reason": reason,
+                    "kind": kind,
+                    "sl_order_id": trade.sl_order_id,
+                },
+            )
+            self.store.append_event(
+                trade.trade_id,
+                "protection_emergency_unresolved",
+                payload={"detail": "flatten_blocked", "exit_reason": reason},
+            )
+            return
 
         if not self._has_exit_intent(trade.trade_id, reason=reason):
             self.store.append_event(

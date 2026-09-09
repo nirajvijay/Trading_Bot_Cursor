@@ -185,7 +185,21 @@ class KiteBrokerTests(unittest.TestCase):
     def test_place_sl_equal_trigger_and_price(self) -> None:
         kite = MagicMock()
         kite.place_order.return_value = {"order_id": "sl1"}
-        kite.orders.return_value = []
+        order_row = {
+            "order_id": "sl1",
+            "tag": "te1",
+            "tradingsymbol": "AAA",
+            "transaction_type": "SELL",
+            "order_type": "SL",
+            "quantity": 10,
+            "status": "TRIGGER PENDING",
+            "trigger_price": 99.0,
+            "price": 99.0,
+            "filled_quantity": 0,
+            "pending_quantity": 10,
+        }
+        # Empty until after place — otherwise idempotent tag reuse skips place_order.
+        kite.orders.side_effect = [[], [order_row], [order_row]]
         broker = KiteBroker(kite, live_orders_enabled=True)
         broker.place_slm(
             tradingsymbol="AAA",
@@ -199,6 +213,41 @@ class KiteBrokerTests(unittest.TestCase):
         self.assertEqual(kwargs["order_type"], "SL")
         self.assertEqual(kwargs["trigger_price"], 99)
         self.assertEqual(kwargs["price"], 99)
+        self.assertEqual(kite.place_order.call_count, 1)
+
+    def test_place_sl_no_worse_price_retry_on_exception(self) -> None:
+        kite = MagicMock()
+        kite.place_order.side_effect = RuntimeError("transport_glitch")
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        with self.assertRaises(RuntimeError):
+            broker.place_slm(
+                tradingsymbol="AAA",
+                transaction_type="SELL",
+                quantity=10,
+                trigger_price=99,
+                tag="te1",
+                tick_size=1,
+            )
+        self.assertEqual(kite.place_order.call_count, 1)
+
+    def test_place_sl_accepted_visibility_unknown_preserves_order_id(self) -> None:
+        from trading_engine_broker import SlPlaceAcceptedVisibilityUnknown
+
+        kite = MagicMock()
+        kite.place_order.return_value = {"order_id": "sl-accepted"}
+        kite.orders.return_value = []  # accept, then poll miss
+        broker = KiteBroker(kite, live_orders_enabled=True)
+        with self.assertRaises(SlPlaceAcceptedVisibilityUnknown) as ctx:
+            broker.place_slm(
+                tradingsymbol="AAA",
+                transaction_type="SELL",
+                quantity=10,
+                trigger_price=99,
+                tag="te1",
+                tick_size=1,
+            )
+        self.assertEqual(ctx.exception.order_id, "sl-accepted")
+        self.assertEqual(kite.place_order.call_count, 1)
 
     def test_position_quote_prefers_net_mis_pnl(self) -> None:
         kite = MagicMock()

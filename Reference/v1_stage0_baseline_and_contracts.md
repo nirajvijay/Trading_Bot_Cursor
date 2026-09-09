@@ -501,6 +501,7 @@ Mirror shorts; persist extreme; ≤1 modify / 2s / ≥2 ticks improvement; never
 | 1.7 | 2026-09-09 | Cursor | **Stage 1 gate report** (execution-safety). See §12. |
 | 1.8 | 2026-09-09 | Cursor | **§12.6 contract-gap check** — six execution-safety items; Stage 1 overall acceptance held. |
 | 1.9 | 2026-09-09 | Cursor | **§12.6 accepted** as corrected gap assessment (evidence-only); Stage 1 still held. |
+| 1.10 | 2026-09-10 | Cursor | **WP-1.6 accepted** (dev checkpoint). See §13. Stage 1 still HELD. |
 
 Astra remains product authority; this file is the Stage 0 evidence + implementation contract freeze for Cursor.
 
@@ -898,10 +899,11 @@ Owner-requested supplement before Stage 2. **No implementation in this revision.
 | | |
 |---|---|
 | **Status** | **PARTIAL** (**E** / ops) |
-| **Implementation present** | `enforce_restart_recovery` / `_session_has_recoverable_exposure` over `store.list_trades(self.session_date)` only; local entry lock + canonical pause. Per-trade tag/symbol reconcile for **known** session trades. |
+| **Implementation present** | `enforce_restart_recovery` / `_session_has_recoverable_exposure` over `store.list_trades(self.session_date)` only; local entry lock + canonical pause. Per-trade tag/symbol reconcile for **known** session trades. WP-1.6 prior-stop execution accounting covers **linked / attempt-mapped** stops only. |
 | **Implementation missing** | No scan of other `session_date`s; no broker-wide orphan/unknown-order recovery without a local trade; host ADANIPORTS `protected_open` (G12) not reconciled (never auto-delete). |
+| **WP-1.7 recovery requirement (explicit)** | **Unlinked historical-stop discovery** must be implemented in WP-1.7 recovery: detect broker stop/exit orders that are not linked to a local trade and not mapped to a durable SL attempt, surface them as reconciliation-required / recovery work, and define safe operator/engine actions. **Fail-closed non-attribution of orphans is not proof that orphan detection exists** — absence of auto-adopt must not be described as completed discovery. |
 | **Named tests present** | `Wp15ReconcileTests.test_restart_with_open_exposure_pauses_entries`, `test_restart_pause_store_failure_keeps_local_lock_zero_entry_writes`; `CycleTests.test_restart_reconcile_no_second_market`; wp11 restart/idempotency (current-session). |
-| **Named tests missing** | **none** for cross-session leftover trades, orphan broker orders, or ADANIPORTS-class recovery. |
+| **Named tests missing** | **none** for cross-session leftover trades, orphan broker orders, unlinked historical-stop discovery, or ADANIPORTS-class recovery. |
 
 #### Item 6 — Lost protective-stop submission responses
 
@@ -922,6 +924,58 @@ Owner-requested supplement before Stage 2. **No implementation in this revision.
 | 3 | Post-fill risk revalidation + action | **MISSING** | **E** |
 | 4 | Daily-loss breach → pause + managed exits | **PARTIAL** | **E** |
 | 5 | Prior-session / orphan recovery | **PARTIAL** | **E** |
-| 6 | Lost protective-stop place response | **PARTIAL** | **E** |
+| 6 | Lost protective-stop place response | **ADDRESSED in WP-1.6** (see §13; Stage 1 still HELD) | **E** |
 
-None of the six are **IMPLEMENTED+TESTED** for the full contract wording. Stage 2 API/UI items remain separately deferred (§12.4 items 9–12) and must not be used to reclassify these six as complete.
+None of the six were **IMPLEMENTED+TESTED** at §12.6 acceptance. WP-1.6 later addressed item 6 (durable SL submit / no blind retry). Items 1–5 remain open for Stage 1 closure. Stage 2 API/UI items remain separately deferred (§12.4 items 9–12) and must not be used to reclassify gaps as complete.
+
+### 12.7 WP-1.10 contract clarification (recorded; not implemented)
+
+**Liquidation-side MTM quotes (open positions):** when computing open-position mark-to-market for loss-halt, use **bid for an open long** and **ask for an open short** (liquidation/exit touch)—the opposite of entry-side marketable quotes (entry BUY uses ask; entry SELL uses bid).
+
+**Entry LIMIT fill guarantee:** entry limits are marketable against the observed touch quote by construction; they are **not** guaranteed to fill.
+
+Stage 1 remains **HELD**. WP-1.6+ implementation is separate from this clarification.
+
+---
+
+## 13. WP-1.6 development checkpoint (accepted)
+
+**Status:** Accepted for development checkpoint (not a deployment/live-trading authorization).
+**Scope:** Durable protective-stop submission — intent-before-write (`sl_submit_attempt` + attempt-specific tag); single placement (no Kite worse-limit blind retry); accepted-id preserved on poll-miss (`SlPlaceAcceptedVisibilityUnknown`); fail-closed attempt-scoped reconcile (symbol/side, no untimed-alone identity, timed cannot suppress untimed peers); attempt-id-scoped clears (late clear of A never resolves B); prior-stop execution accounting while B unknown without mutating B’s protection identity; confirmed P&L only when entry **and** exit prices are complete; missing-ID attempts remain fail-closed; unknown submit blocks competing flatten.
+**Boundary:** Isolated test DBs + FakeBroker / mocked Kite only. No live DB migration, no deploy, no live order writes. Host `daily_loss_cap_inr=2995` and history preserved.
+
+### 13.1 Acceptance test command and results
+
+```text
+python3 -m unittest \
+  tests.test_trading_engine_risk \
+  tests.test_trading_engine_wp12_risk \
+  tests.test_trading_engine_wp11_lifecycle \
+  tests.test_trading_engine_wp13_trail \
+  tests.test_trading_engine_wp14_close \
+  tests.test_trading_engine_wp15_reconcile \
+  tests.test_trading_engine_wp16_protection \
+  tests.test_trading_engine_cycle \
+  tests.test_trading_engine_store \
+  tests.test_trading_engine_broker \
+  tests.test_admin_config_store \
+  tests.test_trading_engine_loop \
+  tests.test_trading_engine_handoff \
+  tests.test_nse_trading_calendar \
+  -q
+
+Ran 238 tests in 57.972s
+OK
+```
+
+### 13.2 Deferred beyond WP-1.6 (not claimed complete)
+
+1. WP-1.7 — cross-session / orphan recovery including **unlinked historical-stop discovery** (§12.6 item 5).
+2. WP-1.8+ Stage 1 closure items (LIMIT-only entries, signal freshness, post-fill risk revalidation, daily-loss breach exits, etc.).
+3. Host ADANIPORTS provenance-safe live reconcile (ops; never auto-delete).
+4. Stage 2+ API/UI surfaces.
+
+### 13.3 Preserve rule (unchanged)
+
+- Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
+- Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
