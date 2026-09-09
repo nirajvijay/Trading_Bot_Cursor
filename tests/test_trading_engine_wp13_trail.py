@@ -25,7 +25,7 @@ from trading_engine_risk import (
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import TRAIL_MIN_MODIFY_INTERVAL_SECONDS
 
-from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _session_clock
+from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _session_clock, _fresh_feed_age
 
 
 def _past(seconds: float = 10.0) -> str:
@@ -166,6 +166,7 @@ class Wp13IntegrationTests(unittest.TestCase):
             live_orders_enabled=False,
             admin_config_db=self.admin,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         return store, cycle
 
@@ -479,6 +480,7 @@ class Wp13IntegrationTests(unittest.TestCase):
             live_orders_enabled=False,
             admin_config_db=self.admin,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         cycle2.tick()
         again = store2.get_trade(trade.trade_id)
@@ -570,6 +572,7 @@ class Wp13IntegrationTests(unittest.TestCase):
             live_orders_enabled=False,
             admin_config_db=self.admin,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         for _ in range(3):
             cycle2.tick()
@@ -656,6 +659,7 @@ class Wp13IntegrationTests(unittest.TestCase):
             live_orders_enabled=False,
             admin_config_db=self.admin,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         for _ in range(3):
             cycle2.tick()

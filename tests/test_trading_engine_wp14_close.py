@@ -17,7 +17,7 @@ from trading_engine_cycle import TradingEngineCycle
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import CommandKind
 
-from tests.test_trading_engine_cycle import SCHEMA, _seed_live
+from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _fresh_feed_age
 
 _IST = ZoneInfo("Asia/Kolkata")
 
@@ -75,6 +75,7 @@ class Wp14CloseAndSessionGateTests(unittest.TestCase):
             live_orders_enabled=False,
             admin_config_db=self.admin,
             clock_fn=_clock if clock is not None else None,
+            feed_age_seconds_fn=_fresh_feed_age,
             special_session_schedule=special_session_schedule,
         )
         return store, cycle

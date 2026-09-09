@@ -10,7 +10,7 @@ from pathlib import Path
 from trading_engine_broker import FakeBroker
 from trading_engine_cycle import TradingEngineCycle
 from trading_engine_store import TradingEngineStore
-from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _seed_vwap, _session_clock
+from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _seed_vwap, _session_clock, _fresh_feed_age
 
 
 class FakeBrokerLimitedValidationTests(unittest.TestCase):
@@ -40,6 +40,7 @@ class FakeBrokerLimitedValidationTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=False,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         cycle.tick()
         cycle.tick()

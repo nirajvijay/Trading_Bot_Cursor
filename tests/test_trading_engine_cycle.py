@@ -23,6 +23,12 @@ def _session_clock(session_date: str = "2026-08-17", hour: int = 14, minute: int
     stamp = datetime(y, m, d, hour, minute, tzinfo=_IST)
     return lambda: stamp
 
+
+def _fresh_feed_age() -> float:
+    """Isolated tests: treat market data as fresh unless a case injects otherwise."""
+    return 0.0
+
+
 SCHEMA = """
 CREATE TABLE live_continuation_arms (
     setup_id TEXT NOT NULL,
@@ -220,6 +226,7 @@ class CycleTests(unittest.TestCase):
             live_orders_enabled=False,
             require_vwap_accept=require_vwap_accept,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
             **kwargs,
         )
         return store, cycle
@@ -240,6 +247,7 @@ class CycleTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=True,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         cycle.tick()
         trades = store.list_trades("2026-08-17")
@@ -304,6 +312,7 @@ class CycleTests(unittest.TestCase):
             run_id=str(run["run_id"]),
             live_orders_enabled=False,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         cycle2.tick()
         self.assertEqual(broker.market_place_count, first_count)
@@ -637,6 +646,7 @@ class VwapGateCycleTests(unittest.TestCase):
             live_orders_enabled=False,
             require_vwap_accept=require_vwap_accept,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
             **kwargs,
         )
         return store, cycle
@@ -767,6 +777,7 @@ class VwapGateCycleTests(unittest.TestCase):
                     run_id=run_id,
                     live_orders_enabled=False,
                     clock_fn=_session_clock(),
+                    feed_age_seconds_fn=_fresh_feed_age,
                 )
                 cycle.tick()
                 trades = store.list_trades("2026-08-17")
@@ -801,6 +812,7 @@ class VwapGateCycleTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=False,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         cycle.tick()
         self.assertEqual(store.list_trades("2026-08-17")[0].skip_reason, "vwap_unavailable")
@@ -840,6 +852,7 @@ class VwapGateCycleTests(unittest.TestCase):
             live_orders_enabled=False,
             monotonic_fn=clock,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         cycle.tick()
         clock.t = 2.0

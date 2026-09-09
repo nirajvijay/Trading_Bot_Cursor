@@ -21,7 +21,11 @@ from api import config
 from api.admin_config.store import AdminConfigStore
 from api.services.observation_runner import seconds_until_session_close
 from trading_engine_broker import FakeBroker, KiteBroker
-from trading_engine_cycle import TradingEngineCycle, VWAP_PENDING_RETRY_SECONDS
+from trading_engine_cycle import (
+    TradingEngineCycle,
+    VWAP_PENDING_RETRY_SECONDS,
+    feed_age_seconds_from_runner_status,
+)
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
 
@@ -48,6 +52,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--live-orders", action="store_true")
     parser.add_argument("--total-capital", type=float, default=DEFAULT_TOTAL_CAPITAL)
+    parser.add_argument(
+        "--runner-status-file",
+        default=None,
+        help="Observation runner_status.json for feed freshness (default: RUNNER_STATUS_FILE)",
+    )
     return parser.parse_args(argv)
 
 
@@ -85,6 +94,7 @@ def next_loop_sleep_seconds(
 
 
 def _make_broker(live: bool, total_capital: float):
+    """PAPER → FakeBroker only; LIVE → KiteBroker with order writes enabled."""
     if not live:
         return FakeBroker(
             auto_fill_entry=True,
@@ -97,6 +107,13 @@ def _make_broker(live: bool, total_capital: float):
     return KiteBroker(kite, live_orders_enabled=True)
 
 
+def _runner_status_path(args: argparse.Namespace) -> Path:
+    raw = args.runner_status_file or os.environ.get("RUNNER_STATUS_FILE")
+    if raw:
+        return Path(raw)
+    return Path(config.RUNNER_STATUS_FILE)
+
+
 def run(args: argparse.Namespace) -> int:
     session_date = args.session_date or _today_ist()
     live = bool(args.live_orders)
@@ -104,6 +121,7 @@ def run(args: argparse.Namespace) -> int:
     stop_file = Path(args.stop_file or config.trading_engine_stop_file())
     trading_db = Path(args.trading_db or config.trading_engine_db_path())
     live_db = Path(args.live_db or config.live_db_path())
+    runner_status_file = _runner_status_path(args)
 
     if stop_file.exists():
         try:
@@ -126,6 +144,14 @@ def run(args: argparse.Namespace) -> int:
     )
     store.set_consume_triggers(run_id, consume)
     broker = _make_broker(live, float(args.total_capital))
+
+    def _feed_age() -> Optional[float]:
+        return feed_age_seconds_from_runner_status(
+            runner_status_file,
+            now=datetime.now(IST),
+            expected_session_date=session_date,
+        )
+
     cycle = TradingEngineCycle(
         store,
         broker,
@@ -138,8 +164,13 @@ def run(args: argparse.Namespace) -> int:
         status_file=status_file,
         require_vwap_accept=require_vwap,
         admin_config_db=config.admin_config_db_path(),
+        feed_age_seconds_fn=_feed_age,
     )
     cycle.consume_new_triggers = consume
+    try:
+        cycle.enforce_restart_recovery()
+    except Exception:  # noqa: BLE001
+        pass
 
     signal.signal(signal.SIGINT, _request_stop)
     signal.signal(signal.SIGTERM, _request_stop)

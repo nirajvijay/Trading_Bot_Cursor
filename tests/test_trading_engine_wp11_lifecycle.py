@@ -15,7 +15,7 @@ from trading_engine_risk import is_unprotected
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import BrokerOrder, PositionQuote, TradeRecord
 
-from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _session_clock
+from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _session_clock, _fresh_feed_age
 
 
 def _session_align_entry(store: TradingEngineStore, trade_id: str) -> None:
@@ -81,6 +81,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=live_orders,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         return store, cycle
 
@@ -355,6 +356,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
             run_id=run_id,
             live_orders_enabled=False,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         cycle.tick()
         self.assertGreaterEqual(wrapped.place_calls, 1)
@@ -417,6 +419,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
             run_id=store2.start_run(session_date="2026-08-17", live_orders_enabled=False, pid=2),
             live_orders_enabled=False,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         for _ in range(3):
             cycle2.drive_open()
@@ -745,6 +748,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
             run_id=store2.start_run(session_date="2026-08-17", live_orders_enabled=False, pid=9),
             live_orders_enabled=False,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         for _ in range(6):
             cycle2.drive_open()
@@ -1030,6 +1034,7 @@ class Wp11ReviewFixTests(unittest.TestCase):
             run_id=run2,
             live_orders_enabled=False,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         _seed_live(self.live, "rst_b", "2026-08-17T05:01:00+00:00")
         broker.last_prices["AAA"] = 110

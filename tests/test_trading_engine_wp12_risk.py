@@ -21,7 +21,7 @@ from trading_engine_risk import (
 )
 from trading_engine_store import TradingEngineStore
 
-from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _session_clock
+from tests.test_trading_engine_cycle import SCHEMA, _seed_live, _session_clock, _fresh_feed_age
 
 
 class Wp12RiskIntegrationTests(unittest.TestCase):
@@ -75,6 +75,7 @@ class Wp12RiskIntegrationTests(unittest.TestCase):
             live_orders_enabled=live_orders,
             admin_config_db=self.admin,
             clock_fn=_session_clock(),
+            feed_age_seconds_fn=_fresh_feed_age,
         )
         return store, cycle
 

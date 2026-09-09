@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -58,8 +59,11 @@ from trading_engine_types import (
     DEFAULT_ESTIMATED_SLIPPAGE_BPS,
     DEFAULT_PROTECTION_CONFIRM_DEADLINE_SECONDS,
     DEFAULT_ROUND_TRIP_CHARGE_BPS,
+    DEFAULT_SESSION_OPEN_IST_HHMM,
     DEFAULT_SQUARE_OFF_IST_HHMM,
     DEMO_LEVERAGE_FACTOR,
+    FEED_STALE_EXIT_SECONDS,
+    FEED_STALE_PAUSE_SECONDS,
     LIMITED_PER_TRADE_RISK_CAP,
     MAX_CONCURRENT_POSITIONS,
     MAX_FILLED_SETUPS_PER_DAY,
@@ -86,6 +90,16 @@ SL_FILLED = {"COMPLETE"}
 SL_CANCELLED = {"CANCELLED", "REJECTED"}
 # Exit-side order types that may close exposure (stops, market flatten, limit flatten).
 EXIT_ORDER_TYPES = frozenset(set(STOP_ORDER_TYPES) | {"MARKET", "LIMIT"})
+# Durable market-exit owners: (reason, kind). Shared by request serialization,
+# active-exit ownership, and resume — keep a single source of truth.
+DURABLE_MARKET_EXIT_OWNERS: tuple[tuple[str, str], ...] = (
+    ("protection_deadline", "emergency"),
+    ("feed_stale", "emergency"),
+    ("trail_through_exit", "trail_through"),
+    ("close_position", "user_close"),
+    ("close_all", "close_all"),
+    ("square_off", "square_off"),
+)
 
 VWAP_WAIT_SECONDS = 2.0
 VWAP_PENDING_RETRY_SECONDS = 0.25
@@ -124,6 +138,50 @@ def _resolve_admin_config_db(
         return preferred
     except OSError:
         return Path(trading_store_db).parent / "admin_config.db"
+
+
+def feed_age_seconds_from_runner_status(
+    status_path: Optional[Path | str],
+    *,
+    now: Optional[datetime] = None,
+    expected_session_date: Optional[str] = None,
+) -> Optional[float]:
+    """Age of observation ``last_tick_time`` in seconds, or None if unknown/invalid.
+
+    Missing file, missing/invalid tick, wrong session, non-finite ages, and read
+    errors all return None (callers must treat None as blocked during trading hours).
+    """
+    if status_path is None:
+        return None
+    path = Path(status_path)
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if expected_session_date is not None:
+        file_session = data.get("session_date")
+        if file_session is not None and str(file_session) != str(expected_session_date):
+            return None
+    tick_raw = data.get("last_tick_time")
+    if tick_raw is None or str(tick_raw).strip() == "":
+        return None
+    try:
+        tick = datetime.fromisoformat(str(tick_raw).strip())
+    except ValueError:
+        return None
+    if tick.tzinfo is None:
+        tick = tick.replace(tzinfo=_SESSION_TZ)
+    clock = now if now is not None else datetime.now(_SESSION_TZ)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=_SESSION_TZ)
+    age = (clock.astimezone(timezone.utc) - tick.astimezone(timezone.utc)).total_seconds()
+    if not math.isfinite(age) or age < 0:
+        return None
+    return float(age)
 
 
 @dataclass
@@ -299,6 +357,7 @@ class TradingEngineCycle:
         admin_config_db: Optional[Path] = None,
         clock_fn: Optional[Callable[[], datetime]] = None,
         special_session_schedule: Optional[SpecialSessionSchedule] = None,
+        feed_age_seconds_fn: Optional[Callable[[], Optional[float]]] = None,
     ) -> None:
         self.store = store
         self.broker = broker
@@ -313,6 +372,7 @@ class TradingEngineCycle:
         self._monotonic = monotonic_fn
         self._clock_fn = clock_fn
         self._special_session_schedule = special_session_schedule
+        self._feed_age_seconds_fn = feed_age_seconds_fn
         self._vwap_rule_version = vwap_rule_version
         db_path = _resolve_admin_config_db(admin_config_db, store.db_path)
         # Saved→Effective promotion is never automatic on cycle construction.
@@ -325,6 +385,10 @@ class TradingEngineCycle:
         self._ltp_cache: dict[str, Optional[float]] = {}
         self._pos_cache: dict[str, Optional[PositionQuote]] = {}
         self._pending_vwap: dict[tuple[str, str, str, str], _PendingVwap] = {}
+        self._restart_recovery_done = False
+        # Local entry lock survives pause-store failures (fail-closed for new risk).
+        self._local_entries_lock = False
+        self._local_entries_lock_reason: Optional[str] = None
 
     def total_capital(self) -> float:
         return self.store.get_total_capital(self.run_id)
@@ -333,6 +397,11 @@ class TradingEngineCycle:
         return self._admin_store.capture_snapshot()
 
     def _sync_pause_from_canonical(self) -> None:
+        if self._local_entries_lock:
+            # Fail-closed: never re-arm entries from canonical while local lock holds.
+            self.consume_new_triggers = False
+            self.store.set_consume_triggers(self.run_id, False)
+            return
         paused = self._admin_store.read_entries_paused()
         consume = not paused
         if self.consume_new_triggers != consume:
@@ -340,7 +409,19 @@ class TradingEngineCycle:
             self.store.set_consume_triggers(self.run_id, consume)
 
     def _entries_paused(self) -> bool:
+        if self._local_entries_lock:
+            return True
         return self._admin_store.read_entries_paused()
+
+    def _engage_local_entries_lock(self, reason: str) -> None:
+        self._local_entries_lock = True
+        self._local_entries_lock_reason = reason
+        self.consume_new_triggers = False
+        self.store.set_consume_triggers(self.run_id, False)
+
+    def _clear_local_entries_lock(self) -> None:
+        self._local_entries_lock = False
+        self._local_entries_lock_reason = None
 
     def _cancel_pending_vwap_on_pause(self) -> None:
         for pending in list(self._pending_vwap.values()):
@@ -391,6 +472,14 @@ class TradingEngineCycle:
     def tick(self) -> None:
         self._reset_quote_cache()
         self._sync_pause_from_canonical()
+        try:
+            self.enforce_restart_recovery()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+        try:
+            self.enforce_feed_staleness()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
         # Session/cutoff gates before any new-entry ingest or drive.
         try:
             self.enforce_entry_session_calendar()
@@ -1516,6 +1605,26 @@ class TradingEngineCycle:
                     self._ensure_protection(again)
             return
 
+        if status in SL_CANCELLED:
+            self.store.update_trade(
+                trade.trade_id,
+                status="stop_pending" if rem_pos > 0 else "reconciliation_required",
+                protected_qty=0,
+                exited_qty=exited_total,
+                remaining_position_qty=rem_pos,
+                qty_model_version=1,
+            )
+            self.store.append_event(
+                trade.trade_id, "stop_pending", payload={"reason": "sl_cancelled"}
+            )
+            if rem_pos > 0:
+                self._raise_broker_truth_incident(
+                    trade,
+                    kind="external_stop_cancelled",
+                    payload={"sl_order_id": order.order_id},
+                )
+            return
+
         if status in SL_WORKING or (
             status in SL_TRIGGERED_WORKING
             and broker_order_filled_qty(order) > 0
@@ -1534,6 +1643,13 @@ class TradingEngineCycle:
                 next_status = "protection_pending"
             else:
                 next_status = "reconciliation_required"
+            # Broker-truth: do not clear qty/side mismatch by re-labeling protected.
+            if next_status == "protected_open" and rem_pos > 0:
+                net = self.broker.net_position_qty(trade.symbol)
+                if net is not None and int(net) != 0 and not self._broker_qty_matches_engine(
+                    trade, int(net), rem_pos
+                ):
+                    next_status = "reconciliation_required"
             exit_updates = self._sync_exit_values(trade)
             exit_value = float(exit_updates["exit_value"])
             # Avoid event spam / rearm loops when nothing material changed.
@@ -1559,9 +1675,12 @@ class TradingEngineCycle:
                 **{k: v for k, v in exit_updates.items() if k != "exited_qty"},
                 **self._protection_state_fields(trade, next_status=next_status),
             )
+            event_name = (
+                "protected" if next_status == "protected_open" else next_status
+            )
             self.store.append_event(
                 trade.trade_id,
-                "protected",
+                event_name,
                 payload={
                     "protected_qty": confirmed,
                     "broker_stop_qty": cover,
@@ -2170,12 +2289,13 @@ class TradingEngineCycle:
         net = self.broker.net_position_qty(trade.symbol)
         if net is None:
             return False
-        if abs(net) not in {0, pos} and net != 0:
-            self.store.append_event(
-                trade.trade_id,
-                "qty_mismatch",
-                payload={"net": net, "engine_qty": pos},
+        if int(net) != 0 and not self._broker_qty_matches_engine(trade, int(net), pos):
+            self._raise_broker_truth_incident(
+                trade,
+                kind="qty_mismatch",
+                payload={"net": int(net), "engine_qty": pos},
             )
+            return False
         if net != 0:
             return False
         if trade.sl_order_id:
@@ -2233,6 +2353,12 @@ class TradingEngineCycle:
             self.store.append_event(
                 trade.trade_id, "stop_pending", payload={"reason": "sl_cancelled"}
             )
+            if int(trade.remaining_position_qty or 0) > 0:
+                self._raise_broker_truth_incident(
+                    trade,
+                    kind="external_stop_cancelled",
+                    payload={"sl_order_id": trade.sl_order_id},
+                )
             return
         if status in SL_WORKING and polled.trigger_price is not None:
             try:
@@ -2250,6 +2376,14 @@ class TradingEngineCycle:
                 new_stop=aligned,
             )
             if not tighter:
+                self._raise_broker_truth_incident(
+                    trade,
+                    kind="external_stop_widen",
+                    payload={
+                        "engine_stop": trade.current_stop,
+                        "broker_trigger": aligned,
+                    },
+                )
                 return
             old = trade.current_stop
             self.store.update_trade(trade.trade_id, current_stop=aligned)
@@ -2279,6 +2413,7 @@ class TradingEngineCycle:
                 self.store.mark_command_processed(command.command_id)
                 continue
             if command.kind == "resume_entries":
+                self._clear_local_entries_lock()
                 self.consume_new_triggers = True
                 self.store.set_consume_triggers(self.run_id, True)
                 self.store.mark_command_processed(command.command_id)
@@ -2598,6 +2733,9 @@ class TradingEngineCycle:
         """Combined gate for new entry risk (pause, calendar, open, cutoff)."""
         if self._entries_paused():
             return "entries_paused"
+        feed_block = self._feed_entry_block_reason()
+        if feed_block is not None:
+            return feed_block
         cal = self._entry_calendar_block_reason()
         if cal is not None:
             return cal
@@ -2776,13 +2914,7 @@ class TradingEngineCycle:
     def _active_exit_reason_kind(
         self, trade: TradeRecord
     ) -> Optional[tuple[str, str]]:
-        for reason, kind in (
-            ("protection_deadline", "emergency"),
-            ("trail_through_exit", "trail_through"),
-            ("close_position", "user_close"),
-            ("close_all", "close_all"),
-            ("square_off", "square_off"),
-        ):
+        for reason, kind in DURABLE_MARKET_EXIT_OWNERS:
             if not self._has_exit_intent(trade.trade_id, reason=reason):
                 continue
             linked = self._linked_exit_order_id(trade, kind=kind)
@@ -2998,29 +3130,213 @@ class TradingEngineCycle:
             "protection_deadline_breach",
             payload={"deadline_at": trade.protection_deadline_at},
         )
-        try:
-            pause_store = AdminConfigStore(Path(self._admin_store.db_path), read_only=False)
-            pause_store.set_entries_paused(True)
-            pause_store.append_control_log(
-                actor_username="engine",
-                action="pause_entries",
-                result="ok",
-                detail="protection_deadline_breach",
-                version_id=pause_store.active_version_id(),
-            )
-            pause_store.close()
-        except Exception as exc:  # noqa: BLE001
-            self.store.append_event(
-                trade.trade_id,
-                "error",
-                payload={"reason": f"pause_failed:{exc}"},
-            )
-        self.consume_new_triggers = False
+        self._pause_entries_for("protection_deadline_breach", trade_id=trade.trade_id)
         self._durable_market_exit(
             trade,
             reason="protection_deadline",
             kind="emergency",
         )
+
+    def _has_trade_event(self, trade_id: str, action: str) -> bool:
+        for row in self.store.list_events(trade_id):
+            if str(row["action"]) == action:
+                return True
+        return False
+
+    def _pause_entries_for(self, detail: str, *, trade_id: Optional[str] = None) -> bool:
+        """Canonical pause + control log. On failure, keep/engage local entry lock.
+
+        Returns True only when the canonical admin pause flag is confirmed True.
+        """
+        self._engage_local_entries_lock(detail)
+        try:
+            pause_store = AdminConfigStore(Path(self._admin_store.db_path), read_only=False)
+            pause_store.set_entries_paused(True)
+            recent = pause_store.list_audit(limit=40)
+            logged = any(
+                str(r.get("action")) == "pause_entries" and str(r.get("detail") or "") == detail
+                for r in recent
+            )
+            if not logged:
+                pause_store.append_control_log(
+                    actor_username="engine",
+                    action="pause_entries",
+                    result="ok",
+                    detail=detail,
+                    version_id=pause_store.active_version_id(),
+                )
+            confirmed = bool(pause_store.read_entries_paused())
+            pause_store.close()
+            if confirmed:
+                # Canonical owns the pause; release local so Admin resume can clear it.
+                self._clear_local_entries_lock()
+                self._sync_pause_from_canonical()
+                return True
+        except Exception as exc:  # noqa: BLE001
+            if trade_id is not None:
+                self.store.append_event(
+                    trade_id,
+                    "error",
+                    payload={"reason": f"pause_failed:{exc}"},
+                )
+            else:
+                self.last_error = f"pause_failed:{exc}"
+        # Fail-closed: local lock remains; do not reload canonical permission.
+        self.consume_new_triggers = False
+        self.store.set_consume_triggers(self.run_id, False)
+        return False
+
+    def _broker_qty_matches_engine(
+        self, trade: TradeRecord, net: int, engine_pos: int
+    ) -> bool:
+        """Broker net must match engine remaining qty and side (UP long / DOWN short)."""
+        if engine_pos <= 0:
+            return net == 0
+        expected = engine_pos if str(trade.direction).upper() == "UP" else -engine_pos
+        return int(net) == int(expected)
+
+    def _raise_broker_truth_incident(
+        self,
+        trade: TradeRecord,
+        *,
+        kind: str,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Pause entries, durable event, mark reconciliation_required while exposed."""
+        body = dict(payload or {})
+        if not self._has_trade_event(trade.trade_id, kind):
+            self.store.append_event(trade.trade_id, kind, payload=body)
+        self._pause_entries_for(kind, trade_id=trade.trade_id)
+        pos = int(trade.remaining_position_qty or 0)
+        rem = int(trade.remaining_entry_qty or 0)
+        if trade.status not in {"closed", "skipped", "rejected"} and (pos > 0 or rem > 0):
+            if trade.status != "reconciliation_required":
+                self.store.update_trade(
+                    trade.trade_id,
+                    status="reconciliation_required",
+                )
+
+    def _session_has_recoverable_exposure(self) -> bool:
+        for trade in self.store.list_trades(self.session_date):
+            if trade.status not in ACTIVE_STATES:
+                continue
+            if int(trade.remaining_position_qty or 0) > 0:
+                return True
+            if int(trade.remaining_entry_qty or 0) > 0:
+                return True
+            if trade.status in {
+                "entry_submitting",
+                "submission_unknown",
+                "exit_pending",
+                "reconciliation_required",
+            }:
+                return True
+        return False
+
+    def enforce_restart_recovery(self) -> None:
+        """Pause entries while exposure needs management; retry until pause sticks."""
+        if self._restart_recovery_done:
+            return
+        if not self._session_has_recoverable_exposure():
+            self._restart_recovery_done = True
+            return
+        # Engage local lock before attempting canonical pause (fail-closed).
+        self._engage_local_entries_lock("restart_recovery")
+        if not self._pause_entries_for("restart_recovery"):
+            # Pause store failed or unconfirmed — keep local lock; retry next tick.
+            return
+        self._restart_recovery_done = True
+        for trade in self.store.list_trades(self.session_date):
+            if trade.status in ACTIVE_STATES:
+                self.store.append_event(
+                    trade.trade_id,
+                    "restart_recovery",
+                    payload={"entries_paused": True},
+                )
+
+    def _session_open_minutes(self) -> Optional[int]:
+        sched = self._configured_special_schedule()
+        if sched is not None:
+            return parse_hhmm(sched.session_open_ist)
+        return parse_hhmm(DEFAULT_SESSION_OPEN_IST_HHMM)
+
+    def _in_feed_trading_window(self) -> bool:
+        """True during cash trading window (open ≤ now < square-off). Pre-open excluded."""
+        open_m = self._session_open_minutes()
+        end_m = self._session_gate_minutes(
+            "square_off_ist", DEFAULT_SQUARE_OFF_IST_HHMM
+        )
+        if open_m is None or end_m is None:
+            return False
+        now_m = self._ist_minutes_now()
+        return open_m <= now_m < end_m
+
+    def _feed_age_seconds(self) -> Optional[float]:
+        """Return finite non-negative feed age, or None when unknown/invalid/unwired."""
+        if self._feed_age_seconds_fn is None:
+            return None
+        try:
+            age = self._feed_age_seconds_fn()
+        except Exception:  # noqa: BLE001
+            return None
+        if age is None:
+            return None
+        try:
+            value = float(age)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+        return value
+
+    def _feed_entry_block_reason(self) -> Optional[str]:
+        """Block new risk during trading hours when feed is unknown/stale."""
+        if not self._in_feed_trading_window():
+            return None
+        age = self._feed_age_seconds()
+        if age is None:
+            return "feed_unknown"
+        if age >= FEED_STALE_PAUSE_SECONDS:
+            return "feed_stale"
+        return None
+
+    def _feed_blocks_price_actions(self) -> bool:
+        return self._feed_entry_block_reason() is not None
+
+    def enforce_feed_staleness(self) -> None:
+        """Trading-window only: unknown/5s pause entries+trails; 30s managed exit."""
+        if not self._in_feed_trading_window():
+            return
+        age = self._feed_age_seconds()
+        if age is None:
+            self._pause_entries_for("feed_unknown")
+            return
+        if age >= FEED_STALE_PAUSE_SECONDS:
+            self._pause_entries_for("feed_stale")
+        if age < FEED_STALE_EXIT_SECONDS:
+            return
+        for trade in self.store.list_trades(self.session_date):
+            if trade.status in {"closed", "skipped", "rejected"}:
+                continue
+            pos = int(trade.remaining_position_qty or 0)
+            if pos <= 0 and int(trade.remaining_entry_qty or 0) <= 0:
+                continue
+            quote = self._position_quote(trade.symbol)
+            if quote is None and self.live_orders_enabled:
+                continue
+            net = self.broker.net_position_qty(trade.symbol)
+            if net is None:
+                continue
+            if not self._has_exit_intent(trade.trade_id, reason="feed_stale"):
+                self.store.append_event(
+                    trade.trade_id,
+                    "feed_stale_exit_requested",
+                    payload={"feed_age_seconds": age},
+                )
+            # Shared dispatcher owns serialization vs Close All / square-off / etc.
+            self._request_market_exit(
+                trade, reason="feed_stale", kind="emergency", actor="engine"
+            )
 
     def _exit_order_tag(self, trade: TradeRecord, kind: str) -> str:
         base = str(trade.broker_tag or "NR")[:12]
@@ -3173,13 +3489,7 @@ class TradingEngineCycle:
                 and self._broker_is_flat(trade)
             ):
                 continue
-            for reason, kind in (
-                ("protection_deadline", "emergency"),
-                ("trail_through_exit", "trail_through"),
-                ("close_position", "user_close"),
-                ("close_all", "close_all"),
-                ("square_off", "square_off"),
-            ):
+            for reason, kind in DURABLE_MARKET_EXIT_OWNERS:
                 if self._has_exit_intent(trade.trade_id, reason=reason):
                     self._durable_market_exit(trade, reason=reason, kind=kind)
 
@@ -3580,6 +3890,8 @@ class TradingEngineCycle:
                 self._clear_active_exit_order(refreshed, order_id=str(order.order_id))
 
     def apply_auto_trails(self) -> None:
+        if self._feed_blocks_price_actions():
+            return
         for trade in self.store.list_trades(self.session_date):
             if not trade.auto_trail_enabled:
                 continue
@@ -3723,12 +4035,20 @@ class TradingEngineCycle:
             trade.entry_fill is None or abs(float(quote.average_price) - float(trade.entry_fill)) > 1e-9
         ):
             fields["entry_fill"] = float(quote.average_price)
-        if quote.quantity != 0 and abs(int(quote.quantity)) != int(trade.filled_qty or trade.qty):
-            self.store.append_event(
-                trade.trade_id,
-                "qty_mismatch",
-                payload={"net": quote.quantity, "engine_qty": int(trade.filled_qty or trade.qty)},
-            )
+        if quote.quantity != 0:
+            remaining = int(trade.remaining_position_qty or 0)
+            if remaining > 0 and not self._broker_qty_matches_engine(
+                trade, int(quote.quantity), remaining
+            ):
+                self._raise_broker_truth_incident(
+                    trade,
+                    kind="qty_mismatch",
+                    payload={
+                        "net": int(quote.quantity),
+                        "engine_qty": remaining,
+                        "source": "mark_to_market",
+                    },
+                )
         current = self.store.get_trade(trade.trade_id)
         if current is None:
             return

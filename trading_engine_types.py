@@ -30,6 +30,11 @@ TRAIL_MIN_IMPROVEMENT_TICKS = 2
 # WP-1.4 session gates (IST wall-clock as HHMM float for admin float payloads).
 DEFAULT_ENTRY_CUTOFF_IST_HHMM = 1445.0  # 14:45 IST
 DEFAULT_SQUARE_OFF_IST_HHMM = 1515.0  # 15:15 IST
+# Normal-session cash open (IST). Special sessions use SpecialSessionSchedule.open.
+DEFAULT_SESSION_OPEN_IST_HHMM = 915.0  # 09:15 IST
+# WP-1.5 feed-staleness rules (trading window only).
+FEED_STALE_PAUSE_SECONDS = 5.0
+FEED_STALE_EXIT_SECONDS = 30.0
 
 TradeStatus = Literal[
     "candidate",
