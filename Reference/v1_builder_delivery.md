@@ -620,6 +620,6 @@ release at any future code deploy):
 ### Cutover status
 
 **Not executed.** Await NJ’s explicit approval of
-`Reference/v1_paper_clean_start_cutover.md` for commit `CLEANSTART_COMMIT_SHA`.
+`Reference/v1_paper_clean_start_cutover.md` for commit `c07f08cd146409506950892a6a8b6fc11df823c3`.
 Preserve: LIVE gates disabled, ₹2995, credentials, market history, both ledgers.
 

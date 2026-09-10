@@ -1,6 +1,6 @@
 # V1 PAPER clean-start cutover (await NJ explicit approval)
 
-**Code baseline:** commit `CLEANSTART_COMMIT_SHA` on `codex/v1-acceptance-review`  
+**Code baseline:** commit `c07f08cd146409506950892a6a8b6fc11df823c3` on `codex/v1-acceptance-review`  
 (worktree `/opt/nifty-radar/worktrees/v1-acceptance`).  
 **Not authorized by this document alone.** Do not deploy, switch production storage,
 or start an engine until NJ explicitly approves this exact cutover.
@@ -31,7 +31,7 @@ Ownership:
 
 ## Preconditions (abort if any fail)
 
-1. Approved release of commit `CLEANSTART_COMMIT_SHA` is what will run (or is already
+1. Approved release of commit `c07f08cd146409506950892a6a8b6fc11df823c3` is what will run (or is already
    staged for cutover). Do not run bootstrap against a different tree.
 2. Observation/trading runners absent. `pgrep` exit **1** only means clear; any other
    discovery error aborts. Do **not** kill runners automatically — stop and await NJ.
@@ -50,11 +50,11 @@ Ownership:
 
 ```bash
 set -euo pipefail
-# Prefer the approved release that contains CLEANSTART_COMMIT_SHA.
+# Prefer the approved release that contains c07f08cd146409506950892a6a8b6fc11df823c3.
 cd /opt/nifty-radar/current
 
 # 0) Confirm tree
-git rev-parse HEAD   # must equal CLEANSTART_COMMIT_SHA (or release built from it)
+git rev-parse HEAD   # must equal c07f08cd146409506950892a6a8b6fc11df823c3 (or release built from it)
 
 # 1) Abort if observation/trading runners are present
 if pgrep -af 'live_observation_runner|trading_engine_loop|live_trading_engine' \
