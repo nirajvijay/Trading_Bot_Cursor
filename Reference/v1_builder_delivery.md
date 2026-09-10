@@ -226,6 +226,19 @@ Profile + WP13 + Admin store + control suites: **46 tests in 0.662s, OK**. New t
 cover invalid profiles, default compatibility, Saved/Effective and old-trade
 isolation, and mirrored long/short custom-gap math. Frontend build passes.
 
+## First-run/calendar and owner recovery checkpoint
+
+Calendar header now reads a private server endpoint using the configured NSE
+calendar, not browser weekday-only assumptions. Unconfigured calendar years block
+new entries and show UNKNOWN. Thirty observation/calendar/close tests pass; the
+frontend builds. Embedded Kite form no longer imposes full-page height inside
+Checklist. Token-check errors are surfaced rather than left as unhandled promises.
+
+Added `Reference/v1_owner_recovery_and_pilot.md`: practical pause/reconcile/Kite
+inspection steps, command distinctions, unknown-order caution, dashboard-only
+alert limitations and a separately authorized supervised minimum-size MANUAL
+pilot. No live pilot was run or authorized by this document.
+
 ## Lightsail read-only deployment preflight (2026-09-10)
 
 SSH inspection confirms current release remains

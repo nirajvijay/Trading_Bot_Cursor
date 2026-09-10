@@ -58,7 +58,7 @@ function kiteBannerFromQuery(): { kind: 'ok' | 'error'; text: string } | null {
   return null
 }
 
-export function KiteAuthPage() {
+export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
   const [status, setStatus] = useState<AuthStatusResponse | null>(null)
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
   const [requestToken, setRequestToken] = useState('')
@@ -275,7 +275,7 @@ export function KiteAuthPage() {
   const alertMessage = error ?? success
 
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden bg-background">
+    <div className={`flex flex-col ${embedded ? '' : 'h-full min-h-0 overflow-hidden'} bg-background`}>
       <div className="shrink-0 px-5 py-3 border-b border-outline-variant bg-white">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 min-w-0">

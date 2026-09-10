@@ -35,7 +35,7 @@ export function MorningChecklist({data, loading, error, onRefresh, tokenChecking
     {(error || failure) && <p role="alert" className="notice-error">{error || failure}</p>}
     {message && <p role="status" className="notice-info">{message}</p>}
     {task && <p role="status" className="notice-info">Preparing {task} · {elapsed}s elapsed. Waiting for the completed result; no estimated percentage.</p>}
-    <section className="prep-step"><div className="prep-title"><span>1</span><h2>Connect and validate Kite</h2><button disabled={tokenChecking} onClick={() => void onCheckToken().then(onRefresh)}>{tokenChecking ? 'Checking…' : 'Check token'}</button></div><KiteAuthPage /></section>
+    <section className="prep-step"><div className="prep-title"><span>1</span><h2>Connect and validate Kite</h2><button disabled={tokenChecking} onClick={() => void onCheckToken().then(onRefresh).catch(() => setFailure('Token check could not finish. Refresh checks and retry.'))}>{tokenChecking ? 'Checking…' : 'Check token'}</button></div><KiteAuthPage embedded /></section>
     {STEPS.map(([key,number,title,action], index) => {
       const area=data?.areas[key]
       const previousReady=!!data && data.areas.kite_auth.status === 'ok' && STEPS.slice(0,index).every(([previous]) => data.areas[previous].status === 'ok')

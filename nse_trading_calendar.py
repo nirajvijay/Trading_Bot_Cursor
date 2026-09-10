@@ -14,6 +14,21 @@ from typing import FrozenSet, Optional
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
+SUPPORTED_CALENDAR_YEARS = frozenset({2025, 2026})
+
+
+def calendar_session_status(now: datetime) -> dict:
+    now = now.astimezone(IST)
+    reason = entry_calendar_block_reason(now.date().isoformat(), now)
+    minute = now.hour * 60 + now.minute
+    if reason and reason != "nse_holiday_or_weekend":
+        state = "UNKNOWN"
+    elif reason:
+        state = "CLOSED"
+    else:
+        state = "OPEN" if 555 <= minute < 930 else "CLOSED"
+    return {"state":state,"reason":reason,"as_of":now.isoformat(),
+            "source":"configured NSE calendar; not a market-feed health claim"}
 
 # NSE capital-market closed days (YYYY-MM-DD). Weekends are handled separately.
 NSE_HOLIDAYS: FrozenSet[str] = frozenset(
@@ -203,6 +218,8 @@ def entry_calendar_block_reason(
     clock_day = now.astimezone(IST).date()
     if clock_day != session_day:
         return "session_date_mismatch"
+    if session_day.year not in SUPPORTED_CALENDAR_YEARS:
+        return "calendar_year_unconfigured"
     iso = session_day.isoformat()
     if is_special_session_day(session_day):
         if special_session_schedule is None:

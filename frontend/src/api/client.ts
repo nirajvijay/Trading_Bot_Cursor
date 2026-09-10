@@ -27,6 +27,7 @@ const BASE = '/api/v1'
 
 export interface SectorMap {version: string; universe_version: string; valid: boolean; reason: string | null; symbol_count: number; sectors: {name: string; symbols: string[]}[]}
 export function fetchSectorMap() {return getJson<SectorMap>('/observation/sectors')}
+export function fetchSessionClock() {return getJson<{state: string; reason: string | null; as_of: string}>('/observation/session-clock')}
 export interface ControlStrip {execution_mode: string; entry_mode: string; entry_permission: string; engine_state: string; feed_age_seconds: number | null; feed_status: string; sync_age_seconds: number | null; mark_age_seconds: number | null; open_pnl: number | null; unresolved_incident: boolean; as_of: string}
 export interface TradingCommand {command_id: number; kind: string; state: string; result?: Record<string, unknown>; trade_id?: string | null}
 export interface TradingControl {strip: ControlStrip; effective: Record<string, number>; saved: Record<string, number>; effective_version_id: string; saved_version_id: string; live_execution_authorized: boolean; commands: TradingCommand[]; incidents: Record<string,unknown>[]; recovery_events: Record<string,unknown>[]}

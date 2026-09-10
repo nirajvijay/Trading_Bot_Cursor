@@ -1,4 +1,5 @@
-import { marketStatusNow } from '../lib/format'
+import {useEffect, useState} from 'react'
+import {fetchSessionClock} from '../api/client'
 import type { RunnerStatus, SessionCoverage } from '../api/types'
 
 export type AppTab = 'radar' | 'checklist' | 'auth' | 'trading' | 'admin'
@@ -28,7 +29,17 @@ export function TopAppBar({
   username,
   onLogout,
 }: Props) {
-  const market = marketStatusNow()
+  const [market,setMarket] = useState('UNKNOWN')
+  useEffect(() => {
+    let disposed=false
+    let timer: ReturnType<typeof setTimeout>
+    async function poll() {
+      try {const clock=await fetchSessionClock(); if(!disposed) setMarket(clock.state)}
+      catch {if(!disposed) setMarket('UNKNOWN')}
+      if(!disposed) timer=setTimeout(poll,15000)
+    }
+    void poll();return () => {disposed=true;clearTimeout(timer)}
+  },[])
   const subscribed = status?.subscribed_tokens ?? coverage?.subscribed ?? '—'
 
   return (
@@ -40,7 +51,7 @@ export function TopAppBar({
         <div className="h-4 w-px bg-outline-variant hidden sm:block" />
         <div className="hidden md:flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-1.5">
-            <span className="label-caps text-on-surface-variant">Market status:</span>
+            <span className="label-caps text-on-surface-variant">Calendar session:</span>
             <span className={`label-caps flex items-center gap-1 ${market === 'OPEN' ? 'text-positive' : 'text-on-surface-variant'}`}>
               {market === 'OPEN' && <span className="w-1.5 h-1.5 rounded-full bg-positive pulse-green" />}
               {market}
