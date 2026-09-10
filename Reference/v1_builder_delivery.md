@@ -377,3 +377,22 @@ Full staged candidate suite on host runtime: `python -m unittest discover -s
 tests -q` completed **771 tests in 122.383s, OK**. Deliberately injected fault
 tracebacks are test fixtures, not production failures. This verifies isolated
 behavior on the target Python installation, not live market/broker equivalence.
+
+## Final owner-surface review — remaining acceptance items
+
+Re-read owner Ideas 1–4 / E1–E4 against current UI source. Do not treat the 771
+host tests as completion of these UI requirements:
+
+- Desk currently provides a tick-stepped numeric stop field but lacks the explicit
+  manual plus/minus tick controls and direction explanation requested in Idea 3.
+- History currently shows stored closed P&L without an explicit provisional flag;
+  the audit drawer does flag provisional data. History needs the same distinction.
+- Admin Overview shows trading/feed status but not the full relevant observation
+  process status requested in Idea 4.
+- Browser interaction/layout acceptance is still unverified. Server renders are
+  not equivalent evidence.
+
+Runner heartbeat parsing also now rejects JSON scalars, missing session identity,
+timezone-naive timestamps, and future timestamps rather than treating them as
+fresh. Focused identity/loop/control/API regressions: **23 OK**. This code change
+postdates the staged candidate and requires refreshing it before cutover.

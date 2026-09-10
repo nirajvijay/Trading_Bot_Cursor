@@ -43,7 +43,8 @@ def read_heartbeat() -> Optional[dict]:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
     except (OSError, json.JSONDecodeError, ValueError):
         return None
 
@@ -52,7 +53,7 @@ def is_heartbeat_fresh(*, expected_session_date: Optional[str] = None) -> bool:
     data = read_heartbeat()
     if not data:
         return False
-    if expected_session_date and data.get("session_date") not in (None, expected_session_date):
+    if expected_session_date and data.get("session_date") != expected_session_date:
         return False
     updated_at = data.get("updated_at")
     if not updated_at:
@@ -62,9 +63,9 @@ def is_heartbeat_fresh(*, expected_session_date: Optional[str] = None) -> bool:
     except ValueError:
         return False
     if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=IST)
+        return False
     age = (datetime.now(IST) - updated.astimezone(IST)).total_seconds()
-    return age < STALE_SECONDS
+    return 0 <= age < STALE_SECONDS
 
 
 def heartbeat_indicates_running(*, expected_session_date: Optional[str] = None) -> bool:

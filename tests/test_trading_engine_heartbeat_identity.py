@@ -1,9 +1,26 @@
 """Status must belong to the running session, not merely have fresh timestamps."""
 import unittest
+from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
 from api.queries.trading import current_run_heartbeat
+from api.services.trading_engine_runner import is_heartbeat_fresh
 
 
 class HeartbeatIdentityTests(unittest.TestCase):
+    def test_runner_heartbeat_rejects_future_naive_missing_session_and_old(self):
+        now = datetime.now(timezone.utc)
+        for updated, day, expected in (
+            ((now - timedelta(seconds=1)).isoformat(), "2026-09-10", True),
+            ((now + timedelta(minutes=1)).isoformat(), "2026-09-10", False),
+            ((now - timedelta(minutes=1)).isoformat(), "2026-09-10", False),
+            (now.replace(tzinfo=None).isoformat(), "2026-09-10", False),
+            (now.isoformat(), None, False),
+        ):
+            with self.subTest(updated=updated, day=day), patch(
+                "api.services.trading_engine_runner.read_heartbeat",
+                return_value={"updated_at":updated,"session_date":day}):
+                self.assertEqual(is_heartbeat_fresh(expected_session_date="2026-09-10"), expected)
+
     def test_current_run_required_even_when_snapshot_is_fresh(self):
         run = {"run_id": "new", "session_date": "2026-09-10"}
         heartbeat = {**run, "broker_sync_at": "2026-09-10T05:00:00+00:00"}
