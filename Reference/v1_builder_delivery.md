@@ -322,3 +322,19 @@ or browser-session acceptance claim.
 
 Full suite: **768 tests in 12.133s, OK**. Focused PAPER/control/identity set:
 **21 tests, OK**. No real orders, production migration or deployment.
+
+## Session report execution diagnostics
+
+Report version 2 adds per-trade estimated round-trip charges from the frozen bps
+profile, estimated net P&L, gross/net frozen-R outcomes, signed entry VWAP slippage
+versus trigger, and first observed entry-fill to recorded full-cover delay.
+Charges are explicitly estimates, not broker ledger fees. Slippage is already in
+fill-based P&L and is never subtracted again. Open/provisional/incomplete outcomes
+and absent profiles return null rather than invented net/R values. Delay uses
+local audit timestamps, not exchange latency, and does not claim to measure every
+later interval of unprotected exposure.
+
+Focused report/PAPER/control tests: **23 OK**. Both MANUAL and AUTOPILOT persistent
+PAPER session tests assert that actual engine-generated report records contain
+delay, frozen-R and zero-charge fixture metrics; PAPER/report rerun **13 OK**.
+No real orders or deployment. Broader final acceptance remains pending.

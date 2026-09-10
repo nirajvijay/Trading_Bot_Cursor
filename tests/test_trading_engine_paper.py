@@ -185,6 +185,10 @@ class PaperTests(unittest.TestCase):
             report = session_report(store, "2026-08-17")
             paper = report["modes"]["PAPER"]
             self.assertEqual(paper["strategy_outcomes"]["closed_with_complete_prices"], 1)
+            metric = paper["strategy_outcomes"]["trade_execution_metrics"][0]
+            self.assertIsNotNone(metric["first_observed_fill_to_cover_seconds"])
+            self.assertIsNotNone(metric["gross_r_outcome"])
+            self.assertEqual(metric["estimated_round_trip_charges"], 0)
             self.assertEqual(paper["engineering_quality"]["unresolved_exposure_trade_ids"], [])
             self.assertEqual(paper["engineering_quality"]["current_unprotected_trade_ids"], [])
             self.assertEqual(report["modes"]["LIVE"]["strategy_outcomes"]["observed_trade_records"], 0)
