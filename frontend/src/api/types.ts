@@ -320,6 +320,7 @@ export interface ObservationStartResponse {
 export type TradingEngineState = 'stopped' | 'starting' | 'running' | 'error' | 'critical'
 
 export interface TradingTradeRow {
+  pnl_provisional?: boolean
   trade_id: string
   setup_id: string
   symbol: string

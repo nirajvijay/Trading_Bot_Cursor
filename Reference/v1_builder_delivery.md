@@ -396,3 +396,21 @@ Runner heartbeat parsing also now rejects JSON scalars, missing session identity
 timezone-naive timestamps, and future timestamps rather than treating them as
 fresh. Focused identity/loop/control/API regressions: **23 OK**. This code change
 postdates the staged candidate and requires refreshing it before cutover.
+
+## Owner UI gap closure
+
+Desk now has explicit +/- one-tick stop drafting with instrument tick size,
+BUY-raise/SELL-lower direction guidance, and disabled steps that would widen past
+the confirmed stop. Stepping edits only the draft; Request trail still uses the
+durable command path and backend safety checks. Session history labels provisional
+or missing-completeness P&L; snapshot serialization now supplies that flag.
+
+Admin displays observation-runner state from the existing readiness API alongside
+trading state and checklist/feed status. It distinguishes active/starting from
+fresh feed and marks the status view stale after five seconds without refresh.
+Strategy stages are correctly described as part of the observation process.
+
+Production frontend build passed; server-render tests cover both long/short tick
+boundaries; cycle/control focused suite **40 OK**. Browser interaction/layout
+acceptance remains unverified. Updated frontend JS is `index-zqNBCdpL.js`; staged
+candidate assets are now outdated and must be replaced before cutover.

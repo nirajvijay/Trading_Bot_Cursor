@@ -283,6 +283,7 @@ def snapshot_dict(
     def trade_json(t: TradeRecord) -> dict[str, Any]:
         exposure_qty = int(t.filled_qty or 0) if int(t.filled_qty or 0) > 0 else int(t.qty or 0)
         return {
+            "pnl_provisional": bool(t.pnl_provisional or t.entry_value_est > 0 or t.exit_value_est > 0),
             "trade_id": t.trade_id,
             "setup_id": t.setup_id,
             "symbol": t.symbol,

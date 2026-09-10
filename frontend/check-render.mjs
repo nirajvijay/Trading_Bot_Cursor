@@ -24,5 +24,17 @@ try {
     const html = renderToStaticMarkup(React.createElement(module[name],props))
     assert.ok(html.includes(text),`${name}: missing initial-state content`)
   }
-  console.log('PASS: public + four owner initial-state server renders; no render-time requests. Browser interactions untested.')
+  const {StopDraftControl} = await server.ssrLoadModule('/src/components/StopDraftControl.tsx')
+  for (const direction of ['UP','DOWN']) {
+    const html = renderToStaticMarkup(React.createElement(StopDraftControl, {
+      value:'',confirmed:100,tick:0.05,direction,disabled:false,onChange:()=>{},
+    }))
+    assert.match(html,/0.05/)
+    assert.ok(html.includes(direction === 'UP' ? 'BUY: raise stop' : 'SELL: lower stop'))
+    const buttons = [...html.matchAll(/<button([^>]*)>(.*?)<\/button>/g)]
+    assert.equal(buttons.length,2)
+    assert.equal(buttons[0][1].includes('disabled'),direction === 'UP')
+    assert.equal(buttons[1][1].includes('disabled'),direction === 'DOWN')
+  }
+  console.log('PASS: public + four owner initial-state renders and long/short tick-control boundaries. Browser interactions untested.')
 } finally {await server.close()}

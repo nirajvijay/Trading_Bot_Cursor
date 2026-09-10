@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
-import {ApiError, fetchAdminConfig, fetchTradingControl, patchAdminConfig, postAdminRollback, postTradingCommand, type TradingControl} from '../../api/client'
-import type {AdminConfigResponse, AdminConfigValues} from '../../api/types'
+import {ApiError, fetchAdminConfig, fetchTradingControl, fetchObservationReadiness, patchAdminConfig, postAdminRollback, postTradingCommand, type TradingControl} from '../../api/client'
+import type {AdminConfigResponse, AdminConfigValues, ObservationReadiness} from '../../api/types'
 import {AdminAuditPanel} from './AdminAuditPanel'
 import {AdminStepUpModal} from './AdminStepUpModal'
 
@@ -29,6 +29,9 @@ export function AdminWorkspace() {
   const [tab,setTab] = useState<Tab>('Overview')
   const [config,setConfig] = useState<AdminConfigResponse | null>(null)
   const [control,setControl] = useState<TradingControl | null>(null)
+  const [observation,setObservation] = useState<ObservationReadiness | null>(null)
+  const [statusReceived,setStatusReceived] = useState(0)
+  const [now,setNow] = useState(Date.now())
   const [draft,setDraft] = useState<Record<string,string>>({})
   const [baseVersion,setBaseVersion] = useState('')
   const [comment,setComment] = useState('')
@@ -39,13 +42,15 @@ export function AdminWorkspace() {
   const pending = useRef<(() => Promise<void>) | null>(null)
   const draftLoaded = useRef(false)
   const refresh = useCallback(async () => {
-    const [c,s] = await Promise.all([fetchAdminConfig(),fetchTradingControl()])
+    const [c,s,o] = await Promise.all([fetchAdminConfig(),fetchTradingControl(),fetchObservationReadiness().catch(() => null)])
     setConfig(c); setControl(s)
+    setObservation(o); setStatusReceived(Date.now())
     if(!draftLoaded.current) {draftLoaded.current=true;setDraft(formOf(c));setBaseVersion(c.version_id)}
   },[])
   useEffect(() => {let stopped=false; let timer: ReturnType<typeof setTimeout>
     async function poll() {try {await refresh()} catch(e) {if(!stopped) setError(e instanceof Error ? e.message : 'Admin unavailable')} if(!stopped) timer=setTimeout(poll,3000)}
-    void poll(); return () => {stopped=true; clearTimeout(timer)}
+    const clock=setInterval(() => setNow(Date.now()),1000)
+    void poll(); return () => {stopped=true; clearTimeout(timer);clearInterval(clock)}
   },[refresh])
   async function run(action: () => Promise<void>) {
     setBusy(true); setError('')
@@ -77,6 +82,14 @@ export function AdminWorkspace() {
   return <main className="trading-desk admin-workspace"><header className="desk-heading"><div><h1>Admin</h1><p>One owner · Saved settings are not automatically armed</p></div></header>
     <div className="desk-panel desk-actions"><button disabled={busy} onClick={() => command('pause_entries')}>Pause entries</button><button disabled={busy} onClick={() => command('disarm')}>Disarm</button><button disabled={busy} onClick={() => {if(window.confirm('Close all engine-owned positions and pause?')) command('close_all')}}>Close all & pause</button><button disabled={busy} onClick={() => command('stop_engine')}>Stop engine · drain</button></div>
     <nav className="admin-tabs" aria-label="Admin sections">{tabs.map(t => <button key={t} aria-current={tab===t?'page':undefined} onClick={() => setTab(t)}>{t}</button>)}</nav>
+    <section className="desk-panel" aria-label="Process status"><h2>Process status</h2>
+      {!statusReceived || now-statusReceived>5000 ? <p role="status">STATUS STALE — reconnect before relying on process state.</p> : <>
+        <p>Trading engine: {control?.strip.engine_state ?? 'unknown'}</p>
+        <p>Observation runner: {observation == null ? 'unknown' : observation.runner_running ? 'active / starting' : 'not running'}. Feed: {control?.strip.feed_status ?? 'unknown'}.</p>
+        <p>Checklist: {observation?.checklist_status ?? 'unknown'} · {observation?.reason}</p>
+        <p>Observation strategy stages share the observation runner; they are not separate processes. A running process does not guarantee fresh market data.</p>
+      </>}
+    </section>
     {error && <p role="alert" className="desk-alert">{error}</p>}{notice && <p role="status" className="desk-notice">{notice}</p>}
     {conflict && <p role="alert" className="desk-alert">Saved settings changed since this draft began. Discard and reload before editing again; this draft cannot overwrite the newer version.</p>}
     {!config ? <p>Loading configuration…</p> : <>
