@@ -44,7 +44,7 @@ export function AppFooter({
             TRADING ENGINE V1
           </span>
         </div>
-        <span className="label-caps tracking-wider">Demo 5x unless Live Kite orders is checked</span>
+        <span className="label-caps tracking-wider">Simulation is not live-fill evidence · LIVE requires separate authorization</span>
         <div className="flex items-center gap-1.5 font-data">
           <span className="material-symbols-outlined text-[14px]">schedule</span>
           <span>{now} IST</span>

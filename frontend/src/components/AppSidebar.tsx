@@ -7,11 +7,10 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'radar', icon: 'grid_view', label: 'Radar Board' },
-  { id: 'checklist', icon: 'fact_check', label: 'Pre-Market Checklist' },
-  { id: 'trading', icon: 'monitoring', label: 'Trading Engine' },
-  { id: 'admin', icon: 'tune', label: 'Admin Console' },
-  { id: 'auth', icon: 'link', label: 'Kite Auth' },
+  { id: 'checklist', icon: 'fact_check', label: 'Checklist' },
+  { id: 'radar', icon: 'grid_view', label: 'Radar' },
+  { id: 'trading', icon: 'monitoring', label: 'Desk' },
+  { id: 'admin', icon: 'tune', label: 'Admin' },
 ]
 
 interface Props {
@@ -21,7 +20,7 @@ interface Props {
 
 export function AppSidebar({ activeTab, onTabChange }: Props) {
   return (
-    <aside className="w-14 shrink-0 bg-[#0f172a] flex flex-col items-center py-3 border-r border-[#1e293b] z-50">
+    <aside className="w-24 shrink-0 bg-[#0f172a] flex flex-col items-center py-3 border-r border-[#1e293b] z-50">
       <div className="flex flex-col items-center gap-2 flex-1">
         {NAV_ITEMS.map((item) => {
           const isActive = item.id === activeTab
@@ -31,25 +30,19 @@ export function AppSidebar({ activeTab, onTabChange }: Props) {
               type="button"
               title={item.label}
               onClick={() => onTabChange(item.id)}
-              className={`w-10 h-10 flex items-center justify-center rounded transition-colors ${
+              aria-current={isActive ? 'page' : undefined}
+              className={`w-20 min-h-16 flex flex-col gap-1 items-center justify-center rounded transition-colors ${
                 isActive
                   ? 'bg-primary text-white'
                   : 'text-slate-400 hover:bg-[#1e293b] hover:text-slate-200'
               }`}
             >
               <span className="material-symbols-outlined text-[22px]">{item.icon}</span>
+              <span className="text-sm">{item.label}</span>
             </button>
           )
         })}
       </div>
-      <button
-        type="button"
-        title="Help"
-        disabled
-        className="w-10 h-10 flex items-center justify-center rounded text-slate-600 opacity-40 cursor-not-allowed"
-      >
-        <span className="material-symbols-outlined text-[22px]">help</span>
-      </button>
     </aside>
   )
 }

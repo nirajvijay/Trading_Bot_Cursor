@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from api import config
+from config.nifty100_sector_map import sector_map_payload
 from nse_trading_calendar import is_nse_trading_day, is_special_session_day
 from api.services.checklist_cache import read_checklist_cache
 from api.services.observation_start_lock import (
@@ -160,6 +161,9 @@ def fetch_checklist_summary(session_date: Optional[str] = None) -> dict:
     Cache miss → not_checked with a run-checklist reason.
     """
     date = session_date or _today_ist()
+    sector_map = sector_map_payload()
+    if not sector_map["valid"]:
+        return {"session_date": date, "overall_status": "failed", "reason_summary": sector_map["reason"]}
     cached = read_checklist_cache(date)
     if cached is None:
         return {

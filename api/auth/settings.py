@@ -84,10 +84,10 @@ KITE_PASTE_LOGIN_ENABLED = _env_bool(
 )
 KITE_EXPECTED_USER_ID = (os.environ.get("KITE_EXPECTED_USER_ID") or "").strip() or None
 KITE_SUCCESS_REDIRECT_PATH = (
-    os.environ.get("KITE_SUCCESS_REDIRECT_PATH") or "/?kite=connected"
+    os.environ.get("KITE_SUCCESS_REDIRECT_PATH") or "/owner?kite=connected"
 ).strip()
 KITE_FAILURE_REDIRECT_PATH = (
-    os.environ.get("KITE_FAILURE_REDIRECT_PATH") or "/?kite=error"
+    os.environ.get("KITE_FAILURE_REDIRECT_PATH") or "/owner?kite=error"
 ).strip()
 
 SESSION_COOKIE_NAME = "nr_session"
@@ -216,8 +216,8 @@ def reload_from_environ() -> None:
     )
     KITE_EXPECTED_USER_ID = (os.environ.get("KITE_EXPECTED_USER_ID") or "").strip() or None
     KITE_SUCCESS_REDIRECT_PATH = (
-        os.environ.get("KITE_SUCCESS_REDIRECT_PATH") or "/?kite=connected"
+        os.environ.get("KITE_SUCCESS_REDIRECT_PATH") or "/owner?kite=connected"
     ).strip()
     KITE_FAILURE_REDIRECT_PATH = (
-        os.environ.get("KITE_FAILURE_REDIRECT_PATH") or "/?kite=error"
+        os.environ.get("KITE_FAILURE_REDIRECT_PATH") or "/owner?kite=error"
     ).strip()

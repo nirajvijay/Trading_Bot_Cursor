@@ -53,6 +53,18 @@ def _restore_env(prev: dict[str, object]) -> None:
 
 
 class ProductionGuardTests(unittest.TestCase):
+    def test_kite_redirects_return_to_owner_not_public_home(self) -> None:
+        for outcome in ("connected", "error"):
+            self.assertEqual(
+                auth_router._safe_redirect(f"/?kite={outcome}").headers["location"],
+                f"/owner?kite={outcome}",
+            )
+        for unsafe in ("https://example.com", "//example.com"):
+            self.assertEqual(
+                auth_router._safe_redirect(unsafe).headers["location"],
+                "/owner?kite=error",
+            )
+
     def test_production_forbids_disabled_web_auth(self) -> None:
         prev = _set_prod_env(WEB_AUTH_ENABLED="false")
         try:

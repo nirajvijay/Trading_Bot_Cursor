@@ -6,11 +6,12 @@ import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
 import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
-import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
-import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
-import { RadarTable } from './components/RadarTable'
+import { MorningChecklist } from './components/MorningChecklist'
+import { SectorBoard } from './components/SectorBoard'
+import { PublicHome } from './components/PublicHome'
+import { PrivateStatusStrip } from './components/PrivateStatusStrip'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
 import { TradingEnginePage } from './components/TradingEnginePage'
 import { StatusStrip } from './components/StatusStrip'
@@ -63,10 +64,15 @@ function exportCsv(rows: RadarRow[]) {
 }
 
 export default function App() {
+  // The public route mounts no authenticated hooks and makes no private API calls.
+  return window.location.pathname === '/' ? <PublicHome /> : <OwnerApp />
+}
+
+function OwnerApp() {
   const [me, setMe] = useState<MeResponse | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [authChecked, setAuthChecked] = useState(false)
-  const [activeTab, setActiveTab] = useState<AppTab>('radar')
+  const [activeTab, setActiveTab] = useState<AppTab>('checklist')
   const [sessionDate, setSessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
   const authenticated = Boolean(me)
@@ -101,8 +107,6 @@ export default function App() {
   )
   const [startingObservation, setStartingObservation] = useState(false)
   const [observationError, setObservationError] = useState<string | null>(null)
-  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
-  const [timelineRefreshToken, setTimelineRefreshToken] = useState(0)
 
   const clearSession = useCallback(() => {
     setMe(null)
@@ -146,6 +150,7 @@ export default function App() {
   const handleLogin = useCallback(async (username: string, password: string, totp?: string) => {
     const data = await postLogin(username, password, totp)
     setMe(data)
+    setActiveTab('checklist')
   }, [])
 
   const handleLogout = useCallback(async () => {
@@ -157,18 +162,6 @@ export default function App() {
     clearSession()
   }, [clearSession])
 
-  const handleRowClick = useCallback((symbol: string) => {
-    setExpandedSymbol((current) => (current === symbol ? null : symbol))
-  }, [])
-
-  useEffect(() => {
-    setExpandedSymbol(null)
-  }, [sessionDate])
-
-  useEffect(() => {
-    if (!expandedSymbol || !radarEnabled) return
-    setTimelineRefreshToken((token) => token + 1)
-  }, [rows, expandedSymbol, radarEnabled])
 
   const handleStartObservation = useCallback(async () => {
     setStartingObservation(true)
@@ -238,6 +231,7 @@ export default function App() {
           username={me?.username}
           onLogout={() => void handleLogout()}
         />
+        <PrivateStatusStrip />
         <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
           {activeTab === 'radar' ? (
             <>
@@ -257,22 +251,19 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <RadarTable
-                rows={filteredRows}
+              <SectorBoard
+                rows={rows}
                 loading={loading}
                 sessionDate={sessionDate}
-                expandedSymbol={expandedSymbol}
-                onRowClick={handleRowClick}
-                timelineRefreshToken={timelineRefreshToken}
+                search={search}
               />
             </>
           ) : activeTab === 'checklist' ? (
-            <PreMarketChecklistPage
+            <MorningChecklist
               data={checklistData}
               loading={checklistLoading}
               error={checklistError}
               onRefresh={handleChecklistRefresh}
-              onGoToAuth={() => setActiveTab('auth')}
               tokenCheck={tokenCheck}
               tokenCheckedAt={tokenCheckedAt}
               tokenChecking={tokenChecking}
@@ -280,10 +271,8 @@ export default function App() {
             />
           ) : activeTab === 'trading' ? (
             <TradingEnginePage sessionDate={sessionDate} />
-          ) : activeTab === 'admin' ? (
-            <AdminConsolePage />
           ) : (
-            <KiteAuthPage />
+            <AdminConsolePage />
           )}
         </main>
         <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />

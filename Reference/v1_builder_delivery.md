@@ -110,3 +110,20 @@ Launcher failure no longer acknowledges pending Stop Engine commands as drained.
 It records error / reconciliation-needed rather than broker-confirmed completion.
 Remaining: frontend/sector integration, broader PAPER session/fault report,
 release/deployment verification and the separately prohibited real LIVE pilot.
+
+## Stage3 initial website checkpoint (development, not deployed)
+
+Public root is separate from the authenticated owner app. Four-tab navigation,
+ordered morning checklist, versioned 17-sector / exact-100 board, and shared
+private execution status are implemented locally. Sector-map mismatch blocks
+readiness. Desk and Admin redesign remain incomplete; this is not Stage3 acceptance.
+
+Kite callback defaults and legacy root callback settings now return to `/owner`
+so the result reaches the embedded Checklist authentication flow rather than the
+public homepage. A regression checks legacy success/error and unsafe URL fallback.
+
+After resuming the usage-limited goal: full isolated discovery **752 tests in
+7.633s, OK**; `git diff --check` clean. Previous frontend build passed and the
+compatible nanoid patch removed the reported dependency vulnerability. Rendered
+UI and integrated website sessions still require verification. No remote writes,
+deployment, or real broker order operations were performed in this checkpoint.

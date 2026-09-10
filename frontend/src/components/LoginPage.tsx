@@ -25,7 +25,7 @@ export function LoginPage({ onLogin }: Props) {
   }
 
   return (
-    <div className="flex h-full items-center justify-center bg-background px-4">
+    <div className="login-surface flex h-full items-center justify-center px-4">
       <form
         onSubmit={(e) => void handleSubmit(e)}
         className="w-full max-w-sm bg-white border border-outline-variant px-5 py-6 space-y-4"
@@ -33,9 +33,10 @@ export function LoginPage({ onLogin }: Props) {
         <div>
           <h1 className="text-lg font-bold text-on-surface tracking-tight">NIFTY RADAR</h1>
           <p className="text-xs text-on-surface-variant mt-1">
-            Sign in to the observation dashboard
+            Owner access · Private trading workspace
           </p>
         </div>
+        <a href="/" className="text-sm text-primary">Back to project home</a>
         {error && (
           <div className="px-3 py-2 text-xs bg-red-50 border border-red-200 text-red-800">
             {error}

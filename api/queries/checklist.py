@@ -1077,6 +1077,10 @@ def fetch_premarket_checklist(
 
     kite_auth = _build_kite_auth()
     instruments = _build_instruments(instruments_db)
+    from config.nifty100_sector_map import sector_map_payload
+    sector_map = sector_map_payload()
+    if not sector_map["valid"]:
+        instruments = {**instruments, "status": "failed", "message": sector_map["reason"]}
     historical = _build_historical(historical_db, session_date)
     baselines = _build_baselines(baselines_db, session_date)
     five_minute = _build_five_minute(historical_db, instruments_db, session_date)

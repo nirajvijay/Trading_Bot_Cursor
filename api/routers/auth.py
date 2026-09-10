@@ -74,7 +74,10 @@ def _set_kite_oauth_cookie(response: Response, cookie_id: str) -> None:
 def _safe_redirect(path: str) -> RedirectResponse:
     # Fixed relative paths only — never bounce to attacker-controlled URLs.
     if not path.startswith("/") or path.startswith("//"):
-        path = "/?kite=error"
+        path = "/owner?kite=error"
+    # Preserve existing deployment settings after moving the owner app off '/'.
+    if path in ("/?kite=connected", "/?kite=error"):
+        path = "/owner" + path[1:]
     return RedirectResponse(url=path, status_code=303)
 
 

@@ -17,6 +17,12 @@ from api.services.observation_runner import compute_readiness, start_observation
 router = APIRouter(prefix="/observation", tags=["observation"])
 
 
+@router.get("/sectors", dependencies=[Depends(require_web_session)])
+def sectors():
+    from config.nifty100_sector_map import sector_map_payload
+    return sector_map_payload()
+
+
 @router.get(
     "/readiness",
     response_model=ObservationReadinessResponse,

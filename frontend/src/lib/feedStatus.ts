@@ -8,6 +8,7 @@ export type FeedStatusCode =
   | 'UNKNOWN'
   | 'OFFLINE'
   | 'UNAVAILABLE'
+  | 'WAITING'
 
 /** Request-level + file-level presence for the observation runner. */
 export type RunnerPresence = 'running' | 'stopped' | 'unknown'
@@ -48,6 +49,12 @@ export function resolveFeedStatus(
   const lastTick = status?.last_tick_time
     ? formatTimeIst(status.last_tick_time)
     : null
+
+  if (feed === 'WAITING') {
+    return {code: 'WAITING', label: 'Connected · waiting for market data',
+      detail: 'Kite websocket is connected. Regular market data is expected from 09:15 IST.',
+      tone: 'neutral', showAlert: true}
+  }
 
   if (feed === 'STABLE') {
     return {
