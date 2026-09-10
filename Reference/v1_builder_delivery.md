@@ -146,3 +146,24 @@ Still incomplete: per-trade immutable audit/detail and precise quantity/P&L
 presentation, full Admin redesign, rendered/interface verification, PAPER fault
 report and deployment. These UI controls have not been exercised against a real
 broker or deployed host. No live orders or deployment.
+
+## Trade audit and expanded Admin development checkpoint
+
+Authenticated per-trade audit returns the durable trade snapshot, immutable
+original setup, linked executions and only that trade's events. The Desk exposes
+it with intended/filled/exited/pending/remaining/covered quantities, provisional
+accounting labels and explicitly gross remaining-position stop estimates. Missing
+historical plans are not reconstructed. These are stored records, not fresh
+broker confirmations.
+
+Admin now exposes all currently supported backend settings across seven sections,
+with draft/save/discard, percentage conversion, Saved vs Effective, explicit
+version-conflict blocking, existing step-up and rollback, safety commands, and
+recovery history. Polling never replaces an owner draft or silently updates its
+base version. Observation section links the workflow conceptually to Checklist
+and Radar; no new backend-shell capability was added.
+
+Full isolated suite: **754 tests in 8.649s, OK**. Frontend build passes; lint has
+only the pre-existing ChecklistStatusPill Fast Refresh warning. Browser workflow,
+full frozen-requirement audit, runtime PAPER report and deployment remain. New
+Admin/Desk interfaces are development implementations, not acceptance proof.

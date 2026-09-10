@@ -12,7 +12,7 @@ import { MorningChecklist } from './components/MorningChecklist'
 import { SectorBoard } from './components/SectorBoard'
 import { PublicHome } from './components/PublicHome'
 import { PrivateStatusStrip } from './components/PrivateStatusStrip'
-import { AdminConsolePage } from './components/admin/AdminConsolePage'
+import { AdminWorkspace } from './components/admin/AdminWorkspace'
 import { TradingDesk } from './components/TradingDesk'
 import { StatusStrip } from './components/StatusStrip'
 import { TopAppBar, type AppTab } from './components/TopAppBar'
@@ -272,7 +272,7 @@ function OwnerApp() {
           ) : activeTab === 'trading' ? (
             <TradingDesk sessionDate={sessionDate} />
           ) : (
-            <AdminConsolePage />
+            <AdminWorkspace />
           )}
         </main>
         <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />

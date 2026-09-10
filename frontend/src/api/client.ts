@@ -29,13 +29,22 @@ export interface SectorMap {version: string; universe_version: string; valid: bo
 export function fetchSectorMap() {return getJson<SectorMap>('/observation/sectors')}
 export interface ControlStrip {execution_mode: string; entry_mode: string; entry_permission: string; engine_state: string; feed_age_seconds: number | null; feed_status: string; sync_age_seconds: number | null; mark_age_seconds: number | null; open_pnl: number | null; unresolved_incident: boolean; as_of: string}
 export interface TradingCommand {command_id: number; kind: string; state: string; result?: Record<string, unknown>; trade_id?: string | null}
-export interface TradingControl {strip: ControlStrip; effective: Record<string, number>; saved: Record<string, number>; effective_version_id: string; saved_version_id: string; live_execution_authorized: boolean; commands: TradingCommand[]}
+export interface TradingControl {strip: ControlStrip; effective: Record<string, number>; saved: Record<string, number>; effective_version_id: string; saved_version_id: string; live_execution_authorized: boolean; commands: TradingCommand[]; incidents: Record<string,unknown>[]; recovery_events: Record<string,unknown>[]}
 export function fetchTradingControl() {return getJson<TradingControl>('/trading-engine/control')}
 export interface SetupChoice {setup_id: string; continuation_rule_version: string; tradingsymbol: string; direction: string; signal_age_seconds: number | null}
 export interface TradePreview {setup_id: string; continuation_rule_version: string; symbol: string; direction: string; proposed_qty: number; structural_stop: number | null; proposed_stop: number | null; limit_price: number | null; risk_inr: number | null; notional: number; eligible: boolean; blockers: string[]; config_version_id: string; signal_age_seconds: number | null; quote_age_seconds: number | null}
 export function fetchTradingSetups() {return getJson<{setups: SetupChoice[]}>('/trading-engine/setups')}
 export function postTradingPreview(body: {setup_id: string; continuation_rule_version: string; qty_override?: number; stop_tighten?: number}) {return postJson<TradePreview>('/trading-engine/preview', body)}
 export function postTradingCommand(body: Record<string, unknown>) {return postJson<TradingCommand>('/trading-engine/commands', body)}
+export interface TradeAudit {
+  trade: {trade_id: string; symbol: string; direction: string; intended_qty: number; filled_qty: number; exited_qty: number; remaining_entry_qty: number; remaining_position_qty: number; protected_qty: number; entry_fill: number | null; initial_stop: number | null; current_stop: number | null; realised_pnl: number; pnl_provisional: boolean; entry_value_est: number; exit_value_est: number; updated_at: string}
+  original_setup: Record<string, unknown> | null
+  original_setup_available: boolean
+  events: {event_id: number; at: string; action: string; actor: string; old_stop: number | null; new_stop: number | null; payload: Record<string, unknown>}[]
+  orders: Record<string, unknown>[]
+  as_of: string
+}
+export function fetchTradeAudit(id: string) {return getJson<TradeAudit>(`/trading-engine/trades/${encodeURIComponent(id)}/audit`)}
 
 export class ApiError extends Error {
   status: number

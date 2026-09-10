@@ -278,6 +278,34 @@ def trading_setups() -> dict:
                        for c in candidates if c.session_date == day][-100:]}
 
 
+@router.get("/trades/{trade_id}/audit", dependencies=[Depends(require_web_session)])
+def trading_trade_audit(trade_id: str) -> dict:
+    """Persisted accounting and immutable plan; never refresh through broker writes."""
+    store = TradingEngineStore(config.trading_engine_db_path())
+    try:
+        trade = store.get_trade(trade_id)
+        if trade is None:
+            raise HTTPException(404, "trade_not_found")
+        raw = asdict(trade)
+        original = raw.pop("original_setup_json", None)
+        try:
+            original = json.loads(original) if original else None
+        except (ValueError, TypeError):
+            original = None
+        events = []
+        for row in store.list_events(trade_id):
+            event = dict(row)
+            event["payload"] = json.loads(event.pop("payload_json") or "{}")
+            events.append(event)
+        return {"trade": raw, "original_setup": original,
+                "original_setup_available": original is not None,
+                "events": events, "orders": [dict(r) for r in store.list_order_links(trade_id)],
+                "as_of": datetime.now(timezone.utc).isoformat(),
+                "source": "durable_reconciliation_snapshot"}
+    finally:
+        store.close()
+
+
 @router.post("/preview", dependencies=[Depends(require_web_session_mutating)])
 def trading_preview(body: TradingPreviewRequest) -> dict:
     from login import _get_kite

@@ -10,6 +10,25 @@ class ControlApiTests(unittest.TestCase):
     setUp = fixture.TradingEngineApiTests.setUp
     tearDown = fixture.TradingEngineApiTests.tearDown
 
+    def test_trade_audit_returns_persisted_plan_and_only_owned_events(self):
+        store = TradingEngineStore(config.trading_engine_db_path())
+        trade = store.insert_candidate(setup_id="audit-s", continuation_rule_version="v1",
+            session_date="2026-09-10", symbol="AAA", instrument_token=1, direction="UP",
+            entry_estimate=100, tick_size=0.05, trigger_time="2026-09-10T10:00:00+05:30")
+        store.update_trade(trade.trade_id, original_setup_json='{"machine_stop":95}',
+                           qty_model_version=1, filled_qty=10, exited_qty=4, remaining_position_qty=6, pnl_provisional=True)
+        store.append_event(trade.trade_id, "trail_requested", new_stop=97, actor="owner")
+        store.append_event("unrelated", "must_not_leak")
+        store.close()
+        response = self.client.get(f"/api/v1/trading-engine/trades/{trade.trade_id}/audit")
+        self.assertEqual(response.status_code,200,response.text)
+        data = response.json()
+        self.assertEqual(data["original_setup"], {"machine_stop":95})
+        self.assertEqual(data["trade"]["remaining_position_qty"],6)
+        self.assertTrue(data["trade"]["pnl_provisional"])
+        self.assertEqual([e["action"] for e in data["events"]], ["trail_requested"])
+        self.assertEqual(self.client.get("/api/v1/trading-engine/trades/missing/audit").status_code,404)
+
     def test_saved_arm_does_not_report_permission_when_stopped_or_unsynced(self):
         from api.routers.trading import _session_date
         from datetime import datetime, timezone
