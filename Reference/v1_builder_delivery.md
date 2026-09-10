@@ -338,3 +338,21 @@ Focused report/PAPER/control tests: **23 OK**. Both MANUAL and AUTOPILOT persist
 PAPER session tests assert that actual engine-generated report records contain
 delay, frozen-R and zero-charge fixture metrics; PAPER/report rerun **13 OK**.
 No real orders or deployment. Broader final acceptance remains pending.
+
+## Candidate staging on existing Lightsail host
+
+Source `a06f71f17249a40f00f162d792dd448a59fad4ef` and the production frontend build
+are staged privately at `/tmp/nifty-v1-release.xBjbUxuE`. No current symlink,
+service, production database or dirty Cursor workspace was changed. Rechecked
+API/Caddy active and no live trading/observation process before staging.
+
+The host's installed Python runtime passed **38 tests in 4.391s**: persistent
+PAPER, report metrics, control APIs, Admin store and heartbeat identity. These
+tests use temporary databases and injected broker/market data. Frontend asset
+SHA-256 hashes match the local build:
+
+- JS `index-BACK02dg.js`: `f1c359ed0326b364b11c6560951fd04343f0adf8ca5ade64fb127e8f5fc8069b`
+- CSS `index-C2Kb3GRR.css`: `0af1f36a65aaa26e7c2c165fe4139b74abf458191f1f8950766ee5f3f936e9d1`
+
+This is candidate staging, not deployment. Updated-copy migration rehearsal,
+final acceptance review and safe cutover remain outstanding.
