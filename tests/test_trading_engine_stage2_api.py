@@ -10,6 +10,19 @@ class ControlApiTests(unittest.TestCase):
     setUp = fixture.TradingEngineApiTests.setUp
     tearDown = fixture.TradingEngineApiTests.tearDown
 
+    def test_live_preference_never_authorizes_or_arms_engine(self):
+        admin = AdminConfigStore(config.admin_config_db_path())
+        admin.update_config({"preferred_execution_mode": "LIVE"}, actor="tester")
+        admin.close()
+        with patch("api.routers.trading.is_engine_running", return_value=False):
+            response = self.client.get("/api/v1/trading-engine/control")
+        self.assertEqual(response.status_code, 200, response.text)
+        state = response.json()
+        self.assertEqual(state["saved"]["preferred_execution_mode"], "LIVE")
+        self.assertFalse(state["live_execution_authorized"])
+        self.assertEqual(state["strip"]["entry_permission"], "disarmed")
+        self.test_live_arm_rejected_without_authorization()
+
     def test_report_separates_modes_and_excludes_provisional_outcomes(self):
         store = TradingEngineStore(config.trading_engine_db_path())
         for i, (mode, provisional, pnl) in enumerate(((False,False,-10),(False,True,999),(True,False,20),(None,False,30))):

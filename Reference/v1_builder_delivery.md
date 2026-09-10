@@ -290,3 +290,17 @@ not browser-effect, interaction, layout or visual acceptance evidence.
 FastAPI OpenAPI route registry; one test passes. Local preview on 127.0.0.1:5173
 returned HTTP 200; opening it in Codex was queued. No rendered browser inspection
 or trading command was performed during this checkpoint.
+
+## Admin execution preference checkpoint
+
+Admin now saves a validated PAPER/LIVE preference, including legacy-default merge,
+version diff and reload support. The Desk applies it once on initial load, choosing
+PAPER when server LIVE authorization is absent. Polling never overwrites the owner's
+selection. Saving this preference neither starts nor arms the engine, and cannot
+authorize LIVE orders. Effective promotion remains explicit.
+
+Verification: full `unittest discover -s tests -q` passed **766 tests in 13.182s**;
+frontend production build and `npm run check:render` passed; `git diff --check`
+clean. New regressions cover invalid enums, restart persistence, preservation of
+the 2995 fixture, stopped/disarmed control state and rejected LIVE arming after a
+LIVE preference save. This is isolated evidence, not deployment or broker proof.

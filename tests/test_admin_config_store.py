@@ -13,6 +13,23 @@ from api.admin_config.store import AdminConfigStore, VersionConflictError, valid
 
 
 class AdminConfigStoreTests(unittest.TestCase):
+    def test_mode_preference_persists_without_promoting_effective(self):
+        store = AdminConfigStore(self.db_path)
+        store.update_config({"daily_loss_cap_inr": 2995, "preferred_execution_mode": "LIVE"}, actor="tester")
+        self.assertEqual(store.load_active_payload()["preferred_execution_mode"], "LIVE")
+        self.assertEqual(store.load_effective_payload()["preferred_execution_mode"], "PAPER")
+        store.close()
+        store = AdminConfigStore(self.db_path)
+        try:
+            self.assertEqual(store.load_active_payload()["preferred_execution_mode"], "LIVE")
+            self.assertEqual(store.load_effective_payload()["preferred_execution_mode"], "PAPER")
+            self.assertEqual(store.load_active_payload()["daily_loss_cap_inr"], 2995)
+            for invalid in ("live", "AUTO", 1, None):
+                with self.assertRaises(ValueError):
+                    store.update_config({"preferred_execution_mode": invalid}, actor="tester")
+        finally:
+            store.close()
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "admin_config.db"

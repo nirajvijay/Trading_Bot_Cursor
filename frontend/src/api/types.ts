@@ -383,7 +383,7 @@ export interface TradingStartResponse {
 }
 
 export interface AdminConfigValues {
-  [key: string]: number
+  [key: string]: number | string
   per_trade_risk_cap_inr: number
   limited_per_trade_risk_cap_inr: number
   daily_loss_cap_inr: number
@@ -392,7 +392,7 @@ export interface AdminConfigValues {
 }
 
 export interface AdminConfigResponse {
-  effective_values: Record<string, number>
+  effective_values: Record<string, number | string>
   effective_version_id: string | null
   pending_next_arm: string[]
   version_id: string

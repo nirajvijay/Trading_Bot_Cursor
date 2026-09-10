@@ -21,7 +21,8 @@ from trading_engine_trail_profile import DEFAULT_TRAIL_PROFILE
 
 _VWAP_DEFAULTS = VwapQualifierV2Config()
 
-DEFAULT_ADMIN_CONFIG_VALUES: dict[str, float] = {
+DEFAULT_ADMIN_CONFIG_VALUES: dict[str, float | str] = {
+    "preferred_execution_mode": "PAPER",
     **DEFAULT_TRAIL_PROFILE,
     "auto_trail_default_enabled": 1.0,
     "setup_expiry_seconds": 30.0,

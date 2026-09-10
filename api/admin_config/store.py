@@ -45,7 +45,15 @@ def _new_version_id() -> str:
     return uuid.uuid4().hex
 
 
-def merge_payload_with_defaults(stored: Mapping[str, Any]) -> dict[str, float]:
+def _config_value(key, raw):
+    if key == "preferred_execution_mode":
+        if raw not in ("PAPER", "LIVE"):
+            raise ValueError("preferred_execution_mode must be PAPER or LIVE")
+        return raw
+    return float(raw)
+
+
+def merge_payload_with_defaults(stored: Mapping[str, Any]) -> dict[str, Any]:
     """Backward-compatible load merge: code defaults under saved values (never clobber).
 
     Legacy ``round_trip_cost_slippage_bps`` maps to charges when the split keys are
@@ -54,7 +62,7 @@ def merge_payload_with_defaults(stored: Mapping[str, Any]) -> dict[str, float]:
     merged = dict(DEFAULT_ADMIN_CONFIG_VALUES)
     for key, raw in stored.items():
         if key in merged:
-            merged[key] = float(raw)
+            merged[key] = _config_value(key, raw)
     if (
         "round_trip_charge_bps" not in stored
         and "round_trip_cost_slippage_bps" in stored
@@ -66,16 +74,16 @@ def merge_payload_with_defaults(stored: Mapping[str, Any]) -> dict[str, float]:
 
 
 def apply_saved_to_effective(
-    effective: Mapping[str, float],
-    saved: Mapping[str, float],
-) -> dict[str, float]:
+    effective: Mapping[str, float | str],
+    saved: Mapping[str, float | str],
+) -> dict[str, float | str]:
     """Merge Saved into Effective under the frozen apply policy (no full promote).
 
     Risk-budget reductions take effect immediately. Risk increases, capital,
     concurrency/fill limits, and VWAP wait for ``arm_effective_config``.
     Charge/slippage *increases* (tightening) apply immediately.
     """
-    out = {k: float(effective.get(k, DEFAULT_ADMIN_CONFIG_VALUES[k])) for k in _CONFIG_KEYS}
+    out = {k: _config_value(k, effective.get(k, DEFAULT_ADMIN_CONFIG_VALUES[k])) for k in _CONFIG_KEYS}
     for key in _IMMEDIATE_REDUCTION_KEYS:
         new_v = float(saved[key])
         old_v = float(out[key])
@@ -100,7 +108,7 @@ def validate_config_values(
     *,
     base: Optional[Mapping[str, Any]] = None,
     fill_defaults: bool = False,
-) -> tuple[dict[str, float], list[str]]:
+) -> tuple[dict[str, float | str], list[str]]:
     """Return normalized values and non-blocking warnings.
 
     Save path: pass ``base`` = current saved/effective payload so omitted keys keep
@@ -116,7 +124,7 @@ def validate_config_values(
         merged = merge_payload_with_defaults(base)
         for key, raw in values.items():
             if key in merged:
-                merged[key] = float(raw)
+                merged[key] = _config_value(key, raw)
             elif key == "round_trip_cost_slippage_bps":
                 # Legacy write path: treat as charge-only update.
                 merged["round_trip_charge_bps"] = float(raw)
@@ -134,9 +142,9 @@ def validate_config_values(
         missing = [k for k in _CONFIG_KEYS if k not in provided]
         if missing:
             raise ValueError(f"incomplete_config:{','.join(missing)}")
-        merged = {k: float(provided[k]) for k in _CONFIG_KEYS}
+        merged = {k: _config_value(k, provided[k]) for k in _CONFIG_KEYS}
 
-    if any(not math.isfinite(float(value)) for value in merged.values()):
+    if any(not math.isfinite(float(value)) for key,value in merged.items() if key != "preferred_execution_mode"):
         raise ValueError("configuration must contain finite values")
     if merged["auto_trail_default_enabled"] not in (0.0, 1.0):
         raise ValueError("auto_trail_default_enabled must be 0 or 1")
@@ -205,6 +213,7 @@ def validate_config_values(
         warnings.append("daily_cap_below_per_trade_cap")
 
     normalized = {
+        "preferred_execution_mode": merged["preferred_execution_mode"],
         **validate_trail_profile(merged),
         "auto_trail_default_enabled": float(merged["auto_trail_default_enabled"]),
         "setup_expiry_seconds": float(merged["setup_expiry_seconds"]),
@@ -231,9 +240,13 @@ def validate_config_values(
     return normalized, warnings
 
 
-def _diff_payload(old: Mapping[str, float], new: Mapping[str, float]) -> dict[str, dict[str, float]]:
-    diff: dict[str, dict[str, float]] = {}
+def _diff_payload(old: Mapping[str, float | str], new: Mapping[str, float | str]) -> dict[str, dict[str, float | str]]:
+    diff: dict[str, dict[str, float | str]] = {}
     for key in _CONFIG_KEYS:
+        if key == "preferred_execution_mode":
+            if old[key] != new[key]:
+                diff[key] = {"old": old[key], "new": new[key]}
+            continue
         o = float(old[key])
         n = float(new[key])
         if abs(o - n) > 1e-12:
@@ -325,7 +338,7 @@ class AdminConfigStore:
             return "bootstrap"
         return str(row["active_version_id"])
 
-    def load_active_payload(self) -> dict[str, float]:
+    def load_active_payload(self) -> dict[str, float | str]:
         """Return Saved config: saved values overlay code defaults (preserve 2995 etc.)."""
         version_id = self.active_version_id()
         row = self._conn.execute(
@@ -334,7 +347,7 @@ class AdminConfigStore:
         ).fetchone()
         if row is None:
             return dict(DEFAULT_ADMIN_CONFIG_VALUES)
-        stored = {k: float(v) for k, v in json.loads(str(row["payload_json"])).items()}
+        stored = {k: _config_value(k,v) for k, v in json.loads(str(row["payload_json"])).items()}
         return merge_payload_with_defaults(stored)
 
     def effective_version_id(self) -> str:
@@ -345,7 +358,7 @@ class AdminConfigStore:
             return "bootstrap"
         return str(row["effective_version_id"] or row["active_version_id"] or "bootstrap")
 
-    def load_effective_payload(self) -> dict[str, float]:
+    def load_effective_payload(self) -> dict[str, float | str]:
         """Return Effective config used for new entry decisions (after apply rules)."""
         row = self._conn.execute(
             "SELECT effective_payload_json FROM admin_config_state WHERE id = 1"
@@ -353,7 +366,7 @@ class AdminConfigStore:
         if row is None or row["effective_payload_json"] is None:
             return self.load_active_payload()
         stored = {
-            k: float(v) for k, v in json.loads(str(row["effective_payload_json"])).items()
+            k: _config_value(k,v) for k, v in json.loads(str(row["effective_payload_json"])).items()
         }
         return merge_payload_with_defaults(stored)
 

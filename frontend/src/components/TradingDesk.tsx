@@ -17,6 +17,7 @@ export function TradingDesk({sessionDate}: {sessionDate: string}) {
   const [stop, setStop] = useState('')
   const [mode, setMode] = useState<'MANUAL' | 'AUTOPILOT'>('MANUAL')
   const [execution, setExecution] = useState<'PAPER' | 'LIVE'>('PAPER')
+  const preferenceLoaded = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -29,6 +30,10 @@ export function TradingDesk({sessionDate}: {sessionDate: string}) {
   const refresh = useCallback(async () => {
     const [c, s, choices] = await Promise.all([fetchTradingControl(), fetchTradingEngineSnapshot(sessionDate), fetchTradingSetups()])
     setControl(c); setSnapshot(s); setSetups(choices.setups); setReceived(Date.now())
+    if (!preferenceLoaded.current) {
+      preferenceLoaded.current = true
+      setExecution(c.saved.preferred_execution_mode === 'LIVE' && c.live_execution_authorized ? 'LIVE' : 'PAPER')
+    }
   }, [sessionDate])
   useEffect(() => {
     let disposed = false
@@ -69,7 +74,8 @@ export function TradingDesk({sessionDate}: {sessionDate: string}) {
     {error && <div role="alert" className="desk-alert">{error}</div>}
     {notice && <div role="status" className="desk-notice">{notice}</div>}
     <section className="desk-panel"><h2>Session controls</h2><div className="desk-actions">
-      <label>Execution<select value={execution} onChange={e => setExecution(e.target.value as 'PAPER'|'LIVE')}><option>PAPER</option><option disabled={!control?.live_execution_authorized}>LIVE</option></select></label>
+      <label>Execution<select value={execution} onChange={e => {preferenceLoaded.current = true; setExecution(e.target.value as 'PAPER'|'LIVE')}}><option>PAPER</option><option disabled={!control?.live_execution_authorized}>LIVE</option></select></label>
+      {control?.saved.preferred_execution_mode === 'LIVE' && !control.live_execution_authorized && <span>Saved preference LIVE; unavailable while server authorization is disabled.</span>}
       <label>Entry decisions<select value={mode} onChange={e => setMode(e.target.value as 'MANUAL'|'AUTOPILOT')}><option>MANUAL</option><option>AUTOPILOT</option></select></label>
       <button disabled={!controlsReady || running || execution === 'LIVE' && !control?.live_execution_authorized} onClick={() => {
         if (execution === 'LIVE' && !window.confirm('Start LIVE engine? This does not arm entries.')) return
