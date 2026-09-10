@@ -127,3 +127,22 @@ After resuming the usage-limited goal: full isolated discovery **752 tests in
 compatible nanoid patch removed the reported dependency vulnerability. Rendered
 UI and integrated website sessions still require verification. No remote writes,
 deployment, or real broker order operations were performed in this checkpoint.
+
+## Desk command integration checkpoint
+
+The mounted Desk now binds to durable commands for arming, manual approval,
+pause/disarm/drain, close position/all, reconciliation and trailing. Existing
+password/MFA step-up is reused; retries after step-up retain the command ID.
+Manual previews use observed setup identities with quantity reduction / stop
+tightening, and display backend blockers. The old capital-on-blur / demo-leverage
+panel is no longer mounted. Command acceptance is explicitly not completion.
+
+Corrected the shared strip's API URL to `/trading-engine/control`; stale client
+status becomes unknown after five seconds, with bounded read requests. Server
+status cannot report armed when stopped, unsynced or recovering. Focused control
+API + engine control suite: **18 tests, OK**. Frontend production build passes.
+
+Still incomplete: per-trade immutable audit/detail and precise quantity/P&L
+presentation, full Admin redesign, rendered/interface verification, PAPER fault
+report and deployment. These UI controls have not been exercised against a real
+broker or deployed host. No live orders or deployment.

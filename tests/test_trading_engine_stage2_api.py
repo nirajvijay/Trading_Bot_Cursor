@@ -10,6 +10,29 @@ class ControlApiTests(unittest.TestCase):
     setUp = fixture.TradingEngineApiTests.setUp
     tearDown = fixture.TradingEngineApiTests.tearDown
 
+    def test_saved_arm_does_not_report_permission_when_stopped_or_unsynced(self):
+        from api.routers.trading import _session_date
+        from datetime import datetime, timezone
+        day = _session_date(None)
+        store = TradingEngineStore(config.trading_engine_db_path())
+        run_id = store.start_run(session_date=day, live_orders_enabled=False, pid=None)
+        store.save_session_arm(session_date=day, run_id=run_id, execution_mode="PAPER",
+                               entry_mode="MANUAL", config_version_id="test", actor="test")
+        store.close()
+        admin = AdminConfigStore(config.admin_config_db_path())
+        admin.set_entries_paused(False)
+        admin.close()
+        heartbeat = {"session_date": day, "broker_sync_at": datetime.now(timezone.utc).isoformat()}
+        with patch("api.routers.trading.is_engine_running", return_value=False), \
+             patch("api.services.trading_engine_runner.read_heartbeat", return_value=heartbeat):
+            self.assertEqual(self.client.get("/api/v1/trading-engine/control").json()["strip"]["entry_permission"], "disarmed")
+        with patch("api.routers.trading.is_engine_running", return_value=True), \
+             patch("api.services.trading_engine_runner.read_heartbeat", return_value={"session_date": day}):
+            self.assertEqual(self.client.get("/api/v1/trading-engine/control").json()["strip"]["entry_permission"], "data_not_ready")
+        with patch("api.routers.trading.is_engine_running", return_value=True), \
+             patch("api.services.trading_engine_runner.read_heartbeat", return_value={**heartbeat, "recovery_unresolved": True}):
+            self.assertEqual(self.client.get("/api/v1/trading-engine/control").json()["strip"]["entry_permission"], "recovery_required")
+
     def test_command_returns_acceptance_and_deduplicates(self):
         body={"kind":"pause_entries","client_command_id":"one-operation"}
         first=self.client.post("/api/v1/trading-engine/commands",json=body)

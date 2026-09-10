@@ -344,8 +344,15 @@ def trading_control() -> dict:
         effective = admin.load_effective_payload()
         saved = admin.load_active_payload()
         permission = "disarmed"
-        if arm and arm["armed"] and run and arm["run_id"] == run["run_id"]:
-            permission = "paused" if admin.read_entries_paused() else "armed"
+        if running and arm and arm["armed"] and run and arm["run_id"] == run["run_id"]:
+            if admin.read_entries_paused() or heartbeat.get("draining"):
+                permission = "paused"
+            elif incidents or heartbeat.get("recovery_unresolved") or loss.get("halted"):
+                permission = "recovery_required"
+            elif sync_age is None or sync_age >= 5 or feed_age is None or feed_age >= 5:
+                permission = "data_not_ready"
+            else:
+                permission = "armed"
         return {"run":dict(run) if run else None,"arm":arm,
             "strip":{"execution_mode":"LIVE" if run and run["live_orders_enabled"] else "PAPER",
                 "entry_mode":arm["entry_mode"] if arm else "MANUAL","entry_permission":permission,

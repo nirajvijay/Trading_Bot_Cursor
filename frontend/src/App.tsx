@@ -13,7 +13,7 @@ import { SectorBoard } from './components/SectorBoard'
 import { PublicHome } from './components/PublicHome'
 import { PrivateStatusStrip } from './components/PrivateStatusStrip'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
-import { TradingEnginePage } from './components/TradingEnginePage'
+import { TradingDesk } from './components/TradingDesk'
 import { StatusStrip } from './components/StatusStrip'
 import { TopAppBar, type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
@@ -270,7 +270,7 @@ function OwnerApp() {
               onCheckToken={checkToken}
             />
           ) : activeTab === 'trading' ? (
-            <TradingEnginePage sessionDate={sessionDate} />
+            <TradingDesk sessionDate={sessionDate} />
           ) : (
             <AdminConsolePage />
           )}

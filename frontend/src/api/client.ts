@@ -28,8 +28,14 @@ const BASE = '/api/v1'
 export interface SectorMap {version: string; universe_version: string; valid: boolean; reason: string | null; symbol_count: number; sectors: {name: string; symbols: string[]}[]}
 export function fetchSectorMap() {return getJson<SectorMap>('/observation/sectors')}
 export interface ControlStrip {execution_mode: string; entry_mode: string; entry_permission: string; engine_state: string; feed_age_seconds: number | null; feed_status: string; sync_age_seconds: number | null; mark_age_seconds: number | null; open_pnl: number | null; unresolved_incident: boolean; as_of: string}
-export interface TradingControl {strip: ControlStrip; effective: Record<string, number>; saved: Record<string, number>; effective_version_id: string; saved_version_id: string; live_execution_authorized: boolean}
-export function fetchTradingControl() {return getJson<TradingControl>('/trading/control')}
+export interface TradingCommand {command_id: number; kind: string; state: string; result?: Record<string, unknown>; trade_id?: string | null}
+export interface TradingControl {strip: ControlStrip; effective: Record<string, number>; saved: Record<string, number>; effective_version_id: string; saved_version_id: string; live_execution_authorized: boolean; commands: TradingCommand[]}
+export function fetchTradingControl() {return getJson<TradingControl>('/trading-engine/control')}
+export interface SetupChoice {setup_id: string; continuation_rule_version: string; tradingsymbol: string; direction: string; signal_age_seconds: number | null}
+export interface TradePreview {setup_id: string; continuation_rule_version: string; symbol: string; direction: string; proposed_qty: number; structural_stop: number | null; proposed_stop: number | null; limit_price: number | null; risk_inr: number | null; notional: number; eligible: boolean; blockers: string[]; config_version_id: string; signal_age_seconds: number | null; quote_age_seconds: number | null}
+export function fetchTradingSetups() {return getJson<{setups: SetupChoice[]}>('/trading-engine/setups')}
+export function postTradingPreview(body: {setup_id: string; continuation_rule_version: string; qty_override?: number; stop_tighten?: number}) {return postJson<TradePreview>('/trading-engine/preview', body)}
+export function postTradingCommand(body: Record<string, unknown>) {return postJson<TradingCommand>('/trading-engine/commands', body)}
 
 export class ApiError extends Error {
   status: number
@@ -88,6 +94,7 @@ async function handleResponse<T>(res: Response, path: string): Promise<T> {
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
+    signal: AbortSignal.timeout(10000),
   })
   return handleResponse<T>(res, path)
 }
