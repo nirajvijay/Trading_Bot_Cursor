@@ -2,10 +2,31 @@
 import argparse
 import json
 import sqlite3
+import tempfile
+import os
 from pathlib import Path
 
 from api.admin_config.store import AdminConfigStore
 from trading_engine_store import TradingEngineStore
+
+
+def backup_production_for_rehearsal():
+    """Fixed sources, read-only SQLite snapshots; never auth or credential files."""
+    root = Path(tempfile.mkdtemp(prefix='nifty-v1-rehearsal.', dir='/tmp'))
+    os.chmod(root, 0o700)
+    sources = {
+        'trading.db': Path('/opt/nifty-radar/data/local/trading_engine.db'),
+        'admin.db': Path('/opt/nifty-radar/data/config/admin_config.db'),
+    }
+    for name, source in sources.items():
+        if not source.is_file() or source.is_symlink():
+            raise ValueError('regular_production_source_required')
+        target = root / name
+        with sqlite3.connect(f'file:{source}?mode=ro', uri=True) as original:
+            with sqlite3.connect(target) as copied:
+                original.backup(copied)
+        os.chmod(target, 0o600)
+    return root
 
 
 def rehearse(root: Path):
@@ -47,5 +68,12 @@ def rehearse(root: Path):
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument('root',type=Path)
-    print(json.dumps(rehearse(parser.parse_args().root),indent=2))
+    parser.add_argument('root',type=Path,nargs='?')
+    parser.add_argument('--backup-production', action='store_true')
+    args = parser.parse_args()
+    if args.backup_production and args.root is not None:
+        parser.error('Use root or --backup-production, not both')
+    root = backup_production_for_rehearsal() if args.backup_production else args.root
+    if root is None:
+        parser.error('Provide isolated root or --backup-production')
+    print(json.dumps({'backup_root':str(root), **rehearse(root)},indent=2))

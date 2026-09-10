@@ -356,3 +356,19 @@ SHA-256 hashes match the local build:
 
 This is candidate staging, not deployment. Updated-copy migration rehearsal,
 final acceptance review and safe cutover remain outstanding.
+
+## Updated fresh-copy migration rehearsal
+
+The rehearsal utility now supports fixed production-source SQLite backups using
+read-only connections, creating only new private `/tmp/nifty-v1-rehearsal.*`
+directories. It does not copy authentication or credential data. Updated candidate
+code migrated `/tmp/nifty-v1-rehearsal.1iogab6n` successfully: all 30 historical
+trade identities/quantities/statuses/session dates and Saved/Effective ₹2,995
+preserved. ADANIPORTS 145 remains provenance-unknown with no asserted protection.
+Production sources were not modified; broker calls zero.
+
+Production configuration whitelist check confirms `APP_ENV=production`,
+`WEB_AUTH_ENABLED=true`, persistent `/opt/nifty-radar/data/local` and live candle
+path `/opt/nifty-radar/data/local/nifty50_live_1m.db`. LIVE authorization flags were
+not present in the environment file. Actual cutover must explicitly lock them
+off rather than relying only on absent defaults.
