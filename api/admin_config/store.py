@@ -15,6 +15,7 @@ from api.admin_config.defaults import DEFAULT_ADMIN_CONFIG_VALUES
 from api.admin_config.migrations import run_migrations
 from api.admin_config.snapshot import AdminConfigSnapshot
 from nse_trading_calendar import parse_hhmm, validate_session_gate_hhmm_pair
+from trading_engine_trail_profile import validate_trail_profile
 
 _CONFIG_KEYS = tuple(DEFAULT_ADMIN_CONFIG_VALUES.keys())
 
@@ -204,6 +205,7 @@ def validate_config_values(
         warnings.append("daily_cap_below_per_trade_cap")
 
     normalized = {
+        **validate_trail_profile(merged),
         "auto_trail_default_enabled": float(merged["auto_trail_default_enabled"]),
         "setup_expiry_seconds": float(merged["setup_expiry_seconds"]),
         "max_quote_age_seconds": float(merged["max_quote_age_seconds"]),

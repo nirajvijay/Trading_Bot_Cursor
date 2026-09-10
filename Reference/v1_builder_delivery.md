@@ -211,3 +211,17 @@ old database open-P&L value. Desk audit ages the received mark locally as well.
 Loss + control API focused suite: **20 tests in 1.392s, OK**; build passes. Regression
 checks same-slice bid MTM, stale quote, changed remaining quantity and unknown feed.
 Still development evidence; interface workflow verification/deployment outstanding.
+
+## Frozen per-trade trailing profiles
+
+Admin now exposes staged-R thresholds/gaps and modification interval/improvement
+with the original 1R/2R, 1R/0.5R, 2-second/2-tick defaults unchanged. Validation
+requires increasing stages, non-widening later gaps, and retains minimum throttle
+bounds. Saved changes wait for explicit arm. Execution reads only the trade's
+frozen risk/config snapshot; legacy trades use historical V1 defaults, not current
+Admin values. Invalid stored profiles block entries/trailing rather than inventing
+a replacement profile. Existing tighten-only and through-price exit checks remain.
+
+Profile + WP13 + Admin store + control suites: **46 tests in 0.662s, OK**. New tests
+cover invalid profiles, default compatibility, Saved/Effective and old-trade
+isolation, and mirrored long/short custom-gap math. Frontend build passes.

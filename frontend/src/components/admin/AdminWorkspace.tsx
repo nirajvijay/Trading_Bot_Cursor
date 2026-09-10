@@ -8,6 +8,9 @@ const tabs = ['Overview','Trading bot values','Strategy · VWAP','Observation','
 type Tab = typeof tabs[number]
 const names: Record<string,string> = {
   auto_trail_default_enabled:'Auto-trailing default (1 on / 0 off)',
+  trail_stage_one_r:'First trailing stage (+R)', trail_stage_two_r:'Second trailing stage (+R)',
+  trail_stage_one_gap_r:'First-stage distance behind extreme (R)', trail_stage_two_gap_r:'Second-stage distance behind extreme (R)',
+  trail_modify_interval_seconds:'Minimum trail interval (seconds)', trail_min_improvement_ticks:'Minimum trail improvement (ticks)',
   allocated_capital_inr:'Allocated capital (₹)', per_trade_risk_cap_inr:'Normal trade risk (₹)', limited_per_trade_risk_cap_inr:'LIMITED trade risk (₹)', daily_loss_cap_inr:'Daily loss cap (₹)',
   max_concurrent_positions:'Maximum concurrent positions', max_filled_setups_per_day:'Filled setups per day', one_position_or_unresolved_entry_per_symbol:'One position / pending entry per symbol', aggregate_notional_cap_equals_allocated_capital:'Notional capped by allocated capital',
   round_trip_charge_bps:'Estimated round-trip charges (bps)', estimated_slippage_bps:'Estimated slippage (bps)',

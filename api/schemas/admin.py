@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field, model_validator
 class AdminConfigValues(BaseModel):
     model_config = {"extra":"forbid", "allow_inf_nan":False}
     auto_trail_default_enabled: int = Field(1, ge=0, le=1)
+    trail_stage_one_r: float = Field(1, gt=0, le=10)
+    trail_stage_two_r: float = Field(2, gt=0, le=10)
+    trail_stage_one_gap_r: float = Field(1, gt=0, le=10)
+    trail_stage_two_gap_r: float = Field(.5, gt=0, le=10)
+    trail_modify_interval_seconds: float = Field(2, ge=2, le=60)
+    trail_min_improvement_ticks: int = Field(2, ge=2, le=100)
     per_trade_risk_cap_inr: float = Field(..., gt=0, le=2000)
     limited_per_trade_risk_cap_inr: float = Field(..., gt=0)
     daily_loss_cap_inr: float = Field(..., gt=0, le=50000)

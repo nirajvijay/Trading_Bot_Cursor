@@ -888,6 +888,10 @@ def staged_r_desired_stop(
     r_value: float,
     charge_bps: float,
     tick_size: float,
+    stage_one_r: float = 1.0,
+    stage_two_r: float = 2.0,
+    stage_one_gap_r: float = 1.0,
+    stage_two_gap_r: float = 0.5,
 ) -> float:
     """§3.14 staged-R desired stop (tighten-only vs current is caller's job).
 
@@ -904,10 +908,10 @@ def staged_r_desired_stop(
     mult = favorable_r_multiple(
         direction=direction, entry=entry, last_price=float(extreme), r_value=r_value
     )
-    if mult < 1.0 - 1e-12:
+    if mult < stage_one_r - 1e-12:
         desired = structural
     else:
-        behind = 1.0 * float(r_value) if mult < 2.0 - 1e-12 else 0.5 * float(r_value)
+        behind = stage_one_gap_r * float(r_value) if mult < stage_two_r - 1e-12 else stage_two_gap_r * float(r_value)
         if direction == "UP":
             behind_extreme = float(extreme) - behind
             desired = max(existing, be, behind_extreme)

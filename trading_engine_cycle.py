@@ -5591,6 +5591,13 @@ class TradingEngineCycle:
                 ),
             )
             charge_bps, _ = trade_cost_profile(trade)
+            from trading_engine_trail_profile import trade_trail_profile
+            try:
+                profile = trade_trail_profile(trade)
+            except (ValueError, TypeError, AttributeError):
+                self._engage_local_entries_lock("trailing_profile_invalid")
+                self._pause_entries_for("trailing_profile_invalid")
+                continue
             desired = staged_r_desired_stop(
                 direction=trade.direction,
                 entry=entry,
@@ -5601,6 +5608,10 @@ class TradingEngineCycle:
                 r_value=r_value,
                 charge_bps=charge_bps,
                 tick_size=trade.tick_size,
+                stage_one_r=profile["trail_stage_one_r"],
+                stage_two_r=profile["trail_stage_two_r"],
+                stage_one_gap_r=profile["trail_stage_one_gap_r"],
+                stage_two_gap_r=profile["trail_stage_two_gap_r"],
             )
             aligned = _align_stop(desired, trade.tick_size)
             self.store.update_trade(
@@ -5628,7 +5639,7 @@ class TradingEngineCycle:
                 new_stop=aligned,
                 tick_size=trade.tick_size,
             )
-            if improve < TRAIL_MIN_IMPROVEMENT_TICKS:
+            if improve < profile["trail_min_improvement_ticks"]:
                 continue
             if trade.last_trail_modify_at:
                 try:
@@ -5638,7 +5649,7 @@ class TradingEngineCycle:
                     age = (
                         datetime.now(timezone.utc) - last.astimezone(timezone.utc)
                     ).total_seconds()
-                    if age < TRAIL_MIN_MODIFY_INTERVAL_SECONDS:
+                    if age < profile["trail_modify_interval_seconds"]:
                         continue
                 except ValueError:
                     pass
