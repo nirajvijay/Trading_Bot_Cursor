@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class AdminConfigValues(BaseModel):
     model_config = {"extra":"forbid", "allow_inf_nan":False}
+    auto_trail_default_enabled: int = Field(1, ge=0, le=1)
     per_trade_risk_cap_inr: float = Field(..., gt=0, le=2000)
     limited_per_trade_risk_cap_inr: float = Field(..., gt=0)
     daily_loss_cap_inr: float = Field(..., gt=0, le=50000)

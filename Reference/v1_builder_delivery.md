@@ -184,3 +184,18 @@ end-to-end verification or a live market session.
 
 `tests.test_trading_engine_paper` + `tests.test_trading_engine_stage2_api`: **18
 tests in 0.303s, OK**. Frontend build passes. No live broker writes or deployment.
+
+## Frozen-contract audit: auto-trail default
+
+Added missing `auto_trail_default_enabled` Admin key (default 1; validates 0/1),
+saved for next explicit arm. Acceptance records the setting through the existing
+frozen config and per-trade disable latch. Later saves/arms cannot silently turn
+trailing on for that open trade; an explicit per-trade enable remains available.
+Regression uses the real cycle and verifies Saved/Effective separation, initial
+disabled protection, later config change, and explicit owner enable.
+
+Full isolated suite **757 tests in 32.025s, OK**; frontend build and diff check pass.
+Remaining audit items include configurable trailing-profile parameters / execution
+preference, per-trade fresh MTM display, richer report costs/R/delay metrics,
+browser workflows, operational recovery SOP and deployment verification. Overall
+goal remains incomplete. No host writes or live orders.

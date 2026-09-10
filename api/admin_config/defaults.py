@@ -21,6 +21,7 @@ from vwap_qualifier_v2_config import VwapQualifierV2Config
 _VWAP_DEFAULTS = VwapQualifierV2Config()
 
 DEFAULT_ADMIN_CONFIG_VALUES: dict[str, float] = {
+    "auto_trail_default_enabled": 1.0,
     "setup_expiry_seconds": 30.0,
     "max_quote_age_seconds": 2.0,
     "max_entry_drift_r": 0.1,

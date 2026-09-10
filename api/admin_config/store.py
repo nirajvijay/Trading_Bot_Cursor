@@ -137,6 +137,8 @@ def validate_config_values(
 
     if any(not math.isfinite(float(value)) for value in merged.values()):
         raise ValueError("configuration must contain finite values")
+    if merged["auto_trail_default_enabled"] not in (0.0, 1.0):
+        raise ValueError("auto_trail_default_enabled must be 0 or 1")
     for key in ("max_concurrent_positions", "max_filled_setups_per_day"):
         if not float(merged[key]).is_integer():
             raise ValueError(f"{key} must be an integer")
@@ -202,6 +204,7 @@ def validate_config_values(
         warnings.append("daily_cap_below_per_trade_cap")
 
     normalized = {
+        "auto_trail_default_enabled": float(merged["auto_trail_default_enabled"]),
         "setup_expiry_seconds": float(merged["setup_expiry_seconds"]),
         "max_quote_age_seconds": float(merged["max_quote_age_seconds"]),
         "max_entry_drift_r": float(merged["max_entry_drift_r"]),

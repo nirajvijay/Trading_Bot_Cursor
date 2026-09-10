@@ -855,6 +855,7 @@ class TradingEngineCycle:
             charge_bps=stamp_charge,
             slippage_bps=stamp_slip,
             risk_limits_json=json.dumps(admin_payload, sort_keys=True),
+            auto_trail_owner_disabled=0 if admin_payload.get("auto_trail_default_enabled", 1) else 1,
             original_setup_json=json.dumps({"machine_setup":asdict(candidate),
                 "initial_sizing":asdict(decision),"config":admin_payload,
                 "config_version_id":snapshot.admin_config_version_id,
