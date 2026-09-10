@@ -414,3 +414,27 @@ Production frontend build passed; server-render tests cover both long/short tick
 boundaries; cycle/control focused suite **40 OK**. Browser interaction/layout
 acceptance remains unverified. Updated frontend JS is `index-zqNBCdpL.js`; staged
 candidate assets are now outdated and must be replaced before cutover.
+
+## Production cutover — PAPER locked
+
+Deployed source `13b364cf6829532a253b6f6b34d44145deaffd77` to its immutable
+`/opt/nifty-radar/releases/13b364cf6829532a253b6f6b34d44145deaffd77` directory and
+atomically switched `current`. Old e4aa813 release and dirty Cursor workspace
+were preserved. API stopped briefly for backup/cutover and is active again;
+Caddy remains active. Pristine pre-migration SQLite backups are privately held
+at `/tmp/nifty-v1-rehearsal.zagijyzg`; migrated rehearsal copies are separate.
+
+Installed the committed final environment-file override. Verified the actual
+running API process environment: authentication true, LIVE authorization `0`,
+LIVE orders `false`. No engine process or broker orders were started.
+
+Additive production store migrations completed as the application user. Verified
+30 historical records, Saved/Effective daily cap 2995, and historical ADANIPORTS
+145 protected_open with null mode provenance retained. This does not resolve or
+assert any current broker position.
+
+Public root HTTP 200; unauthenticated private trading control HTTP 401 both
+externally and directly on localhost. Latest local full suite: **772 OK**;
+latest candidate host PAPER/control/heartbeat set: **22 OK**. Authenticated owner
+browser acceptance and full final requirement audit remain outstanding, so the
+overall goal is not complete and no LIVE-readiness claim is made.
