@@ -453,3 +453,41 @@ explicit browser-testing request under the Sites skill. Requested once; not
 authorized by an automatic goal continuation. Do not forge sessions, bypass MFA,
 or label source/render tests as browser acceptance. Overall goal remains held
 for that verification, and historical ADANIPORTS broker provenance is unresolved.
+
+## Owner-assisted browser fixes — 2026-09-10
+
+NJ signed into the owner site and Kite, then requested fixes for Checklist timeout,
+token validity resetting on tab changes, and password-only website confirmation
+for Kite token setup. Deployed and pushed `0276f3f658e6d1fe3ec3cf7addd5b81d8fc99ae3`.
+
+- Checklist's 10-second client timeout was shorter than the measured historical
+  check (15.4 seconds on the host). Indexed day-range queries reduce repeated
+  scans; the staged host historical check measured 10.26 seconds. Checklist now
+  permits 120 seconds and displays elapsed time; other GET timeouts remain 10s.
+- `/auth/status` restores today's token-check result from a server-only,
+  credential-fingerprinted cache. Changed tokens, previous days and malformed
+  results cannot inherit a valid status. Browser tab changes preserved YES and
+  the original check timestamp after a real read-only Kite profile check.
+- Kite start/paste supports password-only confirmation within an existing
+  authenticated/CSRF-protected session, rate limited. This grants no general
+  Admin/trading step-up. Website login MFA, general step-up MFA, OAuth state,
+  expected Kite owner matching and the LIVE write lock remain unchanged.
+- Removed duplicate token-check button and outdated copy-command footer;
+  browser title now NIFTY 100 Radar.
+
+Evidence: 776 local tests OK; build + initial SSR checks OK; 74 target-host
+isolated auth/checklist/session-quality/cache tests OK with test-only secrets
+path. The first host test invocation had three permission errors from attempting
+the default secret path; no secret values were read, and the explicit isolated
+path run passed. No auth DB migration or owner credential change.
+
+Browser acceptance for these fixes: Checklist completed without timeout and
+showed actual stale-data findings; token check returned YES, switching to Admin
+and back retained YES; Kite dialog showed password only and was cancelled without
+submitting or replacing the token. API active, owner HTTP 200, actual process
+LIVE authorization=0 and live orders=false. No real orders or engine start.
+
+Remaining readiness issue is data preparation, not login: instruments last updated
+Sep 2, 1m/5m coverage through Sep 2 instead of Sep 9, baselines as-of Sep 1.
+The first Prepare/update action is available; later steps remain safely blocked
+pending preparation. Full PAPER workflow/final acceptance remain incomplete.
