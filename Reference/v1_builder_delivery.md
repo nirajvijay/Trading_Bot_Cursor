@@ -259,3 +259,22 @@ current broker position; provenance remains unresolved and must not be auto-adop
 or auto-flattened. Active saved config remains ₹2,995, with entries_paused=0
 (no running trading process observed; this is not arming authorization). No host files,
 databases, orders, credentials or service configuration were changed.
+
+## Host migration rehearsal — isolated copies only
+
+Source from committed `18b0ae6` was extracted under
+`/tmp/nifty-v1-rehearsal.1LtPCV/source` without touching remote workspace/current.
+SQLite readonly backups of trading/Admin databases were migrated using the host
+Python environment and `tests/rehearse_host_migration.py`. Both integrity checks
+passed; all **30** trade identity/quantity/status/session rows were unchanged and
+Saved/Effective daily cap remained **₹2,995**. Existing saved keys were preserved.
+
+The old ADANIPORTS 145-share record retained its historical status but has zero
+asserted protection and null mode provenance after migration. That is fail-closed
+historical accounting, not resolution of the broker position. No broker calls,
+production migrations, service restarts or deployment occurred. Temporary copies
+remain private (directory 0700, database files 0600) for release verification.
+
+On that isolated source, host Python ran PAPER lifecycle + trailing profile +
+control API modules: **22 tests in 3.392s, OK**. These use temporary test databases
+and do not exercise the running production API or real broker account.
