@@ -372,3 +372,8 @@ Production configuration whitelist check confirms `APP_ENV=production`,
 path `/opt/nifty-radar/data/local/nifty50_live_1m.db`. LIVE authorization flags were
 not present in the environment file. Actual cutover must explicitly lock them
 off rather than relying only on absent defaults.
+
+Full staged candidate suite on host runtime: `python -m unittest discover -s
+tests -q` completed **771 tests in 122.383s, OK**. Deliberately injected fault
+tracebacks are test fixtures, not production failures. This verifies isolated
+behavior on the target Python installation, not live market/broker equivalence.
