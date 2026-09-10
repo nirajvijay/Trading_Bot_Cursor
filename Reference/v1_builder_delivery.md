@@ -566,3 +566,60 @@ Verified frontend asset hashes (rebuild into release at cutover):
 Rollback target remains `60216742f71d6b26bbeb2ace93d8f42da3a23c27`.
 Preserve: LIVE-write gates disabled, `daily_loss_cap_inr=2995`, ADANIPORTS
 history untouched, no real orders, no credential/permission changes.
+
+## V1 PAPER clean-start checkpoint (2026-09-11)
+
+Astra accepted the three post-review corrections (PAPER ledger/account pair
+identity, fail-closed preflight, lock-file ownership) at code-review level on
+worktree `/opt/nifty-radar/worktrees/v1-acceptance` (`codex/v1-acceptance-review`).
+
+This checkpoint **commits** the clean-start implementation for owner cutover
+approval. It is **not** authorization to deploy, switch production storage, start
+an engine, place real orders, or enable LIVE.
+
+### Scope committed (exported `.diff` / `.patch` artifacts excluded)
+
+- `api/config.py` — V1 PAPER / legacy path helpers; paper-only detection
+- `trading_engine_store.py` — `engine_account_meta` with `paper_account_id` + `initialization_complete`
+- `trading_engine_paper.py` — durable `account_id`; `allow_create=False` runtime path
+- `trading_engine_v1_paper_clean_start.py` — archive/init/preflight/pair validation
+- `trading_engine_cycle.py` / `trading_engine_control.py` / `live_trading_engine.py` /
+  `api/services/trading_engine_runner.py` / `api/routers/trading.py` — boundary + refuse incomplete pair
+- `trading_engine_report.py` — legacy out-of-band limitation note
+- `tests/test_v1_paper_clean_start.py` — isolated regressions
+- `Reference/v1_paper_clean_start_cutover.md` — exact cutover + failure recovery
+
+### Exact verification (pre-commit)
+
+```text
+cd /opt/nifty-radar/worktrees/v1-acceptance
+NIFTY_RADAR_SECRETS_DIR=/tmp/nifty-v1-test-secrets \
+  /opt/nifty-radar/venv/bin/python -m unittest discover -s tests -q
+# Ran 802 tests in 136.974s
+# OK
+
+cd frontend && npm run build
+# ✓ built in 970ms (exit 0)
+# dist/assets/index-BRe08tl1.js
+# dist/assets/index-C2Kb3GRR.css
+
+npm run check:render
+# PASS: public + four owner initial-state renders and long/short tick-control boundaries.
+# Browser interactions untested. (exit 0)
+
+git diff --check
+# exit 0
+```
+
+Frontend asset hashes (unchanged from prior acceptance-review build; rebuild into
+release at any future code deploy):
+
+- JS `index-BRe08tl1.js`: `bd27708857d4873869bd8b946e05b2c69a59c4b476294360ead75264bd127bf3`
+- CSS `index-C2Kb3GRR.css`: `0af1f36a65aaa26e7c2c165fe4139b74abf458191f1f8950766ee5f3f936e9d1`
+
+### Cutover status
+
+**Not executed.** Await NJ’s explicit approval of
+`Reference/v1_paper_clean_start_cutover.md` for commit `CLEANSTART_COMMIT_SHA`.
+Preserve: LIVE gates disabled, ₹2995, credentials, market history, both ledgers.
+

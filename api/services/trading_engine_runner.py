@@ -125,6 +125,28 @@ def start_trading_engine(
     live_wanted = bool(confirm_live_orders)
     if live_wanted and os.environ.get("NIFTY_RADAR_LIVE_WRITES_AUTHORIZED") != "1":
         return False, "LIVE execution is locked; supervised live authorization required", None
+    trading_db = config.trading_engine_db_path()
+    if live_wanted:
+        from trading_engine_v1_paper_clean_start import refuse_live_on_paper_ledger
+        try:
+            refuse_live_on_paper_ledger(trading_db)
+        except RuntimeError as exc:
+            return False, str(exc), None
+    else:
+        # PAPER start refuses missing/invalid clean-start identity.
+        from trading_engine_store import TradingEngineStore
+        from trading_engine_v1_paper_clean_start import require_paper_v1_ready
+        try:
+            if config.is_paper_only_ledger_path(trading_db) and not trading_db.exists():
+                return False, "paper_v1_ledger_not_initialized", None
+            if trading_db.exists() or config.is_paper_only_ledger_path(trading_db):
+                store = TradingEngineStore(trading_db)
+                try:
+                    require_paper_v1_ready(store, trading_db)
+                finally:
+                    store.close()
+        except (RuntimeError, FileNotFoundError, OSError) as exc:
+            return False, str(exc), None
 
     try:
         lock_file = acquire_start_lock(date)

@@ -112,4 +112,6 @@ def session_report(store, session_date: str) -> dict:
             "generated_at": datetime.now(timezone.utc).isoformat(), "modes": groups,
             "limitations": ["PAPER fills do not establish live execution quality or profitability.",
                             "Unattributed broker orders and external account activity require the Recovery view.",
-                            "Open and incomplete P&L is not included in closed-trade outcome totals."]}
+                            "Open and incomplete P&L is not included in closed-trade outcome totals.",
+                            "Legacy pre-clean-start ledgers (trading_engine.db archives) are out of band and are not mixed into these PAPER/LIVE/UNKNOWN mode groups.",
+                            "This report covers only the active trading ledger bound to the API/PAPER engine."]}

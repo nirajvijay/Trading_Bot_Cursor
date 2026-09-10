@@ -291,11 +291,33 @@ def trading_command_status(command_id: int) -> dict:
 def trading_setups() -> dict:
     from trading_engine_handoff import fetch_triggered_since
     from trading_engine_quotes import age_seconds
+    from trading_engine_v1_paper_clean_start import (
+        candidate_blocked_by_clean_start,
+        max_aware_instant_iso,
+        require_paper_v1_ready,
+    )
     now = datetime.now(timezone.utc)
     day = _session_date(None)
-    candidates = fetch_triggered_since(config.live_db_path(), created_at_gte=day)
-    return {"setups":[{**asdict(c), "signal_age_seconds":age_seconds(now,c.trigger_exchange_ts)}
-                       for c in candidates if c.session_date == day][-100:]}
+    boundary = None
+    floor = day
+    store = TradingEngineStore(config.trading_engine_db_path())
+    try:
+        require_paper_v1_ready(store)
+        boundary = store.signal_accept_not_before()
+        if boundary:
+            # Prefer durable boundary over bare session-date floor when both apply.
+            floor = max_aware_instant_iso(day + "T00:00:00+00:00", boundary, field="setups_floor")
+    finally:
+        store.close()
+    candidates = fetch_triggered_since(config.live_db_path(), created_at_gte=floor)
+    setups = []
+    for c in candidates:
+        if c.session_date != day:
+            continue
+        if candidate_blocked_by_clean_start(c, boundary):
+            continue
+        setups.append({**asdict(c), "signal_age_seconds": age_seconds(now, c.trigger_exchange_ts)})
+    return {"setups": setups[-100:]}
 
 
 @router.get("/trades/{trade_id}/audit", dependencies=[Depends(require_web_session)])
@@ -349,11 +371,23 @@ def trading_preview(body: TradingPreviewRequest) -> dict:
         run = store.latest_run()
         if run is None:
             raise HTTPException(409,"start_engine_first")
+        from trading_engine_v1_paper_clean_start import (
+            candidate_blocked_by_clean_start,
+            max_aware_instant_iso,
+            require_paper_v1_ready,
+        )
+        require_paper_v1_ready(store)
         day = _session_date(None)
-        candidates = [c for c in fetch_triggered_since(config.live_db_path(), created_at_gte=day)
+        boundary = store.signal_accept_not_before()
+        floor = day
+        if boundary:
+            floor = max_aware_instant_iso(day + "T00:00:00+00:00", boundary, field="preview_floor")
+        candidates = [c for c in fetch_triggered_since(config.live_db_path(), created_at_gte=floor)
             if c.setup_id == body.setup_id and c.continuation_rule_version == body.continuation_rule_version and c.session_date == day]
         if len(candidates) != 1:
             raise HTTPException(404,"setup_missing_or_ambiguous")
+        if candidate_blocked_by_clean_start(candidates[0], boundary):
+            raise HTTPException(409, "setup_before_clean_start_boundary")
         try:
             broker = KiteBroker(_get_kite(), live_orders_enabled=False)
         except Exception as exc:

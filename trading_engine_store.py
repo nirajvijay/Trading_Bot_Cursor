@@ -303,8 +303,16 @@ def _row_optional_float(row: sqlite3.Row, key: str) -> Optional[float]:
 
 
 class TradingEngineStore:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, allow_create: bool | None = None) -> None:
         self.db_path = Path(db_path)
+        # PAPER-only ledgers must be bootstrapped explicitly; refuse silent create.
+        from api import config as _cfg
+
+        paper_path = _cfg.is_paper_only_ledger_path(self.db_path)
+        if allow_create is None:
+            allow_create = not paper_path
+        if paper_path and not self.db_path.exists() and not allow_create:
+            raise FileNotFoundError("paper_v1_ledger_not_initialized")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), timeout=30)
         self._conn.row_factory = sqlite3.Row
@@ -389,6 +397,23 @@ class TradingEngineStore:
         ):
             self._ensure_column("trade_order_links", col, ddl)
         self._migrate_qty_model_v1()
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS engine_account_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                namespace TEXT NOT NULL,
+                signal_not_before TEXT,
+                legacy_archive_label TEXT,
+                paper_account_id TEXT,
+                initialization_complete INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+        """)
+        self._ensure_column("engine_account_meta", "paper_account_id", "TEXT")
+        self._ensure_column(
+            "engine_account_meta",
+            "initialization_complete",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
         self._conn.executescript("""
             CREATE TRIGGER IF NOT EXISTS immutable_original_setup
             BEFORE UPDATE OF original_setup_json ON trades
@@ -484,6 +509,159 @@ class TradingEngineStore:
         existing = {str(r[1]) for r in rows}
         if name not in existing:
             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+    def account_meta(self) -> Optional[dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT namespace, signal_not_before, legacy_archive_label, "
+            "paper_account_id, initialization_complete, updated_at "
+            "FROM engine_account_meta WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        keys = set(row.keys())
+        paper_account_id = None
+        if "paper_account_id" in keys and row["paper_account_id"] is not None:
+            paper_account_id = str(row["paper_account_id"]).strip() or None
+        complete = False
+        if "initialization_complete" in keys and row["initialization_complete"] is not None:
+            complete = bool(int(row["initialization_complete"]))
+        return {
+            "namespace": str(row["namespace"]),
+            "signal_not_before": (
+                None if row["signal_not_before"] is None else str(row["signal_not_before"])
+            ),
+            "legacy_archive_label": (
+                None
+                if row["legacy_archive_label"] is None
+                else str(row["legacy_archive_label"])
+            ),
+            "paper_account_id": paper_account_id,
+            "initialization_complete": complete,
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def is_paper_v1_namespace(self) -> bool:
+        meta = self.account_meta()
+        return bool(meta and meta.get("namespace") == "paper_v1")
+
+    def signal_accept_not_before(self) -> Optional[str]:
+        meta = self.account_meta()
+        if meta is None:
+            return None
+        raw = meta.get("signal_not_before")
+        return str(raw) if raw else None
+
+    def ensure_paper_v1_namespace(
+        self,
+        *,
+        signal_not_before: str,
+        legacy_archive_label: Optional[str] = None,
+        paper_account_id: Optional[str] = None,
+        initialization_complete: bool = False,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        """Stamp PAPER-only account meta. Refuses weakening an existing earlier boundary.
+
+        initialization_complete must stay false until the matching PAPER account
+        exists and shares paper_account_id.
+        """
+        from trading_engine_v1_paper_clean_start import (
+            normalize_aware_instant,
+            parse_required_aware_instant,
+        )
+
+        now = _utc_now()
+        signal_not_before = normalize_aware_instant(
+            signal_not_before, field="signal_not_before"
+        )
+        existing = self.account_meta()
+        account_id = (paper_account_id or "").strip() or None
+        if existing is not None:
+            if existing.get("namespace") not in {None, "paper_v1"}:
+                raise ValueError("account_namespace_conflict")
+            prior = existing.get("signal_not_before")
+            if prior:
+                prior_dt = parse_required_aware_instant(prior, field="signal_not_before")
+                new_dt = parse_required_aware_instant(
+                    signal_not_before, field="signal_not_before"
+                )
+                if new_dt < prior_dt:
+                    raise ValueError("signal_not_before_cannot_move_earlier")
+                if prior_dt > new_dt:
+                    signal_not_before = prior_dt.isoformat(timespec="seconds")
+            label = legacy_archive_label or existing.get("legacy_archive_label")
+            prior_id = existing.get("paper_account_id")
+            if prior_id and account_id and prior_id != account_id:
+                raise ValueError("paper_account_id_conflict")
+            if prior_id and not account_id:
+                account_id = prior_id
+            if existing.get("initialization_complete") and not initialization_complete:
+                raise ValueError("paper_initialization_cannot_regress")
+        else:
+            label = legacy_archive_label
+        if not account_id:
+            raise ValueError("paper_account_id_required")
+        self._conn.execute(
+            """
+            INSERT INTO engine_account_meta (
+                id, namespace, signal_not_before, legacy_archive_label,
+                paper_account_id, initialization_complete, updated_at
+            ) VALUES (1, 'paper_v1', ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                namespace = 'paper_v1',
+                signal_not_before = excluded.signal_not_before,
+                legacy_archive_label = COALESCE(
+                    excluded.legacy_archive_label, engine_account_meta.legacy_archive_label
+                ),
+                paper_account_id = excluded.paper_account_id,
+                initialization_complete = excluded.initialization_complete,
+                updated_at = excluded.updated_at
+            """,
+            (
+                signal_not_before,
+                label,
+                account_id,
+                1 if initialization_complete else 0,
+                now,
+            ),
+        )
+        self._conn.commit()
+        self.append_event(
+            "__account__",
+            "paper_v1_namespace_ensured",
+            actor=actor,
+            payload={
+                "signal_not_before": signal_not_before,
+                "legacy_archive_label": label,
+                "paper_account_id": account_id,
+                "initialization_complete": bool(initialization_complete),
+            },
+        )
+        meta = self.account_meta()
+        assert meta is not None
+        return meta
+
+    def finalize_paper_v1_initialization(
+        self, *, paper_account_id: str, actor: str = "clean_start"
+    ) -> dict[str, Any]:
+        """Mark bootstrap complete only after the matching account exists."""
+        meta = self.account_meta()
+        if meta is None or meta.get("namespace") != "paper_v1":
+            raise ValueError("paper_v1_namespace_missing_or_invalid")
+        expected = str(meta.get("paper_account_id") or "").strip()
+        got = str(paper_account_id or "").strip()
+        if not expected or expected != got:
+            raise ValueError("paper_account_id_mismatch")
+        if not meta.get("signal_not_before"):
+            raise ValueError("paper_v1_signal_boundary_missing_or_invalid")
+        return self.ensure_paper_v1_namespace(
+            signal_not_before=str(meta["signal_not_before"]),
+            legacy_archive_label=meta.get("legacy_archive_label"),
+            paper_account_id=expected,
+            initialization_complete=True,
+            actor=actor,
+        )
+
 
     def close(self) -> None:
         self._conn.close()

@@ -584,11 +584,44 @@ class TradingEngineCycle:
     def has_pending_vwap(self) -> bool:
         return bool(self._pending_vwap)
 
+
+    def _signal_created_at_floor(self) -> str:
+        """Later of process started_at and durable clean-start signal boundary."""
+        from trading_engine_v1_paper_clean_start import (
+            max_aware_instant_iso,
+            require_paper_v1_ready,
+        )
+
+        require_paper_v1_ready(self.store)
+        boundary = self.store.signal_accept_not_before()
+        if boundary:
+            return max_aware_instant_iso(
+                self.started_at, boundary, field="signal_created_at_floor"
+            )
+        from trading_engine_v1_paper_clean_start import normalize_aware_instant
+
+        return normalize_aware_instant(self.started_at, field="started_at")
+
+    def _candidate_before_clean_start(self, candidate) -> bool:
+        from trading_engine_v1_paper_clean_start import (
+            candidate_blocked_by_clean_start,
+            require_paper_v1_ready,
+        )
+
+        require_paper_v1_ready(self.store)
+        return candidate_blocked_by_clean_start(
+            candidate, self.store.signal_accept_not_before()
+        )
+
     def ingest_triggers(self) -> None:
         if self._entry_mode() != "AUTOPILOT":
             return
-        candidates = fetch_triggered_since(self.live_db, created_at_gte=self.started_at)
+        candidates = fetch_triggered_since(
+            self.live_db, created_at_gte=self._signal_created_at_floor()
+        )
         for candidate in candidates:
+            if self._candidate_before_clean_start(candidate):
+                continue
             self._handle_candidate(candidate)
 
     def poll_pending_vwap(self) -> None:
@@ -626,6 +659,8 @@ class TradingEngineCycle:
 
     def _handle_candidate(self, candidate: TriggerCandidate) -> None:
         if self._entries_paused():
+            return
+        if self._candidate_before_clean_start(candidate):
             return
         existing = self.store.find_trade(
             candidate.setup_id, candidate.continuation_rule_version
@@ -893,6 +928,9 @@ class TradingEngineCycle:
         return fetch_checklist_summary(self.session_date).get("overall_status") == "ok"
 
     def approve_setup(self, payload: dict, *, actor: str, first: bool) -> dict:
+        from trading_engine_v1_paper_clean_start import require_paper_v1_ready
+
+        require_paper_v1_ready(self.store)
         setup_id = str(payload.get("setup_id") or "")
         rule = str(payload.get("continuation_rule_version") or "")
         trade = self.store.find_trade(setup_id, rule) if rule else None
@@ -904,10 +942,14 @@ class TradingEngineCycle:
                 raise ValueError(block)
             if trade:
                 raise ValueError("setup_already_processed")
-            candidates = [c for c in fetch_triggered_since(self.live_db, created_at_gte=self.started_at)
+            candidates = [c for c in fetch_triggered_since(
+                self.live_db, created_at_gte=self._signal_created_at_floor()
+            )
                           if c.setup_id == setup_id and c.continuation_rule_version == rule and c.session_date == self.session_date]
             if len(candidates) != 1:
                 raise ValueError("setup_missing_or_ambiguous")
+            if self._candidate_before_clean_start(candidates[0]):
+                raise ValueError("setup_before_clean_start_boundary")
             self._manual_overrides = payload
             try:
                 self._apply_vwap_gate(candidates[0], first_seen=self._monotonic(), deadline_expired=True)

@@ -93,7 +93,13 @@ def next_loop_sleep_seconds(
     return until_full
 
 
-def _make_broker(live: bool, total_capital: float, *, paper_db: Optional[Path] = None):
+def _make_broker(
+    live: bool,
+    total_capital: float,
+    *,
+    paper_db: Optional[Path] = None,
+    trading_db: Optional[Path] = None,
+):
     """Runtime PAPER uses a durable local account; omitted path is isolated-test mode."""
     if not live:
         if paper_db is not None:
@@ -102,7 +108,18 @@ def _make_broker(live: bool, total_capital: float, *, paper_db: Optional[Path] =
             def quote(symbol):
                 from login import _get_kite
                 return KiteBroker(_get_kite(), live_orders_enabled=False).touch_quote(symbol)
-            return PaperBroker(paper_db, quote_provider=quote, total_capital=total_capital)
+            if trading_db is not None:
+                from trading_engine_v1_paper_clean_start import open_paper_broker_for_ledger
+                return open_paper_broker_for_ledger(
+                    trading_db, quote_provider=quote, total_capital=total_capital
+                )
+            # Isolated tests may pass an explicit paper_db without paper_v1 ledger pairing.
+            return PaperBroker(
+                paper_db,
+                quote_provider=quote,
+                total_capital=total_capital,
+                allow_create=True,
+            )
         return FakeBroker(
             auto_fill_entry=True,
             auto_confirm_sl=True,
@@ -139,11 +156,40 @@ def run(args: argparse.Namespace) -> int:
             pass
 
     require_vwap = _require_vwap_accept_from_env()
-    store = TradingEngineStore(trading_db)
+    from trading_engine_v1_paper_clean_start import (
+        refuse_live_on_paper_ledger,
+        require_paper_v1_ready,
+        validate_paper_v1_pair,
+    )
+    if live:
+        refuse_live_on_paper_ledger(trading_db)
+    # PAPER-only ledgers must already be bootstrapped; do not create unstamped DBs.
+    store = TradingEngineStore(trading_db, allow_create=not config.is_paper_only_ledger_path(trading_db))
+    try:
+        require_paper_v1_ready(store, trading_db)
+        # Validate the durable account pair before recording a run or opening broker.
+        if config.is_paper_only_ledger_path(trading_db) or store.is_paper_v1_namespace():
+            validate_paper_v1_pair(trading_db)
+    except RuntimeError:
+        store.close()
+        raise
     admin_store = AdminConfigStore(config.admin_config_db_path(), read_only=True)
     entries_paused = admin_store.read_entries_paused()
     consume = not entries_paused
     started_at = _utc_now()
+    paper_account = config.trading_engine_paper_account_db_path(trading_db)
+    if live:
+        broker = _make_broker(live, float(args.total_capital), paper_db=paper_account)
+    else:
+        # Runtime must not recreate a missing PAPER account.
+        broker = _make_broker(
+            live,
+            float(args.total_capital),
+            paper_db=paper_account,
+            trading_db=trading_db if (
+                config.is_paper_only_ledger_path(trading_db) or store.is_paper_v1_namespace()
+            ) else None,
+        )
     run_id = store.start_run(
         session_date=session_date,
         live_orders_enabled=live,
@@ -152,8 +198,6 @@ def run(args: argparse.Namespace) -> int:
         require_vwap_accept=require_vwap,
     )
     store.set_consume_triggers(run_id, consume)
-    broker = _make_broker(live, float(args.total_capital),
-                          paper_db=trading_db.with_name(trading_db.stem + "_paper_account.db"))
 
     def _feed_age() -> Optional[float]:
         return feed_age_seconds_from_runner_status(
