@@ -115,7 +115,13 @@ class PaperTests(unittest.TestCase):
         from trading_engine_cycle import TradingEngineCycle
         from trading_engine_store import TradingEngineStore
         from tests.test_trading_engine_cycle import _seed_live
+        from api import config
+        from api.services.checklist_cache import write_checklist_cache
         root = Path(self.tmp.name)
+        for target, value in (("runtime_cache_dir", lambda: root), ("LOCAL_DATA_DIR", root)):
+            override = patch.object(config, target, value)
+            override.start()
+            self.addCleanup(override.stop)
         admin_path, live_path = root/"admin.db", root/"live.db"
         admin = AdminConfigStore(admin_path)
         admin.update_config({"round_trip_charge_bps": 0, "estimated_slippage_bps": 0}, actor="test")
@@ -132,7 +138,6 @@ class PaperTests(unittest.TestCase):
                 session_date="2026-08-17", started_at=NOW.isoformat(), run_id=run,
                 live_orders_enabled=False, admin_config_db=admin_path,
                 clock_fn=lambda: NOW, feed_age_seconds_fn=lambda: 0)
-            cycle._arming_readiness = lambda: True
             return cycle
         cycle = new_cycle()
         def command(kind, **payload):
@@ -145,6 +150,13 @@ class PaperTests(unittest.TestCase):
                              run_id=cycle.run_id, config_version_id=version)
             self.assertEqual(result["state"], "succeeded", result)
         try:
+            blocked = command("arm_session", execution_mode="PAPER", entry_mode=entry_mode,
+                              run_id=cycle.run_id, config_version_id=version)
+            self.assertEqual(blocked["state"], "failed", blocked)
+            self.assertEqual(self.broker.limit_place_count, 0)
+            # Exercise the production checklist cache/readiness path using isolated
+            # evidence. This is not a claim that real market preparation was run.
+            write_checklist_cache({"session_date":"2026-08-17", "overall_status":"ok"})
             arm()
             if entry_mode == "MANUAL":
                 result = command("approve_entry", setup_id="paper-signal", continuation_rule_version="v1", qty_override=5)

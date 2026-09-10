@@ -74,7 +74,7 @@ class ControlApiTests(unittest.TestCase):
         admin = AdminConfigStore(config.admin_config_db_path())
         admin.set_entries_paused(False)
         admin.close()
-        heartbeat = {"session_date": day, "broker_sync_at": datetime.now(timezone.utc).isoformat()}
+        heartbeat = {"run_id": run_id, "session_date": day, "broker_sync_at": datetime.now(timezone.utc).isoformat()}
         with patch("api.routers.trading.is_engine_running", return_value=False), \
              patch("api.services.trading_engine_runner.read_heartbeat", return_value=heartbeat):
             self.assertEqual(self.client.get("/api/v1/trading-engine/control").json()["strip"]["entry_permission"], "disarmed")
@@ -96,6 +96,31 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(read.json()["state"],"queued")
         conflict=self.client.post("/api/v1/trading-engine/commands",json={**body,"kind":"disarm"})
         self.assertEqual(conflict.status_code,409)
+
+    def test_old_run_heartbeat_cannot_report_armed_or_open_pnl(self):
+        from api.routers.trading import _session_date
+        from datetime import datetime, timezone
+        day = _session_date(None)
+        store = TradingEngineStore(config.trading_engine_db_path())
+        run_id = store.start_run(session_date=day, live_orders_enabled=False, pid=None)
+        store.save_session_arm(session_date=day, run_id=run_id, execution_mode="PAPER",
+                               entry_mode="MANUAL", config_version_id="test", actor="test")
+        store.close()
+        admin = AdminConfigStore(config.admin_config_db_path())
+        admin.set_entries_paused(False)
+        admin.close()
+        now = datetime.now(timezone.utc).isoformat()
+        heartbeat = {"run_id":"previous-run", "session_date":day, "broker_sync_at":now,
+                     "loss_halt":{"complete":True, "unrealised":1234, "as_of":now, "mark_age_seconds":0}}
+        with patch("api.routers.trading.is_engine_running", return_value=True), \
+             patch("api.services.trading_engine_runner.read_heartbeat", return_value=heartbeat), \
+             patch("trading_engine_cycle.feed_age_seconds_from_runner_status", return_value=0):
+            response = self.client.get("/api/v1/trading-engine/control")
+            self.assertEqual(response.status_code, 200, response.text)
+            strip = response.json()["strip"]
+            self.assertEqual(strip["entry_permission"], "data_not_ready")
+            self.assertIsNone(strip["open_pnl"])
+            self.assertIsNone(strip["sync_age_seconds"])
 
     def test_live_arm_rejected_without_authorization(self):
         response=self.client.post("/api/v1/trading-engine/commands",json={

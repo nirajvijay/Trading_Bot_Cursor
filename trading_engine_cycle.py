@@ -5923,6 +5923,7 @@ class TradingEngineCycle:
             per_trade_cap=float(admin["per_trade_risk_cap_inr"]),
         )
         snap["updated_at"] = _now()
+        snap["run_id"] = self.run_id
         snap["running"] = self.running
         snap["consume_new_triggers"] = self.consume_new_triggers
         snap["loss_halt"] = self.loss_halt_snapshot

@@ -12,6 +12,16 @@ from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
 
 
+def current_run_heartbeat(heartbeat, run, *, running, session_date):
+    """A recent timestamp cannot establish which process produced a snapshot."""
+    if (not running or run is None or not heartbeat.get("run_id")
+            or heartbeat["run_id"] != run["run_id"]
+            or heartbeat.get("session_date") != session_date
+            or run["session_date"] != session_date):
+        return {}
+    return heartbeat
+
+
 def live_trade_mark(trade, heartbeat, now, feed_age):
     """Expose only a fresh mark for exactly the reconciled quantity/accounting slice."""
     from trading_engine_quotes import age_seconds

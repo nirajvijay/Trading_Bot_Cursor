@@ -304,3 +304,21 @@ frontend production build and `npm run check:render` passed; `git diff --check`
 clean. New regressions cover invalid enums, restart persistence, preservation of
 the 2995 fixture, stopped/disarmed control state and rejected LIVE arming after a
 LIVE preference save. This is isolated evidence, not deployment or broker proof.
+
+## Current-run status and PAPER readiness integration
+
+Heartbeat output now carries the engine run ID. Control and trade-audit APIs
+discard heartbeat data unless it belongs to the running session/run. A fresh
+timestamp from a previous process can no longer imply armed permission, broker
+sync or live P&L. Unit and HTTP regressions cover missing/wrong run identity,
+stopped process and session mismatch.
+
+The persistent PAPER MANUAL and AUTOPILOT lifecycle tests no longer bypass
+`_arming_readiness`. They exercise the actual checklist cache/sector validation
+path, prove arm rejection before checklist evidence, then write isolated checklist
+evidence and complete entry/protection/restart/rearm/close/report. Market quotes
+and checklist results remain fixtures: this is not a real market-data preparation
+or browser-session acceptance claim.
+
+Full suite: **768 tests in 12.133s, OK**. Focused PAPER/control/identity set:
+**21 tests, OK**. No real orders, production migration or deployment.
