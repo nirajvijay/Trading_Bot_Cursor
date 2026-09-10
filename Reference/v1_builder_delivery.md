@@ -225,3 +225,24 @@ a replacement profile. Existing tighten-only and through-price exit checks remai
 Profile + WP13 + Admin store + control suites: **46 tests in 0.662s, OK**. New tests
 cover invalid profiles, default compatibility, Saved/Effective and old-trade
 isolation, and mirrored long/short custom-gap math. Frontend build passes.
+
+## Lightsail read-only deployment preflight (2026-09-10)
+
+SSH inspection confirms current release remains
+`/opt/nifty-radar/releases/e4aa813e08059d3cd17fb785eae0af90eb9c2d29`.
+API is active under `nifty-radar-api.service`, working directory `current`, shared
+venv Uvicorn on 127.0.0.1:8000. Caddy routes `/api/*` there and serves
+`current/frontend/dist` with SPA fallback. No observation/trading runner process
+was returned by the process inspection. No services were stopped or restarted.
+
+Remote workspace remains at `26ad912` with Cursor WP17 source/test changes; it
+must not be overwritten. A release must be built separately from the local
+committed branch, with explicit database backups and LIVE disabled. Both live
+authorization flags were absent from the environment file's filtered output.
+
+Read-only trading database inspection: 11 closed, 18 skipped, one protected-open
+ADANIPORTS 145 shares from 2026-09-02. This is a persisted row, not evidence of a
+current broker position; provenance remains unresolved and must not be auto-adopted
+or auto-flattened. Active saved config remains ₹2,995, with entries_paused=0
+(no running trading process observed; this is not arming authorization). No host files,
+databases, orders, credentials or service configuration were changed.
