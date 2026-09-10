@@ -525,7 +525,10 @@ class TradingEngineStore:
 
     def latest_run(self) -> Optional[sqlite3.Row]:
         return self._conn.execute(
-            "SELECT * FROM engine_runs ORDER BY started_at DESC LIMIT 1"
+            # Timestamps have second precision. A quick restart can share its
+            # predecessor's timestamp; choose the newer insert, not an arbitrary
+            # tied row, so HTTP commands bind to the actual current run.
+            "SELECT * FROM engine_runs ORDER BY started_at DESC, rowid DESC LIMIT 1"
         ).fetchone()
 
     def set_run_status(

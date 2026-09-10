@@ -491,3 +491,31 @@ Remaining readiness issue is data preparation, not login: instruments last updat
 Sep 2, 1m/5m coverage through Sep 2 instead of Sep 9, baselines as-of Sep 1.
 The first Prepare/update action is available; later steps remain safely blocked
 pending preparation. Full PAPER workflow/final acceptance remain incomplete.
+
+## Resumed acceptance — authenticated PAPER integration
+
+Added `tests.test_v1_owner_workflow`: temporary owner login and real step-up,
+HTTP queued commands and idempotency, persistent PaperBroker, MANUAL/AUTOPILOT,
+protection, manual trail, auto-trail disable, restart/re-arm, drain versus close,
+and authenticated audit/report download. Real Kite place/modify/cancel methods
+are tripwires. Readiness and touch inputs are explicitly synthetic. Generated
+reports are in `Reference/v1_paper_acceptance_report.json`; they are not market
+performance or deployed browser fill evidence.
+
+The integration exposed an actual same-second run-selection defect: `latest_run`
+sorted only second-resolution timestamps, so HTTP arming could target the prior
+run. Added insertion-order tie-breaking and a reopen regression. Initial two
+integration runs failed on `stale_engine_run`; after the fix, both modes pass.
+
+Full local suite: **779 tests in 8.592s, OK**. Earlier targeted lifecycle/recovery/
+control/fault set: **110 tests, OK**. No real broker writes.
+
+Owner-site preparation has refreshed 100 instruments, 1m candles through Sep9
+for 100/100 with >=21 complete sessions, and 36,045 reliable baseline rows as-of
+Sep9. Five-minute preparation and final website acceptance continue.
+
+Read-only Kite positions/orders at approximately 12:45 IST: zero nonzero net
+positions and zero working orders. Historical ADANIPORTS record remains untouched:
+Sep2, qty145, no originating run_id or mode. The Sep2 run table lists a stopped
+PAPER run, but the trade is not durably linked; this is supporting evidence,
+not automatic permission to classify, close, delete or release its recovery hold.
