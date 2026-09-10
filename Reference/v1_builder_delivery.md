@@ -438,3 +438,18 @@ externally and directly on localhost. Latest local full suite: **772 OK**;
 latest candidate host PAPER/control/heartbeat set: **22 OK**. Authenticated owner
 browser acceptance and full final requirement audit remain outstanding, so the
 overall goal is not complete and no LIVE-readiness claim is made.
+
+## Durable rollback backups and acceptance hold
+
+Copied pristine pre-migration snapshots to persistent
+`/opt/nifty-radar/data/backups/v1-pre-13b364c/{admin,trading}.db`. Directory mode
+0700, files 0600, root-owned; byte-for-byte comparison to pristine temporary
+sources passed. No production data was restored or overwritten.
+
+External owner shell returns 200 as expected for a client-rendered login page;
+private Admin/config and report endpoints both return 401 without authentication.
+Authenticated browser interaction acceptance requires NJ's sign-in/MFA and
+explicit browser-testing request under the Sites skill. Requested once; not
+authorized by an automatic goal continuation. Do not forge sessions, bypass MFA,
+or label source/render tests as browser acceptance. Overall goal remains held
+for that verification, and historical ADANIPORTS broker provenance is unresolved.
