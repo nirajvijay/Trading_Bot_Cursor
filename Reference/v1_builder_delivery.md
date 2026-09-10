@@ -167,3 +167,20 @@ Full isolated suite: **754 tests in 8.649s, OK**. Frontend build passes; lint ha
 only the pre-existing ChecklistStatusPill Fast Refresh warning. Browser workflow,
 full frozen-requirement audit, runtime PAPER report and deployment remain. New
 Admin/Desk interfaces are development implementations, not acceptance proof.
+
+## Session report and PAPER lifecycle checkpoint
+
+Desk downloads an authenticated session-cohort JSON report. It separates strategy
+outcomes from engineering observations and keeps PAPER / LIVE / unknown provenance
+apart. Only price-complete closed records enter outcome P&L; provisional records,
+unprotected exposure, reconciliation state and missing plans are explicit. This
+is not a broker calendar-day net-charge statement or proof of safety/profitability.
+
+Persistent PAPER lifecycle coverage now runs both MANUAL and AUTOPILOT through
+entry, protection, account restart, entry-lock recovery, explicit re-arm, durable
+close and report generation. Tests assert flat broker/local state and no pending
+orders. Readiness and quotes are injected; these do not replace Checklist/API/UI
+end-to-end verification or a live market session.
+
+`tests.test_trading_engine_paper` + `tests.test_trading_engine_stage2_api`: **18
+tests in 0.303s, OK**. Frontend build passes. No live broker writes or deployment.

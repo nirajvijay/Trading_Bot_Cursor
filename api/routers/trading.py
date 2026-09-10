@@ -42,6 +42,26 @@ from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
 router = APIRouter(prefix="/trading-engine", tags=["trading-engine"])
 
 
+@router.get("/report", dependencies=[Depends(require_web_session)])
+def trading_report(session_date: str, download: bool = False):
+    from datetime import date
+    from fastapi.responses import JSONResponse
+    from trading_engine_report import session_report
+    try:
+        day = date.fromisoformat(session_date).isoformat()
+    except ValueError:
+        raise HTTPException(400, "invalid_session_date")
+    store = TradingEngineStore(config.trading_engine_db_path())
+    try:
+        report = session_report(store, day)
+    finally:
+        store.close()
+    headers = {"Cache-Control": "no-store"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="nifty-radar-{day}.json"'
+    return JSONResponse(report, headers=headers)
+
+
 def _session_date(session_date: Optional[str]) -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo

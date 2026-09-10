@@ -10,6 +10,26 @@ class ControlApiTests(unittest.TestCase):
     setUp = fixture.TradingEngineApiTests.setUp
     tearDown = fixture.TradingEngineApiTests.tearDown
 
+    def test_report_separates_modes_and_excludes_provisional_outcomes(self):
+        store = TradingEngineStore(config.trading_engine_db_path())
+        for i, (mode, provisional, pnl) in enumerate(((False,False,-10),(False,True,999),(True,False,20),(None,False,30))):
+            trade = store.insert_candidate(setup_id=f"report-{i}",continuation_rule_version="v1",
+                session_date="2026-09-10",symbol="AAA",instrument_token=1,direction="UP",
+                entry_estimate=100,tick_size=.05,trigger_time="2026-09-10T10:00:00+05:30")
+            store.update_trade(trade.trade_id,qty_model_version=1,status="closed",filled_qty=1,exited_qty=1,
+                entry_live_orders_enabled=mode,pnl_provisional=provisional,realised_pnl=pnl)
+        store.close()
+        response=self.client.get("/api/v1/trading-engine/report?session_date=2026-09-10&download=true")
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertIn("attachment",response.headers["content-disposition"])
+        modes=response.json()["modes"]
+        self.assertEqual(modes["PAPER"]["strategy_outcomes"]["complete_closed_recorded_pnl"],-10)
+        self.assertEqual(modes["PAPER"]["strategy_outcomes"]["losses"],1)
+        self.assertEqual(len(modes["PAPER"]["engineering_quality"]["provisional_accounting_trade_ids"]),1)
+        self.assertEqual(modes["LIVE"]["strategy_outcomes"]["complete_closed_recorded_pnl"],20)
+        self.assertEqual(modes["UNKNOWN"]["strategy_outcomes"]["complete_closed_recorded_pnl"],30)
+        self.assertEqual(self.client.get("/api/v1/trading-engine/report?session_date=invalid").status_code,400)
+
     def test_trade_audit_returns_persisted_plan_and_only_owned_events(self):
         store = TradingEngineStore(config.trading_engine_db_path())
         trade = store.insert_candidate(setup_id="audit-s", continuation_rule_version="v1",
