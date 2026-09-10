@@ -519,3 +519,50 @@ positions and zero working orders. Historical ADANIPORTS record remains untouche
 Sep2, qty145, no originating run_id or mode. The Sep2 run table lists a stopped
 PAPER run, but the trade is not durably linked; this is supporting evidence,
 not automatic permission to classify, close, delete or release its recovery hold.
+
+## Acceptance-review fixes — code-review accepted (2026-09-10)
+
+Astra accepted the following at code-review level on worktree
+`/opt/nifty-radar/worktrees/v1-acceptance` (`codex/v1-acceptance-review`),
+baseline `60216742f71d6b26bbeb2ace93d8f42da3a23c27`. This is **not** deploy
+authorization and **not** browser/PAPER-session acceptance.
+
+Committed source/test files (patch artifact excluded):
+
+- `login.py` — unreadable secrets fail closed (process-env only; no legacy fallback)
+- `trading_engine_ownership.py` — shared provenance / recoverable-exposure / control-incident helpers
+- `trading_engine_cycle.py` — delegates to shared ownership helpers
+- `api/queries/trading.py` / `api/routers/trading.py` — `/control` recovery visibility without engine tick
+- `tests/test_login_helpers.py` — secrets PermissionError + env isolation
+- `tests/test_trading_engine_stage2_api.py` — authenticated `/control` recovery + LIVE-disabled assertions
+
+### Exact verification (pre-commit)
+
+```text
+cd /opt/nifty-radar/worktrees/v1-acceptance
+/opt/nifty-radar/venv/bin/python -m unittest discover -s tests -q
+# Ran 783 tests in 132.726s
+# OK
+
+cd frontend && npm run build
+# ✓ built in 1.08s (exit 0)
+
+npm run check:render
+# PASS: public + four owner initial-state renders and long/short tick-control boundaries.
+# Browser interactions untested. (exit 0)
+
+git diff --check
+# exit 0
+```
+
+Verified frontend asset hashes (rebuild into release at cutover):
+
+- JS `index-BRe08tl1.js`: `bd27708857d4873869bd8b946e05b2c69a59c4b476294360ead75264bd127bf3`
+- CSS `index-C2Kb3GRR.css`: `0af1f36a65aaa26e7c2c165fe4139b74abf458191f1f8950766ee5f3f936e9d1`
+
+### Deployment status
+
+**Not deployed.** Awaiting owner approval of the immutable-release plan.
+Rollback target remains `60216742f71d6b26bbeb2ace93d8f42da3a23c27`.
+Preserve: LIVE-write gates disabled, `daily_loss_cap_inr=2995`, ADANIPORTS
+history untouched, no real orders, no credential/permission changes.

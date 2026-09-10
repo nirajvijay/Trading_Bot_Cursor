@@ -144,6 +144,178 @@ class ControlApiTests(unittest.TestCase):
         self.assertIsNone(strip["sync_age_seconds"])
         self.assertEqual(strip["entry_permission"],"disarmed")
 
+    def test_control_surfaces_provenance_unknown_open_before_engine_tick(self):
+        """Authenticated /control lists unresolved recovery without mutating history."""
+        from contextlib import ExitStack
+        from datetime import datetime, timezone
+
+        from api.main import app
+        from tests.auth_test_helpers import AuthTestHarness, clear_auth_overrides
+
+        clear_auth_overrides()
+        app.dependency_overrides.clear()
+        with ExitStack() as stack:
+            h = stack.enter_context(AuthTestHarness())
+            root = h.root
+            engine_db = root / "engine.db"
+            admin_db = root / "admin.db"
+            for key, value in {
+                "TRADING_ENGINE_DB_PATH": str(engine_db),
+                "ADMIN_CONFIG_DB_PATH": str(admin_db),
+                "TRADING_ENGINE_LIVE_ORDERS": "false",
+                "NIFTY_RADAR_LIVE_WRITES_AUTHORIZED": "0",
+            }.items():
+                stack.enter_context(patch.dict("os.environ", {key: value}))
+            store = TradingEngineStore(str(engine_db))
+            stack.callback(store.close)
+
+            exposed = store.insert_candidate(
+                setup_id="__e2e_vwap_live__|open", continuation_rule_version="v1",
+                session_date="2026-09-02", symbol="ADANIPORTS", instrument_token=3861249,
+                direction="DOWN", entry_estimate=1652.0, tick_size=0.1,
+                trigger_time="2026-09-02T12:12:00+05:30",
+            )
+            store.update_trade(
+                exposed.trade_id, qty_model_version=1, status="protected_open",
+                qty=145, intended_qty=145, filled_qty=145, remaining_position_qty=145,
+                protected_qty=0, entry_fill=1651.5, initial_stop=1655.1, current_stop=1655.1,
+                entry_order_id="703e083c2b3b4fe1", sl_order_id="e04efc533b014d21",
+                run_id=None, entry_live_orders_enabled=None, daily_loss_cap_inr=2995,
+            )
+            store.append_event(exposed.trade_id, "provenance_unknown",
+                               payload={"session_date": "2026-09-02", "symbol": "ADANIPORTS"})
+
+            whitespace = store.insert_candidate(
+                setup_id="blank-run", continuation_rule_version="v1",
+                session_date="2026-09-02", symbol="BLANKRUN", instrument_token=1,
+                direction="UP", entry_estimate=100.0, tick_size=0.05,
+                trigger_time="2026-09-02T12:14:00+05:30",
+            )
+            store.update_trade(
+                whitespace.trade_id, qty_model_version=1, status="protected_open",
+                filled_qty=10, remaining_position_qty=10, protected_qty=10,
+                run_id="   ", entry_live_orders_enabled=0,
+            )
+
+            pending = store.insert_candidate(
+                setup_id="pending-unknown", continuation_rule_version="v1",
+                session_date="2026-09-02", symbol="PENDING", instrument_token=2,
+                direction="UP", entry_estimate=100.0, tick_size=0.05,
+                trigger_time="2026-09-02T12:15:00+05:30",
+            )
+            store.update_trade(
+                pending.trade_id, qty_model_version=1, status="entry_submitting",
+                intended_qty=5, filled_qty=0, remaining_entry_qty=5, remaining_position_qty=0,
+                run_id=None, entry_live_orders_enabled=None,
+            )
+            unknown_submit = store.insert_candidate(
+                setup_id="submission-unknown", continuation_rule_version="v1",
+                session_date="2026-09-02", symbol="SUBUNK", instrument_token=3,
+                direction="UP", entry_estimate=100.0, tick_size=0.05,
+                trigger_time="2026-09-02T12:16:00+05:30",
+            )
+            store.update_trade(
+                unknown_submit.trade_id, qty_model_version=1, status="submission_unknown",
+                intended_qty=5, filled_qty=0, remaining_entry_qty=5, remaining_position_qty=0,
+                run_id="", entry_live_orders_enabled=None,
+            )
+
+            closed = store.insert_candidate(
+                setup_id="closed-flat", continuation_rule_version="v1",
+                session_date="2026-09-02", symbol="CLOSED", instrument_token=4,
+                direction="UP", entry_estimate=100.0, tick_size=0.05,
+                trigger_time="2026-09-02T12:17:00+05:30",
+            )
+            store.update_trade(
+                closed.trade_id, qty_model_version=1, status="closed",
+                filled_qty=5, exited_qty=5, remaining_position_qty=0, remaining_entry_qty=0,
+                run_id=None, entry_live_orders_enabled=None,
+            )
+            skipped = store.insert_candidate(
+                setup_id="skipped-flat", continuation_rule_version="v1",
+                session_date="2026-09-02", symbol="SKIP", instrument_token=5,
+                direction="UP", entry_estimate=100.0, tick_size=0.05,
+                trigger_time="2026-09-02T12:18:00+05:30",
+            )
+            store.update_trade(skipped.trade_id, status="skipped", qty_model_version=1)
+
+            denied = h.client.get("/api/v1/trading-engine/control")
+            self.assertEqual(denied.status_code, 401, denied.text)
+            h.login()
+            with patch("api.routers.trading.is_engine_running", return_value=False):
+                response = h.client.get("/api/v1/trading-engine/control")
+            self.assertEqual(response.status_code, 200, response.text)
+            body = response.json()
+            ids = {row["trade_id"] for row in body["incidents"]}
+            self.assertEqual(
+                ids,
+                {exposed.trade_id, whitespace.trade_id, pending.trade_id, unknown_submit.trade_id},
+            )
+            self.assertNotIn(closed.trade_id, ids)
+            self.assertNotIn(skipped.trade_id, ids)
+            self.assertEqual(len(body["incidents"]), 4)
+            self.assertTrue(body["strip"]["unresolved_incident"])
+            self.assertEqual(body["strip"]["execution_mode"], "PAPER")
+            self.assertEqual(body["strip"]["entry_permission"], "disarmed")
+            self.assertFalse(body["live_execution_authorized"])
+            self.assertIn("provenance_unknown", [row["action"] for row in body["recovery_events"]])
+
+            # GET /control must not mutate durable trade history.
+            for trade_id, status, run_id in (
+                (exposed.trade_id, "protected_open", None),
+                (whitespace.trade_id, "protected_open", "   "),
+                (pending.trade_id, "entry_submitting", None),
+                (unknown_submit.trade_id, "submission_unknown", ""),
+                (closed.trade_id, "closed", None),
+                (skipped.trade_id, "skipped", None),
+            ):
+                row = store.get_trade(trade_id)
+                assert row is not None
+                self.assertEqual(row.status, status)
+                self.assertEqual(row.run_id, run_id)
+
+            from api.routers.trading import _session_date
+            day = _session_date(None)
+            run_id = store.start_run(session_date=day, live_orders_enabled=False, pid=None)
+            store.save_session_arm(
+                session_date=day, run_id=run_id, execution_mode="PAPER",
+                entry_mode="MANUAL", config_version_id="v1", actor="test",
+            )
+            admin = AdminConfigStore(str(admin_db))
+            admin.set_entries_paused(False)
+            admin.close()
+            now = datetime.now(timezone.utc).isoformat()
+            heartbeat = {"run_id": run_id, "session_date": day, "broker_sync_at": now}
+            with patch("api.routers.trading.is_engine_running", return_value=True), \
+                 patch("api.services.trading_engine_runner.read_heartbeat", return_value=heartbeat), \
+                 patch("trading_engine_cycle.feed_age_seconds_from_runner_status", return_value=0):
+                armed_body = h.client.get("/api/v1/trading-engine/control").json()
+            self.assertEqual(len(armed_body["incidents"]), 4)
+            self.assertEqual(armed_body["strip"]["execution_mode"], "PAPER")
+            self.assertEqual(armed_body["strip"]["entry_permission"], "recovery_required")
+            self.assertTrue(armed_body["strip"]["unresolved_incident"])
+            self.assertEqual(store.get_trade(exposed.trade_id).status, "protected_open")
+            self.assertEqual(store.get_trade(pending.trade_id).status, "entry_submitting")
+            # LIVE strip may report LIVE run mode, but authorization stays disabled.
+            live_run = store.start_run(session_date=day, live_orders_enabled=True, pid=None)
+            store.save_session_arm(
+                session_date=day, run_id=live_run, execution_mode="LIVE",
+                entry_mode="MANUAL", config_version_id="v1", actor="test",
+            )
+            with patch("api.routers.trading.is_engine_running", return_value=True), \
+                 patch("api.services.trading_engine_runner.read_heartbeat",
+                       return_value={"run_id": live_run, "session_date": day, "broker_sync_at": now}), \
+                 patch("trading_engine_cycle.feed_age_seconds_from_runner_status", return_value=0):
+                live_body = h.client.get("/api/v1/trading-engine/control").json()
+            self.assertEqual(live_body["strip"]["execution_mode"], "LIVE")
+            self.assertFalse(live_body["live_execution_authorized"])
+            self.assertEqual(len(live_body["incidents"]), 4)
+            self.assertEqual(live_body["strip"]["entry_permission"], "recovery_required")
+            self.assertTrue(live_body["strip"]["unresolved_incident"])
+            self.assertEqual(store.get_trade(exposed.trade_id).status, "protected_open")
+            self.assertEqual(store.get_trade(pending.trade_id).status, "entry_submitting")
+            self.assertEqual(store.get_trade(unknown_submit.trade_id).status, "submission_unknown")
+
     def test_admin_exposes_effective_and_preserves_omitted_keys(self):
         admin=AdminConfigStore(config.admin_config_db_path())
         admin.update_config({"daily_loss_cap_inr":2995,"allocated_capital_inr":200000},actor="test")

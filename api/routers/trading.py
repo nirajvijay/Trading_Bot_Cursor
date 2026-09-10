@@ -372,7 +372,11 @@ def trading_preview(body: TradingPreviewRequest) -> dict:
 
 @router.get("/control", dependencies=[Depends(require_web_session)])
 def trading_control() -> dict:
-    from api.queries.trading import current_run_heartbeat
+    from api.queries.trading import (
+        control_incident_trade,
+        control_recovery_events,
+        current_run_heartbeat,
+    )
     from api.admin_config.store import AdminConfigStore
     from api.services.trading_engine_runner import read_heartbeat
     from trading_engine_quotes import age_seconds
@@ -396,8 +400,8 @@ def trading_control() -> dict:
         else:
             mark_age = None
         trades = store.list_trades(None)
-        incidents = [asdict(t) for t in trades if t.status == "reconciliation_required"]
-        recovery_events = [dict(r) for r in store.list_events("__recovery__")][-100:]
+        incidents = [asdict(t) for t in trades if control_incident_trade(t)]
+        recovery_events = control_recovery_events(store, limit=100)
         effective = admin.load_effective_payload()
         saved = admin.load_active_payload()
         permission = "disarmed"

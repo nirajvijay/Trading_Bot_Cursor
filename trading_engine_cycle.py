@@ -64,6 +64,11 @@ from trading_engine_risk import (
     update_trail_extreme,
 )
 from trading_engine_store import TradingEngineStore
+from trading_engine_ownership import (
+    trade_has_recoverable_exposure as _ownership_recoverable_exposure,
+    trade_provenance_known as _ownership_provenance_known,
+    unknown_requires_reconciliation_hold as _ownership_unknown_hold,
+)
 from trading_engine_types import (
     ACTIVE_STATES,
     DAILY_LOSS_CAP,
@@ -3956,24 +3961,10 @@ class TradingEngineCycle:
                 )
 
     def _trade_has_recoverable_exposure(self, trade: TradeRecord) -> bool:
-        if trade.status not in ACTIVE_STATES:
-            return False
-        if int(trade.remaining_position_qty or 0) > 0:
-            return True
-        if int(trade.remaining_entry_qty or 0) > 0:
-            return True
-        if trade.status in {
-            "entry_submitting",
-            "submission_unknown",
-            "exit_pending",
-            "reconciliation_required",
-        }:
-            return True
-        return False
+        return _ownership_recoverable_exposure(trade)
 
     def _trade_provenance_known(self, trade: TradeRecord) -> bool:
-        run_id = str(trade.run_id or "").strip()
-        return bool(run_id) and trade.entry_live_orders_enabled is not None
+        return _ownership_provenance_known(trade)
 
     def _trade_mode_matches_engine(self, trade: TradeRecord) -> bool:
         if trade.entry_live_orders_enabled is None:
@@ -4223,13 +4214,7 @@ class TradingEngineCycle:
 
     def _unknown_requires_reconciliation_hold(self, trade: TradeRecord) -> bool:
         """Hold only filled/prior-session unknown exposure — not unstamped entry intents."""
-        if trade.session_date != self.session_date:
-            return True
-        if int(trade.remaining_position_qty or 0) > 0:
-            return True
-        if int(trade.filled_qty or 0) > 0:
-            return True
-        return False
+        return _ownership_unknown_hold(trade, engine_session_date=self.session_date)
 
     def _surface_recovery_findings(self, state: dict[str, Any]) -> None:
         """Persist discovery events; never adopt, flatten, or delete orphans."""

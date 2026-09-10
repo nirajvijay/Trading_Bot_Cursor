@@ -8,8 +8,41 @@ from typing import Any, Optional
 from api import config
 from api.admin_config.store import AdminConfigStore
 from trading_engine_cycle import snapshot_dict
+from trading_engine_ownership import control_incident_trade
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
+
+# Re-export for routers/tests that import from this module.
+__all__ = [
+    "control_incident_trade",
+    "control_recovery_events",
+    "current_run_heartbeat",
+    "live_trade_mark",
+    "empty_snapshot",
+    "load_snapshot",
+]
+
+
+# Surfaced in Admin Recovery even before an engine tick flips status.
+_RECOVERY_EVENT_ACTIONS = frozenset({
+    "provenance_unknown",
+    "mode_mismatch_recovery",
+    "cross_session_recovery",
+    "orphan_broker_position",
+    "unlinked_historical_stop",
+    "orphan_broker_order",
+    "recovery_discovery_failed",
+})
+
+
+def control_recovery_events(store, *, limit: int = 100) -> list[dict]:
+    """Trade-scoped provenance/cross-session findings plus __recovery__ orphans."""
+    rows = []
+    for row in store.list_events(None):
+        action = str(row["action"] or "")
+        if action in _RECOVERY_EVENT_ACTIONS or str(row["trade_id"] or "") == "__recovery__":
+            rows.append(dict(row))
+    return rows[-limit:]
 
 
 def current_run_heartbeat(heartbeat, run, *, running, session_date):
