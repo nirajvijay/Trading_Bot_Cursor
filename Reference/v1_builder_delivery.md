@@ -199,3 +199,15 @@ Remaining audit items include configurable trailing-profile parameters / executi
 preference, per-trade fresh MTM display, richer report costs/R/delay metrics,
 browser workflows, operational recovery SOP and deployment verification. Overall
 goal remains incomplete. No host writes or live orders.
+
+## Per-trade liquidation-mark checkpoint
+
+Engine loss accounting now publishes per-position mark, quote timestamp, P&L and
+the exact quantity/entry-value slice used. Audit API exposes that same mark only
+when quote <=2s, feed/sync <5s, session matches and accounting quantities still
+match the stored trade. Otherwise P&L is null/stale, never substituted with the
+old database open-P&L value. Desk audit ages the received mark locally as well.
+
+Loss + control API focused suite: **20 tests in 1.392s, OK**; build passes. Regression
+checks same-slice bid MTM, stale quote, changed remaining quantity and unknown feed.
+Still development evidence; interface workflow verification/deployment outstanding.

@@ -317,7 +317,14 @@ def trading_trade_audit(trade_id: str) -> dict:
             event = dict(row)
             event["payload"] = json.loads(event.pop("payload_json") or "{}")
             events.append(event)
-        return {"trade": raw, "original_setup": original,
+        from api.queries.trading import live_trade_mark
+        from api.services.trading_engine_runner import read_heartbeat
+        from trading_engine_cycle import feed_age_seconds_from_runner_status
+        now = datetime.now(timezone.utc)
+        feed_age = feed_age_seconds_from_runner_status(config.RUNNER_STATUS_FILE, now=now,
+                                                       expected_session_date=trade.session_date)
+        mark = live_trade_mark(trade, read_heartbeat() or {}, now, feed_age)
+        return {"trade": raw, "original_setup": original, "live_mark": mark,
                 "original_setup_available": original is not None,
                 "events": events, "orders": [dict(r) for r in store.list_order_links(trade_id)],
                 "as_of": datetime.now(timezone.utc).isoformat(),

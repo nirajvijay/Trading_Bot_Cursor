@@ -37,6 +37,7 @@ export function fetchTradingSetups() {return getJson<{setups: SetupChoice[]}>('/
 export function postTradingPreview(body: {setup_id: string; continuation_rule_version: string; qty_override?: number; stop_tighten?: number}) {return postJson<TradePreview>('/trading-engine/preview', body)}
 export function postTradingCommand(body: Record<string, unknown>) {return postJson<TradingCommand>('/trading-engine/commands', body)}
 export interface TradeAudit {
+  live_mark: {price: number | null; open_pnl: number | null; quote_as_of: string | null; age_seconds: number | null; stale: boolean; basis: string}
   trade: {trade_id: string; symbol: string; direction: string; intended_qty: number; filled_qty: number; exited_qty: number; remaining_entry_qty: number; remaining_position_qty: number; protected_qty: number; entry_fill: number | null; initial_stop: number | null; current_stop: number | null; realised_pnl: number; pnl_provisional: boolean; entry_value_est: number; exit_value_est: number; updated_at: string}
   original_setup: Record<string, unknown> | null
   original_setup_available: boolean

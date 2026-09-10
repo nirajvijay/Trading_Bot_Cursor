@@ -1731,6 +1731,7 @@ class TradingEngineCycle:
         realised_complete = True
         missing = []
         mark_ages = []
+        position_marks = {}
         for trade in trades:
             if trade.filled_qty <= 0:
                 continue
@@ -1744,6 +1745,16 @@ class TradingEngineCycle:
             except Exception:
                 quote = None
             value = trade_loss_slice(trade, quote, self._now_ist(), float(cfg["max_quote_age_seconds"]))
+            if trade.remaining_position_qty > 0:
+                position_marks[trade.trade_id] = {
+                    "price": (quote.bid if trade.direction == "UP" else quote.ask) if quote and value.complete else None,
+                    "quote_as_of": quote.as_of if quote else None,
+                    "open_pnl": value.unrealised if value.complete else None,
+                    "complete": value.complete, "reason": value.reason,
+                    "remaining_position_qty": trade.remaining_position_qty,
+                    "filled_qty": trade.filled_qty, "exited_qty": trade.exited_qty,
+                    "entry_value": trade.entry_value,
+                }
             if quote:
                 age = age_seconds(self._now_ist(),quote.as_of)
                 if age is not None:
@@ -1766,6 +1777,7 @@ class TradingEngineCycle:
             "net_session_pnl": realised + unrealised if complete else None,
             "daily_cap": cap, "halted": latched or hit, "missing": missing,
             "as_of": self._now_ist().isoformat(), "charges": "stamped_estimate_once"}
+        self.loss_halt_snapshot["position_marks"] = position_marks
         self.loss_halt_snapshot["mark_age_seconds"] = max(mark_ages) if mark_ages else (0 if complete else None)
         if hit and not latched:
             self._engage_local_entries_lock("daily_loss_breach")

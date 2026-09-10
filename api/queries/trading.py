@@ -12,6 +12,23 @@ from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
 
 
+def live_trade_mark(trade, heartbeat, now, feed_age):
+    """Expose only a fresh mark for exactly the reconciled quantity/accounting slice."""
+    from trading_engine_quotes import age_seconds
+    mark = (heartbeat.get("loss_halt") or {}).get("position_marks", {}).get(trade.trade_id, {})
+    age = age_seconds(now, mark.get("quote_as_of"))
+    sync_age = age_seconds(now, heartbeat.get("broker_sync_at"))
+    matches = all(mark.get(k) == getattr(trade,k) for k in
+                  ("remaining_position_qty", "filled_qty", "exited_qty", "entry_value"))
+    fresh = bool(mark.get("complete") and matches and heartbeat.get("session_date") == trade.session_date
+                 and age is not None and age <= 2 and sync_age is not None and sync_age < 5
+                 and feed_age is not None and 0 <= feed_age < 5)
+    return {"price":mark.get("price") if fresh else None,
+            "open_pnl":mark.get("open_pnl") if fresh else None,
+            "quote_as_of":mark.get("quote_as_of"), "age_seconds":age,
+            "stale":not fresh, "basis":"liquidation bid for long / ask for short; remaining-position gross MTM"}
+
+
 def empty_snapshot(session_date: str) -> dict[str, Any]:
     return {
         "state": "stopped",
