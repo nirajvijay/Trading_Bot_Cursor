@@ -278,3 +278,15 @@ remain private (directory 0700, database files 0600) for release verification.
 On that isolated source, host Python ran PAPER lifecycle + trailing profile +
 control API modules: **22 tests in 3.392s, OK**. These use temporary test databases
 and do not exercise the running production API or real broker account.
+
+## Repeatable UI wiring checks
+
+`npm run check:render` server-renders the public route and four owner initial
+surfaces. It verifies expected content, private operational labels absent from
+the public output, and zero render-time fetch calls. It passes. This is explicitly
+not browser-effect, interaction, layout or visual acceptance evidence.
+
+`tests.test_frontend_route_contracts` verifies new service URLs against the actual
+FastAPI OpenAPI route registry; one test passes. Local preview on 127.0.0.1:5173
+returned HTTP 200; opening it in Codex was queued. No rendered browser inspection
+or trading command was performed during this checkpoint.
