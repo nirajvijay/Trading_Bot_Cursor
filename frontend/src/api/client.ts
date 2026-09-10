@@ -103,10 +103,10 @@ async function handleResponse<T>(res: Response, path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
-async function getJson<T>(path: string): Promise<T> {
+async function getJson<T>(path: string, timeoutMs = 10000): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(timeoutMs),
   })
   return handleResponse<T>(res, path)
 }
@@ -193,12 +193,12 @@ export function fetchLoginUrl(): Promise<LoginUrlResponse> {
   return getJson<LoginUrlResponse>('/auth/login-url')
 }
 
-export function postKiteStart(): Promise<KiteStartResponse> {
-  return postJson<KiteStartResponse>('/auth/kite/start')
+export function postKiteStart(password: string): Promise<KiteStartResponse> {
+  return postJson<KiteStartResponse>('/auth/kite/start', { password })
 }
 
-export function postSession(requestToken: string): Promise<SessionResponse> {
-  return postJson<SessionResponse>('/auth/session', { request_token: requestToken })
+export function postSession(requestToken: string, password: string): Promise<SessionResponse> {
+  return postJson<SessionResponse>('/auth/session', { request_token: requestToken, password })
 }
 
 export function postCheckToken(): Promise<CheckTokenResponse> {
@@ -207,7 +207,7 @@ export function postCheckToken(): Promise<CheckTokenResponse> {
 
 export function fetchPreMarketChecklist(sessionDate?: string): Promise<PreMarketChecklistResponse> {
   const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
-  return getJson<PreMarketChecklistResponse>(`/premarket-checklist${query}`)
+  return getJson<PreMarketChecklistResponse>(`/premarket-checklist${query}`, 120000)
 }
 
 export function postGenerateLocalData(

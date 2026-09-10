@@ -114,6 +114,9 @@ export interface RunnerStatus {
 }
 
 export interface AuthStatusResponse {
+  token_valid?: boolean | null
+  token_checked_at?: string | null
+  token_user_id?: string | null
   api_key_configured: boolean
   api_secret_configured: boolean
   access_token_present: boolean

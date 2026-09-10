@@ -5,7 +5,6 @@ import {
   postCheckToken,
   postKiteStart,
   postSession,
-  postStepUp,
 } from '../api/client'
 import { formatTimeIst } from '../lib/format'
 import type { AuthStatusResponse, CheckTokenResponse, SessionResponse } from '../api/types'
@@ -58,7 +57,7 @@ function kiteBannerFromQuery(): { kind: 'ok' | 'error'; text: string } | null {
   return null
 }
 
-export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
+export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boolean; onTokenChecked?: () => void}) {
   const [status, setStatus] = useState<AuthStatusResponse | null>(null)
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
   const [requestToken, setRequestToken] = useState('')
@@ -73,7 +72,6 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
   const [showPaste, setShowPaste] = useState(false)
   const [showStepUp, setShowStepUp] = useState(false)
   const [stepUpPassword, setStepUpPassword] = useState('')
-  const [stepUpTotp, setStepUpTotp] = useState('')
   const [pendingAfterStepUp, setPendingAfterStepUp] = useState<'kite-start' | 'paste' | null>(null)
   const [kiteBanner, setKiteBanner] = useState(kiteBannerFromQuery)
 
@@ -82,7 +80,10 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
     try {
       const data = await fetchAuthStatus()
       setStatus(data)
-      setError(null)
+      setLastCheck(data.token_valid == null ? null : {
+        valid: data.token_valid, message: 'Last server token check', user_id: data.token_user_id,
+      })
+      setLastCheckedAt(data.token_checked_at ?? null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load auth status')
       setLogMessage('Status load failed.')
@@ -121,13 +122,13 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
   const maskedAccessPreview =
     status?.masked_access_token ?? lastSession?.masked_access_token ?? ''
 
-  async function runKiteStart() {
+  async function runKiteStart(password: string) {
     setActionLoading(true)
     setError(null)
     setSuccess(null)
     setLogMessage('Starting remote Kite login...')
     try {
-      const data = await postKiteStart()
+      const data = await postKiteStart(password)
       setLogMessage('Redirecting to Kite...')
       window.location.assign(data.authorize_url)
     } catch (err) {
@@ -146,7 +147,7 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
     setShowStepUp(true)
   }
 
-  async function finalizePasteLogin() {
+  async function finalizePasteLogin(password: string) {
     const trimmed = requestToken.trim()
     if (!trimmed) return
     setActionLoading(true)
@@ -155,7 +156,7 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
     setLastSession(null)
     setLogMessage('Exchanging request token...')
     try {
-      const data = await postSession(trimmed)
+      const data = await postSession(trimmed, password)
       setLastSession(data)
       setSuccess(data.message)
       setRequestToken('')
@@ -177,17 +178,16 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
     setActionLoading(true)
     setError(null)
     try {
-      await postStepUp(stepUpPassword, stepUpTotp.trim() || undefined)
+      const password = stepUpPassword
       const next = pendingAfterStepUp
       setShowStepUp(false)
       setStepUpPassword('')
-      setStepUpTotp('')
       setPendingAfterStepUp(null)
       if (next === 'paste') {
         setActionLoading(false)
-        await finalizePasteLogin()
+        await finalizePasteLogin(password)
       } else {
-        await runKiteStart()
+        await runKiteStart(password)
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Step-up failed'
@@ -252,6 +252,7 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
         setLogMessage(data.message)
       }
       await loadStatus()
+      onTokenChecked?.()
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to check access token'
       setError(msg)
@@ -331,10 +332,9 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
             onSubmit={(e) => void handleStepUpSubmit(e)}
             className="w-full max-w-sm bg-white border border-outline-variant p-4 space-y-3"
           >
-            <h2 className="text-sm font-bold text-on-surface">Confirm step-up</h2>
+            <h2 className="text-sm font-bold text-on-surface">Confirm Kite login</h2>
             <p className="text-[11px] text-on-surface-variant">
-              Password{status?.access_token_present ? '' : ''} and MFA (if enabled) required before
-              changing the Kite token.
+              Enter your website password to change the Kite token. No additional website MFA code is needed here.
             </p>
             <input
               type="password"
@@ -343,12 +343,6 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
               value={stepUpPassword}
               onChange={(e) => setStepUpPassword(e.target.value)}
               required
-            />
-            <input
-              className="w-full border border-outline-variant px-2 py-1.5 text-sm font-data"
-              placeholder="MFA code (if enabled)"
-              value={stepUpTotp}
-              onChange={(e) => setStepUpTotp(e.target.value)}
             />
             <div className="flex gap-2 justify-end">
               <button
@@ -442,7 +436,7 @@ export function KiteAuthPage({embedded = false}: {embedded?: boolean}) {
             <ul className="text-[10px] text-on-surface-variant space-y-0.5 list-disc pl-4 leading-snug">
               <li>Updates server secrets store only. Does not place orders.</li>
               <li>API secrets and raw tokens are never shown in the UI.</li>
-              <li>Token changes require website step-up authentication.</li>
+              <li>Kite token setup requires your website password; website sign-in MFA is unchanged.</li>
             </ul>
           </section>
 

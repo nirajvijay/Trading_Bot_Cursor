@@ -22,16 +22,19 @@ from api.auth.deps import (
     require_web_session_mutating,
 )
 from api.auth.kite_oauth_store import get_kite_oauth_store
+from api.auth.web_auth_store import get_web_auth_store
+from api.auth.rate_limit import ACTION_STEP_UP, check_rate_limit, record_auth_failure, clear_auth_failures
 from api.schemas.auth import (
     AuthStatusResponse,
     CheckTokenResponse,
     KiteStartResponse,
+    KitePasswordRequest,
     LoginUrlResponse,
     SessionRequest,
     SessionResponse,
 )
 from api.services.checklist_cache import invalidate_checklist_cache
-from api.services.token_check_cache import write_token_check
+from api.services.token_check_cache import write_token_check, current_token_check, token_identity
 from login import (
     build_authorize_url_with_state,
     check_access_token_details,
@@ -87,7 +90,29 @@ def _safe_redirect(path: str) -> RedirectResponse:
     dependencies=[Depends(require_web_session)],
 )
 def auth_status() -> AuthStatusResponse:
-    return AuthStatusResponse(**read_auth_status())
+    cached = current_token_check()
+    return AuthStatusResponse(**read_auth_status(),
+        token_valid=cached["valid"] if cached else None,
+        token_checked_at=cached["checked_at"] if cached else None,
+        token_user_id=cached.get("user_id") if cached else None)
+
+
+def _confirm_kite_password(request: Request, ctx: WebAuthContext, password: str) -> None:
+    """Kite-only confirmation; never grant general Admin/trading step-up authority."""
+    if ctx.auth_disabled:
+        return
+    if not password:
+        # Preserve already-verified legacy callers without weakening their gate.
+        require_step_up(request, ctx)
+        return
+    check_rate_limit(ACTION_STEP_UP, request, username=ctx.session.username)
+    store = get_web_auth_store()
+    if store.verify_login(ctx.session.username, password) is None:
+        record_auth_failure(ACTION_STEP_UP, request, username=ctx.session.username)
+        write_audit("kite_password_failed", reason="bad_password")
+        raise HTTPException(status_code=403, detail="Invalid password")
+    clear_auth_failures(ACTION_STEP_UP, request, username=ctx.session.username)
+    write_audit("kite_password_ok", username=ctx.session.username)
 
 
 @router.get(
@@ -107,10 +132,13 @@ def login_url() -> LoginUrlResponse:
     response_model=KiteStartResponse,
 )
 def kite_start(
+    request: Request,
     response: Response,
-    ctx: WebAuthContext = Depends(require_step_up),
+    body: Optional[KitePasswordRequest] = None,
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> KiteStartResponse:
     """Start remote Kite OAuth: opaque state + oauth cookie; return authorize_url only."""
+    _confirm_kite_password(request, ctx, body.password if body else "")
     store = get_kite_oauth_store()
     session_id = ctx.session.id if not ctx.auth_disabled else "disabled"
     opaque, cookie_id = store.create_pending(session_id)
@@ -211,11 +239,13 @@ def kite_callback(
 )
 def create_session(
     body: SessionRequest,
-    ctx: WebAuthContext = Depends(require_step_up),
+    request: Request,
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> SessionResponse:
     """Legacy paste login. Gated by KITE_PASTE_LOGIN_ENABLED + session + step-up + CSRF."""
     if not settings.KITE_PASTE_LOGIN_ENABLED:
         raise HTTPException(status_code=403, detail="Paste login is disabled")
+    _confirm_kite_password(request, ctx, body.password)
     try:
         session = generate_session(
             body.request_token,
@@ -252,7 +282,8 @@ def create_session(
     dependencies=[Depends(require_web_session_mutating)],
 )
 def check_token() -> CheckTokenResponse:
+    identity = token_identity()
     valid, message, user_id = check_access_token_details()
-    write_token_check(valid=valid, user_id=user_id)
+    write_token_check(valid=valid, user_id=user_id, identity=identity)
     invalidate_checklist_cache()
     return CheckTokenResponse(valid=valid, message=message, user_id=user_id)

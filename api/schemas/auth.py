@@ -15,6 +15,9 @@ class AuthStatusResponse(BaseModel):
     masked_api_key: Optional[str] = None
     masked_access_token: Optional[str] = None
     masked_refresh_token: Optional[str] = None
+    token_valid: Optional[bool] = None
+    token_checked_at: Optional[str] = None
+    token_user_id: Optional[str] = None
 
 
 class LoginUrlResponse(BaseModel):
@@ -25,8 +28,13 @@ class KiteStartResponse(BaseModel):
     authorize_url: str
 
 
+class KitePasswordRequest(BaseModel):
+    password: str = Field(default="", repr=False)
+
+
 class SessionRequest(BaseModel):
     request_token: str = Field(..., min_length=1, description="Raw request_token or full redirect URL")
+    password: str = Field(default="", repr=False)
 
 
 class SessionResponse(BaseModel):

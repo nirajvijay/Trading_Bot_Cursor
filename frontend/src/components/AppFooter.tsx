@@ -75,10 +75,10 @@ export function AppFooter({
         <div className="flex items-center gap-4 font-data">
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-            READ-ONLY CHECKS
+            MORNING PREPARATION
           </span>
         </div>
-        <span className="label-caps tracking-wider">Copy commands to run locally</span>
+        <span className="label-caps tracking-wider">Prepare and validate data here · no orders</span>
         <div className="flex items-center gap-1.5 font-data">
           <span className="material-symbols-outlined text-[14px]">schedule</span>
           <span>{now} IST</span>
