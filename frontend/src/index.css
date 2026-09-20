@@ -3,19 +3,19 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-positive: #006d3a;
+  --color-positive: #006c4a;
   --color-negative: #ba1a1a;
   --color-warning: #7d5800;
   --color-primary: #005db7;
-  --color-background: #fdfcff;
-  --color-surface: #fdfcff;
-  --color-on-surface: #1a1c1e;
-  --color-on-surface-variant: #44474e;
-  --color-outline-variant: #c4c7cf;
-  --color-surface-container-low: #f7f6f9;
-  --color-surface-container: #f1f0f4;
-  --color-on-secondary-container: #101c2b;
-  --color-secondary-container: #d7e3f7;
+  --color-background: #f8f9ff;
+  --color-surface: #ffffff;
+  --color-on-surface: #0b1c30;
+  --color-on-surface-variant: #45464d;
+  --color-outline-variant: #e5e7eb;
+  --color-surface-container-low: #eff4ff;
+  --color-surface-container: #e5eeff;
+  --color-on-secondary-container: #0b1c30;
+  --color-secondary-container: #e5eeff;
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
@@ -77,6 +77,12 @@ body {
     opacity: 0.5;
     transform: scale(1.1);
   }
+}
+
+.cli-copy-btn button {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-color: #334155;
 }
 
 .cli-copy-btn button {

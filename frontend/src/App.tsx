@@ -296,7 +296,9 @@ export default function App() {
           <KiteAuthPage />
         )}
       </main>
-      <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
+      {activeTab !== 'checklist' && (
+        <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
+      )}
     </StationConsoleShell>
   )
 }
