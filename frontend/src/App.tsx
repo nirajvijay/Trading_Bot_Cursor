@@ -1,24 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AppFooter } from './components/AppFooter'
-import { AppSidebar } from './components/AppSidebar'
 import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
 import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
+import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
-import { MorningChecklist } from './components/MorningChecklist'
+import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
-import { PublicHome } from './components/PublicHome'
-import { PrivateStatusStrip } from './components/PrivateStatusStrip'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
 import { TradingEnginePage } from './components/TradingEnginePage'
 import { StatusStrip } from './components/StatusStrip'
-import { TopAppBar, type AppTab } from './components/TopAppBar'
+import { StationConsoleShell } from './components/StationConsoleShell'
+import { type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
 import { FeedAlertBanner } from './components/FeedAlertBanner'
 import { resolveFeedStatus, resolveRunnerPresence } from './lib/feedStatus'
+import { mergeKiteAuthStatus, computeEffectiveOverallStatus } from './hooks/usePreMarketChecklist'
 import type { MeResponse, RadarRow } from './api/types'
 
 function exportCsv(rows: RadarRow[]) {
@@ -64,15 +64,10 @@ function exportCsv(rows: RadarRow[]) {
 }
 
 export default function App() {
-  // The public route mounts no authenticated hooks and makes no private API calls.
-  return window.location.pathname === '/' ? <PublicHome /> : <OwnerApp />
-}
-
-function OwnerApp() {
   const [me, setMe] = useState<MeResponse | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [authChecked, setAuthChecked] = useState(false)
-  const [activeTab, setActiveTab] = useState<AppTab>('checklist')
+  const [activeTab, setActiveTab] = useState<AppTab>('radar')
   const [sessionDate, setSessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
   const authenticated = Boolean(me)
@@ -150,7 +145,6 @@ function OwnerApp() {
   const handleLogin = useCallback(async (username: string, password: string, totp?: string) => {
     const data = await postLogin(username, password, totp)
     setMe(data)
-    setActiveTab('checklist')
   }, [])
 
   const handleLogout = useCallback(async () => {
@@ -161,7 +155,6 @@ function OwnerApp() {
     }
     clearSession()
   }, [clearSession])
-
 
   const handleStartObservation = useCallback(async () => {
     setStartingObservation(true)
@@ -191,6 +184,30 @@ function OwnerApp() {
     await refreshObservationReadiness()
   }, [refreshChecklist, refreshObservationReadiness])
 
+  const brokerAuthOk = useMemo(() => {
+    if (!checklistData) return false
+    const kiteBase = checklistData.areas.kite_auth
+    const tokenValidatedFromApi = kiteBase.token_validated_today === true
+    const kiteStatus = mergeKiteAuthStatus(
+      kiteBase.status,
+      tokenCheck !== null || tokenValidatedFromApi,
+      tokenCheck?.valid ?? (tokenValidatedFromApi ? true : null),
+    )
+    return kiteStatus === 'ok'
+  }, [checklistData, tokenCheck])
+
+  const checklistGateLocked = useMemo(() => {
+    if (!checklistData) return true
+    const kiteBase = checklistData.areas.kite_auth
+    const tokenValidatedFromApi = kiteBase.token_validated_today === true
+    const kiteStatus = mergeKiteAuthStatus(
+      kiteBase.status,
+      tokenCheck !== null || tokenValidatedFromApi,
+      tokenCheck?.valid ?? (tokenValidatedFromApi ? true : null),
+    )
+    return computeEffectiveOverallStatus(checklistData, kiteStatus) !== 'ok'
+  }, [checklistData, tokenCheck])
+
   if (!authChecked || authLoading) {
     return (
       <div className="flex h-full items-center justify-center bg-background text-sm text-on-surface-variant">
@@ -216,67 +233,70 @@ function OwnerApp() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      <AppSidebar activeTab={activeTab} onTabChange={setActiveTab} />
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <TopAppBar
-          activeTab={activeTab}
-          sessionDate={sessionDate}
-          coverage={coverage}
-          status={status}
-          sessions={sessions}
-          onSessionChange={setSessionDate}
-          search={search}
-          onSearchChange={setSearch}
-          username={me?.username}
-          onLogout={() => void handleLogout()}
-        />
-        <PrivateStatusStrip />
-        <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
-          {activeTab === 'radar' ? (
-            <>
-              <StatusStrip
-                coverage={coverage}
-                status={status}
-                runnerPresence={runnerPresence}
-                observationReadiness={observationReadinessForUi}
-                startingObservation={startingObservation}
-                observationError={observationError}
-                onStartObservation={() => void handleStartObservation()}
-                onExport={() => exportCsv(filteredRows)}
-              />
-              <FeedAlertBanner feed={feedStatus} />
-              {error && (
-                <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm shrink-0">
-                  {error}
-                </div>
-              )}
-              <RadarHeatMap
-                rows={rows}
-                loading={loading}
-                sessionDate={sessionDate}
-                search={search}
-              />
-            </>
-          ) : activeTab === 'checklist' ? (
-            <MorningChecklist
-              data={checklistData}
-              loading={checklistLoading}
-              error={checklistError}
-              onRefresh={handleChecklistRefresh}
-              tokenCheck={tokenCheck}
-              tokenCheckedAt={tokenCheckedAt}
-              tokenChecking={tokenChecking}
-              onCheckToken={checkToken}
+    <StationConsoleShell
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      sessionDate={sessionDate}
+      sessions={sessions}
+      onSessionChange={setSessionDate}
+      search={search}
+      onSearchChange={setSearch}
+      username={me?.username}
+      onLogout={() => void handleLogout()}
+      coverage={coverage}
+      status={status}
+      runnerPresence={runnerPresence}
+      feedStatus={feedStatus}
+      brokerAuthOk={brokerAuthOk}
+      checklistGateLocked={checklistGateLocked}
+    >
+      <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        {activeTab === 'radar' ? (
+          <>
+            <StatusStrip
+              coverage={coverage}
+              status={status}
+              runnerPresence={runnerPresence}
+              observationReadiness={observationReadinessForUi}
+              startingObservation={startingObservation}
+              observationError={observationError}
+              onStartObservation={() => void handleStartObservation()}
+              onExport={() => exportCsv(filteredRows)}
             />
-          ) : activeTab === 'trading' ? (
-            <TradingEnginePage sessionDate={sessionDate} />
-          ) : (
-            <AdminConsolePage />
-          )}
-        </main>
-        <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
-      </div>
-    </div>
+            <FeedAlertBanner feed={feedStatus} />
+            {error && (
+              <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm shrink-0">
+                {error}
+              </div>
+            )}
+            <RadarHeatMap
+              rows={filteredRows}
+              loading={loading}
+              sessionDate={sessionDate}
+              search=""
+            />
+          </>
+        ) : activeTab === 'checklist' ? (
+          <PreMarketChecklistPage
+            data={checklistData}
+            loading={checklistLoading}
+            error={checklistError}
+            onRefresh={handleChecklistRefresh}
+            onGoToAuth={() => setActiveTab('auth')}
+            tokenCheck={tokenCheck}
+            tokenCheckedAt={tokenCheckedAt}
+            tokenChecking={tokenChecking}
+            onCheckToken={checkToken}
+          />
+        ) : activeTab === 'trading' ? (
+          <TradingEnginePage sessionDate={sessionDate} />
+        ) : activeTab === 'admin' ? (
+          <AdminConsolePage />
+        ) : (
+          <KiteAuthPage />
+        )}
+      </main>
+      <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
+    </StationConsoleShell>
   )
 }
