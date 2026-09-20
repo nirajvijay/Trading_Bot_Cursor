@@ -1,0 +1,27 @@
+name: Deploy to Lightsail
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm you want production live on njtrading.website'
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation text
+        if: github.event.inputs.confirm != 'deploy'
+        run: |
+          echo "Confirmation text did not match 'deploy'. Aborting." >&2
+          exit 1
+
+      - name: Run deploy.sh on Lightsail
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          script: /opt/nifty-radar/deploy.sh
+          script_stop: true
