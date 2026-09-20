@@ -64,11 +64,6 @@ from trading_engine_risk import (
     update_trail_extreme,
 )
 from trading_engine_store import TradingEngineStore
-from trading_engine_ownership import (
-    trade_has_recoverable_exposure as _ownership_recoverable_exposure,
-    trade_provenance_known as _ownership_provenance_known,
-    unknown_requires_reconciliation_hold as _ownership_unknown_hold,
-)
 from trading_engine_types import (
     ACTIVE_STATES,
     DAILY_LOSS_CAP,
@@ -288,7 +283,6 @@ def snapshot_dict(
     def trade_json(t: TradeRecord) -> dict[str, Any]:
         exposure_qty = int(t.filled_qty or 0) if int(t.filled_qty or 0) > 0 else int(t.qty or 0)
         return {
-            "pnl_provisional": bool(t.pnl_provisional or t.entry_value_est > 0 or t.exit_value_est > 0),
             "trade_id": t.trade_id,
             "setup_id": t.setup_id,
             "symbol": t.symbol,
@@ -584,44 +578,11 @@ class TradingEngineCycle:
     def has_pending_vwap(self) -> bool:
         return bool(self._pending_vwap)
 
-
-    def _signal_created_at_floor(self) -> str:
-        """Later of process started_at and durable clean-start signal boundary."""
-        from trading_engine_v1_paper_clean_start import (
-            max_aware_instant_iso,
-            require_paper_v1_ready,
-        )
-
-        require_paper_v1_ready(self.store)
-        boundary = self.store.signal_accept_not_before()
-        if boundary:
-            return max_aware_instant_iso(
-                self.started_at, boundary, field="signal_created_at_floor"
-            )
-        from trading_engine_v1_paper_clean_start import normalize_aware_instant
-
-        return normalize_aware_instant(self.started_at, field="started_at")
-
-    def _candidate_before_clean_start(self, candidate) -> bool:
-        from trading_engine_v1_paper_clean_start import (
-            candidate_blocked_by_clean_start,
-            require_paper_v1_ready,
-        )
-
-        require_paper_v1_ready(self.store)
-        return candidate_blocked_by_clean_start(
-            candidate, self.store.signal_accept_not_before()
-        )
-
     def ingest_triggers(self) -> None:
         if self._entry_mode() != "AUTOPILOT":
             return
-        candidates = fetch_triggered_since(
-            self.live_db, created_at_gte=self._signal_created_at_floor()
-        )
+        candidates = fetch_triggered_since(self.live_db, created_at_gte=self.started_at)
         for candidate in candidates:
-            if self._candidate_before_clean_start(candidate):
-                continue
             self._handle_candidate(candidate)
 
     def poll_pending_vwap(self) -> None:
@@ -659,8 +620,6 @@ class TradingEngineCycle:
 
     def _handle_candidate(self, candidate: TriggerCandidate) -> None:
         if self._entries_paused():
-            return
-        if self._candidate_before_clean_start(candidate):
             return
         existing = self.store.find_trade(
             candidate.setup_id, candidate.continuation_rule_version
@@ -896,7 +855,6 @@ class TradingEngineCycle:
             charge_bps=stamp_charge,
             slippage_bps=stamp_slip,
             risk_limits_json=json.dumps(admin_payload, sort_keys=True),
-            auto_trail_owner_disabled=0 if admin_payload.get("auto_trail_default_enabled", 1) else 1,
             original_setup_json=json.dumps({"machine_setup":asdict(candidate),
                 "initial_sizing":asdict(decision),"config":admin_payload,
                 "config_version_id":snapshot.admin_config_version_id,
@@ -928,9 +886,6 @@ class TradingEngineCycle:
         return fetch_checklist_summary(self.session_date).get("overall_status") == "ok"
 
     def approve_setup(self, payload: dict, *, actor: str, first: bool) -> dict:
-        from trading_engine_v1_paper_clean_start import require_paper_v1_ready
-
-        require_paper_v1_ready(self.store)
         setup_id = str(payload.get("setup_id") or "")
         rule = str(payload.get("continuation_rule_version") or "")
         trade = self.store.find_trade(setup_id, rule) if rule else None
@@ -942,14 +897,10 @@ class TradingEngineCycle:
                 raise ValueError(block)
             if trade:
                 raise ValueError("setup_already_processed")
-            candidates = [c for c in fetch_triggered_since(
-                self.live_db, created_at_gte=self._signal_created_at_floor()
-            )
+            candidates = [c for c in fetch_triggered_since(self.live_db, created_at_gte=self.started_at)
                           if c.setup_id == setup_id and c.continuation_rule_version == rule and c.session_date == self.session_date]
             if len(candidates) != 1:
                 raise ValueError("setup_missing_or_ambiguous")
-            if self._candidate_before_clean_start(candidates[0]):
-                raise ValueError("setup_before_clean_start_boundary")
             self._manual_overrides = payload
             try:
                 self._apply_vwap_gate(candidates[0], first_seen=self._monotonic(), deadline_expired=True)
@@ -1779,7 +1730,6 @@ class TradingEngineCycle:
         realised_complete = True
         missing = []
         mark_ages = []
-        position_marks = {}
         for trade in trades:
             if trade.filled_qty <= 0:
                 continue
@@ -1793,16 +1743,6 @@ class TradingEngineCycle:
             except Exception:
                 quote = None
             value = trade_loss_slice(trade, quote, self._now_ist(), float(cfg["max_quote_age_seconds"]))
-            if trade.remaining_position_qty > 0:
-                position_marks[trade.trade_id] = {
-                    "price": (quote.bid if trade.direction == "UP" else quote.ask) if quote and value.complete else None,
-                    "quote_as_of": quote.as_of if quote else None,
-                    "open_pnl": value.unrealised if value.complete else None,
-                    "complete": value.complete, "reason": value.reason,
-                    "remaining_position_qty": trade.remaining_position_qty,
-                    "filled_qty": trade.filled_qty, "exited_qty": trade.exited_qty,
-                    "entry_value": trade.entry_value,
-                }
             if quote:
                 age = age_seconds(self._now_ist(),quote.as_of)
                 if age is not None:
@@ -1825,7 +1765,6 @@ class TradingEngineCycle:
             "net_session_pnl": realised + unrealised if complete else None,
             "daily_cap": cap, "halted": latched or hit, "missing": missing,
             "as_of": self._now_ist().isoformat(), "charges": "stamped_estimate_once"}
-        self.loss_halt_snapshot["position_marks"] = position_marks
         self.loss_halt_snapshot["mark_age_seconds"] = max(mark_ages) if mark_ages else (0 if complete else None)
         if hit and not latched:
             self._engage_local_entries_lock("daily_loss_breach")
@@ -4003,10 +3942,24 @@ class TradingEngineCycle:
                 )
 
     def _trade_has_recoverable_exposure(self, trade: TradeRecord) -> bool:
-        return _ownership_recoverable_exposure(trade)
+        if trade.status not in ACTIVE_STATES:
+            return False
+        if int(trade.remaining_position_qty or 0) > 0:
+            return True
+        if int(trade.remaining_entry_qty or 0) > 0:
+            return True
+        if trade.status in {
+            "entry_submitting",
+            "submission_unknown",
+            "exit_pending",
+            "reconciliation_required",
+        }:
+            return True
+        return False
 
     def _trade_provenance_known(self, trade: TradeRecord) -> bool:
-        return _ownership_provenance_known(trade)
+        run_id = str(trade.run_id or "").strip()
+        return bool(run_id) and trade.entry_live_orders_enabled is not None
 
     def _trade_mode_matches_engine(self, trade: TradeRecord) -> bool:
         if trade.entry_live_orders_enabled is None:
@@ -4256,7 +4209,13 @@ class TradingEngineCycle:
 
     def _unknown_requires_reconciliation_hold(self, trade: TradeRecord) -> bool:
         """Hold only filled/prior-session unknown exposure — not unstamped entry intents."""
-        return _ownership_unknown_hold(trade, engine_session_date=self.session_date)
+        if trade.session_date != self.session_date:
+            return True
+        if int(trade.remaining_position_qty or 0) > 0:
+            return True
+        if int(trade.filled_qty or 0) > 0:
+            return True
+        return False
 
     def _surface_recovery_findings(self, state: dict[str, Any]) -> None:
         """Persist discovery events; never adopt, flatten, or delete orphans."""
@@ -5619,13 +5578,6 @@ class TradingEngineCycle:
                 ),
             )
             charge_bps, _ = trade_cost_profile(trade)
-            from trading_engine_trail_profile import trade_trail_profile
-            try:
-                profile = trade_trail_profile(trade)
-            except (ValueError, TypeError, AttributeError):
-                self._engage_local_entries_lock("trailing_profile_invalid")
-                self._pause_entries_for("trailing_profile_invalid")
-                continue
             desired = staged_r_desired_stop(
                 direction=trade.direction,
                 entry=entry,
@@ -5636,10 +5588,6 @@ class TradingEngineCycle:
                 r_value=r_value,
                 charge_bps=charge_bps,
                 tick_size=trade.tick_size,
-                stage_one_r=profile["trail_stage_one_r"],
-                stage_two_r=profile["trail_stage_two_r"],
-                stage_one_gap_r=profile["trail_stage_one_gap_r"],
-                stage_two_gap_r=profile["trail_stage_two_gap_r"],
             )
             aligned = _align_stop(desired, trade.tick_size)
             self.store.update_trade(
@@ -5667,7 +5615,7 @@ class TradingEngineCycle:
                 new_stop=aligned,
                 tick_size=trade.tick_size,
             )
-            if improve < profile["trail_min_improvement_ticks"]:
+            if improve < TRAIL_MIN_IMPROVEMENT_TICKS:
                 continue
             if trade.last_trail_modify_at:
                 try:
@@ -5677,7 +5625,7 @@ class TradingEngineCycle:
                     age = (
                         datetime.now(timezone.utc) - last.astimezone(timezone.utc)
                     ).total_seconds()
-                    if age < profile["trail_modify_interval_seconds"]:
+                    if age < TRAIL_MIN_MODIFY_INTERVAL_SECONDS:
                         continue
                 except ValueError:
                     pass
@@ -5951,7 +5899,6 @@ class TradingEngineCycle:
             per_trade_cap=float(admin["per_trade_risk_cap_inr"]),
         )
         snap["updated_at"] = _now()
-        snap["run_id"] = self.run_id
         snap["running"] = self.running
         snap["consume_new_triggers"] = self.consume_new_triggers
         snap["loss_halt"] = self.loss_halt_snapshot

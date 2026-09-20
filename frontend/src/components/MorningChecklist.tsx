@@ -12,7 +12,7 @@ const STEPS = [
   ['dashboard_readiness', '7', 'Confirm observation readiness', null],
 ] as const
 
-export function MorningChecklist({data, loading, error, onRefresh}: {
+export function MorningChecklist({data, loading, error, onRefresh, tokenChecking, onCheckToken}: {
   data: PreMarketChecklistResponse | null; loading: boolean; error: string | null;
   onRefresh: () => void; tokenCheck: CheckTokenResponse | null; tokenCheckedAt: string | null;
   tokenChecking: boolean; onCheckToken: () => Promise<CheckTokenResponse>
@@ -21,9 +21,9 @@ export function MorningChecklist({data, loading, error, onRefresh}: {
   const [message, setMessage] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
-  useEffect(() => {if (!task && !loading) return; const start=Date.now(); setElapsed(0);
+  useEffect(() => {if (!task) return; const start=Date.now(); setElapsed(0);
     const timer=setInterval(() => setElapsed(Math.floor((Date.now()-start)/1000)),1000);
-    return () => clearInterval(timer)}, [task, loading])
+    return () => clearInterval(timer)}, [task])
   async function generate(action: string) {
     setTask(action); setMessage(null); setFailure(null)
     try {const result=await postGenerateLocalData(action,data?.session_date); setMessage(result.message); onRefresh()}
@@ -34,9 +34,8 @@ export function MorningChecklist({data, loading, error, onRefresh}: {
       <button className="owner-link" disabled={loading || !!task} onClick={onRefresh}>{loading ? 'Checking…' : 'Refresh checks'}</button></header>
     {(error || failure) && <p role="alert" className="notice-error">{error || failure}</p>}
     {message && <p role="status" className="notice-info">{message}</p>}
-    {loading && !task && <p role="status" className="notice-info">Checking historical coverage and readiness · {elapsed}s elapsed. Checks may take up to two minutes.</p>}
     {task && <p role="status" className="notice-info">Preparing {task} · {elapsed}s elapsed. Waiting for the completed result; no estimated percentage.</p>}
-    <section className="prep-step"><div className="prep-title"><span>1</span><h2>Connect and validate Kite</h2></div><KiteAuthPage embedded onTokenChecked={onRefresh} /></section>
+    <section className="prep-step"><div className="prep-title"><span>1</span><h2>Connect and validate Kite</h2><button disabled={tokenChecking} onClick={() => void onCheckToken().then(onRefresh)}>{tokenChecking ? 'Checking…' : 'Check token'}</button></div><KiteAuthPage /></section>
     {STEPS.map(([key,number,title,action], index) => {
       const area=data?.areas[key]
       const previousReady=!!data && data.areas.kite_auth.status === 'ok' && STEPS.slice(0,index).every(([previous]) => data.areas[previous].status === 'ok')

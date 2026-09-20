@@ -502,7 +502,6 @@ Mirror shorts; persist extreme; ≤1 modify / 2s / ≥2 ticks improvement; never
 | 1.8 | 2026-09-09 | Cursor | **§12.6 contract-gap check** — six execution-safety items; Stage 1 overall acceptance held. |
 | 1.9 | 2026-09-09 | Cursor | **§12.6 accepted** as corrected gap assessment (evidence-only); Stage 1 still held. |
 | 1.10 | 2026-09-10 | Cursor | **WP-1.6 accepted** (dev checkpoint). See §13. Stage 1 still HELD. |
-| 1.11 | 2026-09-10 | Cursor | **Acceptance review fixes** (code-review accepted by Astra). See §14. Not a deploy authorization. |
 
 Astra remains product authority; this file is the Stage 0 evidence + implementation contract freeze for Cursor.
 
@@ -980,52 +979,3 @@ OK
 
 - Saved host `daily_loss_cap_inr=2995` must not be clobbered by migrations.
 - Host trading history (including leftover `protected_open` evidence rows) must not be auto-deleted.
-
----
-
-## 14. V1 acceptance-review fixes (code-review accepted)
-
-**Status:** Accepted by Astra at **code-review** level (2026-09-10). Not a deployment authorization. Not browser/PAPER-session acceptance.
-**Worktree:** `/opt/nifty-radar/worktrees/v1-acceptance` on `codex/v1-acceptance-review`
-**Baseline / rollback target:** `60216742f71d6b26bbeb2ace93d8f42da3a23c27` (deployed `current` at review time)
-**Scope:**
-1. Fail-closed secrets loading when `/opt/nifty-radar/secrets/kite.env` is unreadable (`PermissionError`) — process-env only; no silent legacy `.env` credential selection.
-2. Shared ownership helpers (`trading_engine_ownership.py`) so engine recovery rules and `/control` incident visibility stay aligned.
-3. Authenticated `/control` surfaces provenance-unknown recoverable trades (including ADANIPORTS-class `protected_open`) **without** an engine tick and **without** mutating trade history.
-4. Test isolation for secrets env mutations; restored LIVE-disabled `/control` assertions; corrected `_read_env_merged` precedence docstring.
-
-**Boundary:** Isolated test DBs only in this checkpoint. No live DB mutation, no deploy, no real broker order writes, no LIVE enablement, no credential/permission changes. Host `daily_loss_cap_inr=2995` and ADANIPORTS history preserved unresolved.
-
-### 14.1 Exact verification commands and results
-
-```text
-cd /opt/nifty-radar/worktrees/v1-acceptance
-/opt/nifty-radar/venv/bin/python -m unittest discover -s tests -q
-# Ran 783 tests in 132.726s
-# OK
-
-cd frontend && npm run build
-# ✓ built in 1.08s (exit 0)
-# dist/assets/index-BRe08tl1.js   291.27 kB │ gzip: 85.23 kB
-
-npm run check:render
-# PASS: public + four owner initial-state renders and long/short tick-control boundaries.
-# Browser interactions untested. (exit 0)
-
-git diff --check
-# exit 0 (clean)
-```
-
-Frontend asset SHA-256 from the verified build (worktree `frontend/dist/`, gitignored):
-
-- JS `index-BRe08tl1.js`: `bd27708857d4873869bd8b946e05b2c69a59c4b476294360ead75264bd127bf3`
-- CSS `index-C2Kb3GRR.css`: `0af1f36a65aaa26e7c2c165fe4139b74abf458191f1f8950766ee5f3f936e9d1`
-
-Prior suite at deployed baseline was **779** OK; this checkpoint is **783** OK (+4 from new secrets-permission and `/control` recovery regressions).
-
-### 14.2 Still pending (explicit)
-
-- Owner-approved immutable release / cutover (see delivery notes).
-- Authenticated browser verification of Recovery/Checklist/Radar/Desk/Admin on the deployed host after cutover.
-- Market-data PAPER-session acceptance.
-- ADANIPORTS disposition (owner attestation + separately authorized history mutation only).
