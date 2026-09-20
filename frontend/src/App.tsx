@@ -9,7 +9,7 @@ import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuth
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { MorningChecklist } from './components/MorningChecklist'
-import { SectorBoard } from './components/SectorBoard'
+import { RadarHeatMap } from './components/RadarHeatMap'
 import { PublicHome } from './components/PublicHome'
 import { PrivateStatusStrip } from './components/PrivateStatusStrip'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
@@ -251,7 +251,7 @@ function OwnerApp() {
                   {error}
                 </div>
               )}
-              <SectorBoard
+              <RadarHeatMap
                 rows={rows}
                 loading={loading}
                 sessionDate={sessionDate}
