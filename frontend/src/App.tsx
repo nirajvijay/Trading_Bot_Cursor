@@ -9,12 +9,12 @@ import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuth
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { MorningChecklist } from './components/MorningChecklist'
+import { SectorBoard } from './components/SectorBoard'
 import { PublicHome } from './components/PublicHome'
 import { PrivateStatusStrip } from './components/PrivateStatusStrip'
-import { AdminWorkspace } from './components/admin/AdminWorkspace'
-import { TradingDesk } from './components/TradingDesk'
+import { AdminConsolePage } from './components/admin/AdminConsolePage'
+import { TradingEnginePage } from './components/TradingEnginePage'
 import { StatusStrip } from './components/StatusStrip'
-import { RadarHeatMap } from './components/RadarHeatMap'
 import { TopAppBar, type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
 import { FeedAlertBanner } from './components/FeedAlertBanner'
@@ -251,9 +251,10 @@ function OwnerApp() {
                   {error}
                 </div>
               )}
-              <RadarHeatMap
+              <SectorBoard
                 rows={rows}
                 loading={loading}
+                sessionDate={sessionDate}
                 search={search}
               />
             </>
@@ -269,9 +270,9 @@ function OwnerApp() {
               onCheckToken={checkToken}
             />
           ) : activeTab === 'trading' ? (
-            <TradingDesk sessionDate={sessionDate} />
+            <TradingEnginePage sessionDate={sessionDate} />
           ) : (
-            <AdminWorkspace />
+            <AdminConsolePage />
           )}
         </main>
         <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />

@@ -43,8 +43,7 @@ def read_heartbeat() -> Optional[dict]:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return None
 
@@ -53,7 +52,7 @@ def is_heartbeat_fresh(*, expected_session_date: Optional[str] = None) -> bool:
     data = read_heartbeat()
     if not data:
         return False
-    if expected_session_date and data.get("session_date") != expected_session_date:
+    if expected_session_date and data.get("session_date") not in (None, expected_session_date):
         return False
     updated_at = data.get("updated_at")
     if not updated_at:
@@ -63,9 +62,9 @@ def is_heartbeat_fresh(*, expected_session_date: Optional[str] = None) -> bool:
     except ValueError:
         return False
     if updated.tzinfo is None:
-        return False
+        updated = updated.replace(tzinfo=IST)
     age = (datetime.now(IST) - updated.astimezone(IST)).total_seconds()
-    return 0 <= age < STALE_SECONDS
+    return age < STALE_SECONDS
 
 
 def heartbeat_indicates_running(*, expected_session_date: Optional[str] = None) -> bool:
@@ -125,28 +124,6 @@ def start_trading_engine(
     live_wanted = bool(confirm_live_orders)
     if live_wanted and os.environ.get("NIFTY_RADAR_LIVE_WRITES_AUTHORIZED") != "1":
         return False, "LIVE execution is locked; supervised live authorization required", None
-    trading_db = config.trading_engine_db_path()
-    if live_wanted:
-        from trading_engine_v1_paper_clean_start import refuse_live_on_paper_ledger
-        try:
-            refuse_live_on_paper_ledger(trading_db)
-        except RuntimeError as exc:
-            return False, str(exc), None
-    else:
-        # PAPER start refuses missing/invalid clean-start identity.
-        from trading_engine_store import TradingEngineStore
-        from trading_engine_v1_paper_clean_start import require_paper_v1_ready
-        try:
-            if config.is_paper_only_ledger_path(trading_db) and not trading_db.exists():
-                return False, "paper_v1_ledger_not_initialized", None
-            if trading_db.exists() or config.is_paper_only_ledger_path(trading_db):
-                store = TradingEngineStore(trading_db)
-                try:
-                    require_paper_v1_ready(store, trading_db)
-                finally:
-                    store.close()
-        except (RuntimeError, FileNotFoundError, OSError) as exc:
-            return False, str(exc), None
 
     try:
         lock_file = acquire_start_lock(date)

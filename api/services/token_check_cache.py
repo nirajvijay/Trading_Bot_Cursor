@@ -6,7 +6,6 @@ Writes under NIFTY_RADAR_DATA_ROOT/runtime-cache (never release trees).
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 from datetime import datetime
 from pathlib import Path
@@ -37,21 +36,13 @@ def _today_ist() -> str:
     return datetime.now(IST).strftime("%Y-%m-%d")
 
 
-def token_identity() -> str:
-    """Server-only fingerprint; never return credentials or this value to clients."""
-    from login import _read_env_merged
-    values = _read_env_merged()
-    return hashlib.sha256((values.get("KITE_API_KEY", "") + "\0" + values.get("KITE_ACCESS_TOKEN", "")).encode()).hexdigest()
-
-
-def write_token_check(*, valid: bool, user_id: Optional[str] = None, identity: Optional[str] = None) -> None:
+def write_token_check(*, valid: bool, user_id: Optional[str] = None) -> None:
     """Record the result of a token validation for today's IST session."""
     payload = {
         "valid": valid,
         "checked_at": datetime.now(IST).isoformat(),
         "session_date": _today_ist(),
         "user_id": user_id,
-        "token_identity": identity if identity is not None else token_identity(),
     }
     path = _cache_path()
     text = json.dumps(payload, indent=2) + "\n"
@@ -90,25 +81,9 @@ def read_token_check() -> Optional[dict]:
 
 def token_valid_for_today() -> Optional[bool]:
     """Return True/False if a check exists for today; None if no check today."""
-    cached = current_token_check()
+    cached = read_token_check()
     if not cached:
         return None
     if cached.get("session_date") != _today_ist():
         return None
-    return cached["valid"]
-
-
-def current_token_check() -> Optional[dict]:
-    """Only restore a typed, same-day result for the currently configured token."""
-    cached = read_token_check()
-    if not cached or cached.get("session_date") != _today_ist():
-        return None
-    if type(cached.get("valid")) is not bool or cached.get("token_identity") != token_identity():
-        return None
-    try:
-        checked = datetime.fromisoformat(cached["checked_at"])
-        if checked.tzinfo is None or checked > datetime.now(IST):
-            return None
-    except (KeyError, TypeError, ValueError):
-        return None
-    return cached
+    return bool(cached.get("valid"))

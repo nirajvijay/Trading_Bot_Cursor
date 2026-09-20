@@ -5,6 +5,7 @@ import {
   postCheckToken,
   postKiteStart,
   postSession,
+  postStepUp,
 } from '../api/client'
 import { formatTimeIst } from '../lib/format'
 import type { AuthStatusResponse, CheckTokenResponse, SessionResponse } from '../api/types'
@@ -57,7 +58,7 @@ function kiteBannerFromQuery(): { kind: 'ok' | 'error'; text: string } | null {
   return null
 }
 
-export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boolean; onTokenChecked?: () => void}) {
+export function KiteAuthPage() {
   const [status, setStatus] = useState<AuthStatusResponse | null>(null)
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
   const [requestToken, setRequestToken] = useState('')
@@ -72,6 +73,7 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
   const [showPaste, setShowPaste] = useState(false)
   const [showStepUp, setShowStepUp] = useState(false)
   const [stepUpPassword, setStepUpPassword] = useState('')
+  const [stepUpTotp, setStepUpTotp] = useState('')
   const [pendingAfterStepUp, setPendingAfterStepUp] = useState<'kite-start' | 'paste' | null>(null)
   const [kiteBanner, setKiteBanner] = useState(kiteBannerFromQuery)
 
@@ -80,10 +82,7 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
     try {
       const data = await fetchAuthStatus()
       setStatus(data)
-      setLastCheck(data.token_valid == null ? null : {
-        valid: data.token_valid, message: 'Last server token check', user_id: data.token_user_id,
-      })
-      setLastCheckedAt(data.token_checked_at ?? null)
+      setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load auth status')
       setLogMessage('Status load failed.')
@@ -122,13 +121,13 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
   const maskedAccessPreview =
     status?.masked_access_token ?? lastSession?.masked_access_token ?? ''
 
-  async function runKiteStart(password: string) {
+  async function runKiteStart() {
     setActionLoading(true)
     setError(null)
     setSuccess(null)
     setLogMessage('Starting remote Kite login...')
     try {
-      const data = await postKiteStart(password)
+      const data = await postKiteStart()
       setLogMessage('Redirecting to Kite...')
       window.location.assign(data.authorize_url)
     } catch (err) {
@@ -147,7 +146,7 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
     setShowStepUp(true)
   }
 
-  async function finalizePasteLogin(password: string) {
+  async function finalizePasteLogin() {
     const trimmed = requestToken.trim()
     if (!trimmed) return
     setActionLoading(true)
@@ -156,7 +155,7 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
     setLastSession(null)
     setLogMessage('Exchanging request token...')
     try {
-      const data = await postSession(trimmed, password)
+      const data = await postSession(trimmed)
       setLastSession(data)
       setSuccess(data.message)
       setRequestToken('')
@@ -178,16 +177,17 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
     setActionLoading(true)
     setError(null)
     try {
-      const password = stepUpPassword
+      await postStepUp(stepUpPassword, stepUpTotp.trim() || undefined)
       const next = pendingAfterStepUp
       setShowStepUp(false)
       setStepUpPassword('')
+      setStepUpTotp('')
       setPendingAfterStepUp(null)
       if (next === 'paste') {
         setActionLoading(false)
-        await finalizePasteLogin(password)
+        await finalizePasteLogin()
       } else {
-        await runKiteStart(password)
+        await runKiteStart()
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Step-up failed'
@@ -252,7 +252,6 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
         setLogMessage(data.message)
       }
       await loadStatus()
-      onTokenChecked?.()
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to check access token'
       setError(msg)
@@ -276,7 +275,7 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
   const alertMessage = error ?? success
 
   return (
-    <div className={`flex flex-col ${embedded ? '' : 'h-full min-h-0 overflow-hidden'} bg-background`}>
+    <div className="flex flex-col h-full min-h-0 overflow-hidden bg-background">
       <div className="shrink-0 px-5 py-3 border-b border-outline-variant bg-white">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
@@ -332,9 +331,10 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
             onSubmit={(e) => void handleStepUpSubmit(e)}
             className="w-full max-w-sm bg-white border border-outline-variant p-4 space-y-3"
           >
-            <h2 className="text-sm font-bold text-on-surface">Confirm Kite login</h2>
+            <h2 className="text-sm font-bold text-on-surface">Confirm step-up</h2>
             <p className="text-[11px] text-on-surface-variant">
-              Enter your website password to change the Kite token. No additional website MFA code is needed here.
+              Password{status?.access_token_present ? '' : ''} and MFA (if enabled) required before
+              changing the Kite token.
             </p>
             <input
               type="password"
@@ -343,6 +343,12 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
               value={stepUpPassword}
               onChange={(e) => setStepUpPassword(e.target.value)}
               required
+            />
+            <input
+              className="w-full border border-outline-variant px-2 py-1.5 text-sm font-data"
+              placeholder="MFA code (if enabled)"
+              value={stepUpTotp}
+              onChange={(e) => setStepUpTotp(e.target.value)}
             />
             <div className="flex gap-2 justify-end">
               <button
@@ -436,7 +442,7 @@ export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boo
             <ul className="text-[10px] text-on-surface-variant space-y-0.5 list-disc pl-4 leading-snug">
               <li>Updates server secrets store only. Does not place orders.</li>
               <li>API secrets and raw tokens are never shown in the UI.</li>
-              <li>Kite token setup requires your website password; website sign-in MFA is unchanged.</li>
+              <li>Token changes require website step-up authentication.</li>
             </ul>
           </section>
 

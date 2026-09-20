@@ -41,100 +41,34 @@ def _secrets_path() -> Path:
         )
 
 
-_KITE_CREDENTIAL_KEYS = (
-    "KITE_API_KEY",
-    "KITE_API_SECRET",
-    "KITE_ACCESS_TOKEN",
-    "KITE_REFRESH_TOKEN",
-    "KITE_EXPECTED_USER_ID",
-)
-
-
-def _apply_process_env(merged: dict[str, str]) -> None:
-    for key in _KITE_CREDENTIAL_KEYS:
+def _read_env_merged() -> dict[str, str]:
+    """Prefer secrets store, fall back to legacy project .env."""
+    merged: dict[str, str] = {}
+    if LEGACY_ENV_PATH.exists():
+        for key, value in dotenv_values(LEGACY_ENV_PATH).items():
+            if key and value is not None:
+                merged[key] = value
+    secrets = _secrets_path()
+    if secrets.exists():
+        for key, value in dotenv_values(secrets).items():
+            if key and value is not None:
+                merged[key] = value
+    # Process env wins for overrides in tests/ops.
+    for key in (
+        "KITE_API_KEY",
+        "KITE_API_SECRET",
+        "KITE_ACCESS_TOKEN",
+        "KITE_REFRESH_TOKEN",
+        "KITE_EXPECTED_USER_ID",
+    ):
         if os.environ.get(key):
             merged[key] = os.environ[key]
-
-
-def _load_env_file(path: Path) -> tuple[str, dict[str, str]]:
-    """Load dotenv values by actually reading file contents.
-
-    Returns (state, values) where state is 'missing' | 'loaded' | 'unreadable'.
-    Metadata-only checks are insufficient: exists() can succeed while open() fails.
-    """
-    try:
-        exists = path.exists()
-    except PermissionError:
-        return "unreadable", {}
-    if not exists:
-        return "missing", {}
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            raw = handle.read()
-    except PermissionError:
-        return "unreadable", {}
-    except OSError:
-        return "unreadable", {}
-    from io import StringIO
-
-    values: dict[str, str] = {}
-    for key, value in dotenv_values(stream=StringIO(raw)).items():
-        if key and value is not None:
-            values[key] = value
-    return "loaded", values
-
-
-def _read_env_context() -> tuple[dict[str, str], str | None]:
-    """Return (merged values, unreadable_secrets_path_or_None).
-
-    Unreadable configured secrets: discard any legacy credentials and keep only
-    explicit process-env overrides. No module-global error latch between calls.
-    """
-    secrets = _secrets_path()
-    secrets_state, secrets_values = _load_env_file(secrets)
-    if secrets_state == "unreadable":
-        merged: dict[str, str] = {}
-        _apply_process_env(merged)
-        return merged, str(secrets)
-
-    merged = {}
-    if secrets_state == "missing":
-        legacy_state, legacy_values = _load_env_file(LEGACY_ENV_PATH)
-        if legacy_state == "loaded":
-            merged.update(legacy_values)
-    else:
-        legacy_state, legacy_values = _load_env_file(LEGACY_ENV_PATH)
-        if legacy_state == "loaded":
-            merged.update(legacy_values)
-        merged.update(secrets_values)
-    _apply_process_env(merged)
-    return merged, None
-
-
-def _read_env_merged() -> dict[str, str]:
-    """Merge credential sources with retained precedence.
-
-    Precedence when the configured secrets file loads successfully:
-    legacy project ``.env`` (underlay) → secrets store → process-env overrides.
-
-    When the secrets file is missing: legacy ``.env`` (if present) → process-env.
-    When the secrets file is unreadable: process-env only (no legacy fallback).
-    """
-    values, _unreadable = _read_env_context()
-    return values
+    return merged
 
 
 def _require_env(*keys: str) -> dict[str, str]:
-    values, unreadable = _read_env_context()
+    values = _read_env_merged()
     missing = [key for key in keys if not values.get(key)]
-    if unreadable and missing:
-        raise ValueError(
-            f"Kite secrets store unreadable at {unreadable}; "
-            f"missing {', '.join(missing)}. "
-            "Refusing legacy .env credential fallback. "
-            "Run as the service account that can read the secrets store, "
-            "or set the required keys explicitly in the process environment."
-        )
     if missing:
         raise ValueError(
             f"Missing required keys: {', '.join(missing)}. "
@@ -272,14 +206,8 @@ def is_access_token_valid(access_token: str | None = None) -> bool:
 
 def check_access_token(access_token: str | None = None) -> tuple[bool, str]:
     """Check access token validity via kite.profile() and return (is_valid, message)."""
-    env, unreadable = _read_env_context()
+    env = _read_env_merged()
     token = access_token or env.get("KITE_ACCESS_TOKEN")
-    if unreadable and not token:
-        return (
-            False,
-            f"Kite secrets store unreadable at {unreadable}; "
-            "KITE_ACCESS_TOKEN is missing. Refusing legacy .env credential fallback.",
-        )
     if not token:
         return False, "KITE_ACCESS_TOKEN is missing"
 
@@ -334,15 +262,8 @@ def check_access_token_details(
     access_token: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """Check token validity and return (is_valid, message, user_id)."""
-    env, unreadable = _read_env_context()
+    env = _read_env_merged()
     token = access_token or env.get("KITE_ACCESS_TOKEN")
-    if unreadable and not token:
-        return (
-            False,
-            f"Kite secrets store unreadable at {unreadable}; "
-            "KITE_ACCESS_TOKEN is missing. Refusing legacy .env credential fallback.",
-            None,
-        )
     if not token:
         return False, "KITE_ACCESS_TOKEN is missing", None
 

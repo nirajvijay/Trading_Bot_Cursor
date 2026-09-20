@@ -114,9 +114,6 @@ export interface RunnerStatus {
 }
 
 export interface AuthStatusResponse {
-  token_valid?: boolean | null
-  token_checked_at?: string | null
-  token_user_id?: string | null
   api_key_configured: boolean
   api_secret_configured: boolean
   access_token_present: boolean
@@ -323,7 +320,6 @@ export interface ObservationStartResponse {
 export type TradingEngineState = 'stopped' | 'starting' | 'running' | 'error' | 'critical'
 
 export interface TradingTradeRow {
-  pnl_provisional?: boolean
   trade_id: string
   setup_id: string
   symbol: string
@@ -387,7 +383,6 @@ export interface TradingStartResponse {
 }
 
 export interface AdminConfigValues {
-  [key: string]: number | string
   per_trade_risk_cap_inr: number
   limited_per_trade_risk_cap_inr: number
   daily_loss_cap_inr: number
@@ -396,9 +391,6 @@ export interface AdminConfigValues {
 }
 
 export interface AdminConfigResponse {
-  effective_values: Record<string, number | string>
-  effective_version_id: string | null
-  pending_next_arm: string[]
   version_id: string
   entries_paused: boolean
   values: AdminConfigValues

@@ -17,14 +17,10 @@ from trading_engine_types import (
     PER_TRADE_RISK_CAP,
 )
 from vwap_qualifier_v2_config import VwapQualifierV2Config
-from trading_engine_trail_profile import DEFAULT_TRAIL_PROFILE
 
 _VWAP_DEFAULTS = VwapQualifierV2Config()
 
-DEFAULT_ADMIN_CONFIG_VALUES: dict[str, float | str] = {
-    "preferred_execution_mode": "PAPER",
-    **DEFAULT_TRAIL_PROFILE,
-    "auto_trail_default_enabled": 1.0,
+DEFAULT_ADMIN_CONFIG_VALUES: dict[str, float] = {
     "setup_expiry_seconds": 30.0,
     "max_quote_age_seconds": 2.0,
     "max_entry_drift_r": 0.1,

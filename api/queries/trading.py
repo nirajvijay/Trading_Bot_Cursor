@@ -8,68 +8,8 @@ from typing import Any, Optional
 from api import config
 from api.admin_config.store import AdminConfigStore
 from trading_engine_cycle import snapshot_dict
-from trading_engine_ownership import control_incident_trade
 from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
-
-# Re-export for routers/tests that import from this module.
-__all__ = [
-    "control_incident_trade",
-    "control_recovery_events",
-    "current_run_heartbeat",
-    "live_trade_mark",
-    "empty_snapshot",
-    "load_snapshot",
-]
-
-
-# Surfaced in Admin Recovery even before an engine tick flips status.
-_RECOVERY_EVENT_ACTIONS = frozenset({
-    "provenance_unknown",
-    "mode_mismatch_recovery",
-    "cross_session_recovery",
-    "orphan_broker_position",
-    "unlinked_historical_stop",
-    "orphan_broker_order",
-    "recovery_discovery_failed",
-})
-
-
-def control_recovery_events(store, *, limit: int = 100) -> list[dict]:
-    """Trade-scoped provenance/cross-session findings plus __recovery__ orphans."""
-    rows = []
-    for row in store.list_events(None):
-        action = str(row["action"] or "")
-        if action in _RECOVERY_EVENT_ACTIONS or str(row["trade_id"] or "") == "__recovery__":
-            rows.append(dict(row))
-    return rows[-limit:]
-
-
-def current_run_heartbeat(heartbeat, run, *, running, session_date):
-    """A recent timestamp cannot establish which process produced a snapshot."""
-    if (not running or run is None or not heartbeat.get("run_id")
-            or heartbeat["run_id"] != run["run_id"]
-            or heartbeat.get("session_date") != session_date
-            or run["session_date"] != session_date):
-        return {}
-    return heartbeat
-
-
-def live_trade_mark(trade, heartbeat, now, feed_age):
-    """Expose only a fresh mark for exactly the reconciled quantity/accounting slice."""
-    from trading_engine_quotes import age_seconds
-    mark = (heartbeat.get("loss_halt") or {}).get("position_marks", {}).get(trade.trade_id, {})
-    age = age_seconds(now, mark.get("quote_as_of"))
-    sync_age = age_seconds(now, heartbeat.get("broker_sync_at"))
-    matches = all(mark.get(k) == getattr(trade,k) for k in
-                  ("remaining_position_qty", "filled_qty", "exited_qty", "entry_value"))
-    fresh = bool(mark.get("complete") and matches and heartbeat.get("session_date") == trade.session_date
-                 and age is not None and age <= 2 and sync_age is not None and sync_age < 5
-                 and feed_age is not None and 0 <= feed_age < 5)
-    return {"price":mark.get("price") if fresh else None,
-            "open_pnl":mark.get("open_pnl") if fresh else None,
-            "quote_as_of":mark.get("quote_as_of"), "age_seconds":age,
-            "stale":not fresh, "basis":"liquidation bid for long / ask for short; remaining-position gross MTM"}
 
 
 def empty_snapshot(session_date: str) -> dict[str, Any]:
