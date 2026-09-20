@@ -9,12 +9,12 @@ import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuth
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { MorningChecklist } from './components/MorningChecklist'
-import { SectorBoard } from './components/SectorBoard'
 import { PublicHome } from './components/PublicHome'
 import { PrivateStatusStrip } from './components/PrivateStatusStrip'
 import { AdminWorkspace } from './components/admin/AdminWorkspace'
 import { TradingDesk } from './components/TradingDesk'
 import { StatusStrip } from './components/StatusStrip'
+import { RadarHeatMap } from './components/RadarHeatMap'
 import { TopAppBar, type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
 import { FeedAlertBanner } from './components/FeedAlertBanner'
@@ -251,10 +251,9 @@ function OwnerApp() {
                   {error}
                 </div>
               )}
-              <SectorBoard
+              <RadarHeatMap
                 rows={rows}
                 loading={loading}
-                sessionDate={sessionDate}
                 search={search}
               />
             </>
