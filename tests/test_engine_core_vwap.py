@@ -150,12 +150,22 @@ class EntryBranchTests(EngineTestCase):
         self.assertEqual(outcome.position.extra["risk_cap_rupees"], 450.0)
         self.assertEqual(outcome.position.qty, 147)
 
-    def test_an_entered_position_is_persisted(self) -> None:
+    def test_a_filled_position_is_protected_in_the_same_tick(self) -> None:
+        # The unprotected window is meant to be as short as possible: a market
+        # order fills instantly, so the stop goes on without waiting a tick.
         self.engine().handle_trigger(_candidate("accepted", vwap_classification="ACCEPT"))
         stored = self.store.get("accepted")
         assert stored is not None
-        self.assertEqual(stored.state, ExecutionState.ENTERED)
+        self.assertEqual(stored.state, ExecutionState.PROTECTED)
         self.assertEqual(stored.entry_price, 110.0)
+        self.assertIsNotNone(stored.stop_order_id)
+
+    def test_the_diary_records_the_whole_path_in_order(self) -> None:
+        self.engine().handle_trigger(_candidate("accepted", vwap_classification="ACCEPT"))
+        events = [r["event_type"] for r in self.store.list_events("accepted")]
+        self.assertEqual(
+            events, ["entry_intent", "entry_submitted", "entry_filled", "protected"]
+        )
 
 
 class PauseAndStopTests(EngineTestCase):
@@ -251,7 +261,7 @@ class IngestTests(EngineTestCase):
         accept_row = self.store.get("accept")
         limited_row = self.store.get("limited")
         assert accept_row is not None and limited_row is not None
-        self.assertEqual(accept_row.state, ExecutionState.ENTERED)
+        self.assertEqual(accept_row.state, ExecutionState.PROTECTED)
         self.assertEqual(limited_row.extra.get("skip_reason"), "symbol_already_open")
 
     def test_stronger_breakout_wins_the_slot_within_a_tier(self) -> None:
@@ -266,7 +276,7 @@ class IngestTests(EngineTestCase):
         strong_row = self.store.get("strong")
         weak_row = self.store.get("weak")
         assert strong_row is not None and weak_row is not None
-        self.assertEqual(strong_row.state, ExecutionState.ENTERED)
+        self.assertEqual(strong_row.state, ExecutionState.PROTECTED)
         self.assertEqual(weak_row.extra.get("skip_reason"), "symbol_already_open")
 
 

@@ -6,6 +6,10 @@ step below delegates to an injected collaborator instead of being one of
 150+ methods on a single class. Every collaborator can be unit-tested and
 reasoned about without the other four.
 
+**Step order is load-bearing.** Reconciliation runs before anything that makes
+a decision, so every decision in a tick is made against what the broker says
+is true right now rather than against what we believed last tick.
+
 Two separate reasons entries can be off, deliberately not collapsed into one
 flag:
 
@@ -19,15 +23,40 @@ reconciliation and protection of existing positions running.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Protocol
+from typing import Callable, Dict, List, Optional, Protocol
 
 import engine_clock
 from engine_config import SessionRiskConfig, margin_used_rupees
-from engine_entry import EntryOutcome, EntryResult, submit_entry
+from engine_entry import EntryOutcome, EntryResult, FillVerdict, apply_entry_fill, submit_entry
+from engine_exit import (
+    CloseReason,
+    finalize_exit,
+    flatten,
+    identify_closing_order,
+)
 from engine_feed import FeedMonitor
+from engine_orders import transition
 from engine_priority import VWAP_ENTRY_CLASSES, rank_candidates
+from engine_protection import ensure_protected
+from engine_reconcile import (
+    BrokerTruth,
+    ReconcileAction,
+    fetch_broker_truth,
+    reconcile,
+    symbols_of,
+)
 from engine_risk import RiskPolicy
+from engine_runloop import (
+    STEP_COMMANDS,
+    STEP_INGEST,
+    STEP_PROTECTION,
+    STEP_RECONCILE,
+    STEP_SQUAREOFF,
+    StepFailureTracker,
+    run_step,
+)
 from engine_sizing import SizingPolicy
+from engine_squareoff import SquareoffProgress, squareoff_all
 from engine_types import ExecutionState, Position, TriggerCandidate
 from trading_engine_broker import BrokerPort, parse_timestamp_text
 
@@ -49,6 +78,7 @@ class PositionStore(Protocol):
         self, trade_id: str, event_type: str, payload: Optional[dict] = None
     ) -> int: ...
     def exists(self, setup_id: str) -> bool: ...
+    def closed_today(self, session_date: str) -> List[Position]: ...
 
 
 class ExecutionEngine:
@@ -62,9 +92,11 @@ class ExecutionEngine:
         sizing_policy: SizingPolicy,
         candidate_source: Callable[[], List[TriggerCandidate]],
         session_config: Optional[SessionRiskConfig] = None,
+        session_date: Optional[str] = None,
         is_live: bool = False,
         run_id: Optional[str] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        command_source: Optional[Callable[[], list]] = None,
     ) -> None:
         self.broker = broker
         self.store = store
@@ -73,37 +105,122 @@ class ExecutionEngine:
         self.sizing_policy = sizing_policy
         self.candidate_source = candidate_source
         self.session_config = session_config or SessionRiskConfig()
+        self.session_date = session_date or engine_clock.to_ist(
+            now_fn()
+        ).strftime("%Y-%m-%d")
         self.is_live = is_live
         self.run_id = run_id
         self.now_fn = now_fn
+        self.command_source = command_source
+
         self.entries_paused = False
         self.entries_stopped = False
+        self.pause_reason: Optional[str] = None
+        self.failures = StepFailureTracker()
+        self.tick_count = 0
+
+        # Set once a terminal trigger fires; the loop keeps running until the
+        # square-off it started is confirmed complete.
+        self.shutdown_reason: Optional[CloseReason] = None
+        self.shutdown_complete = False
+        self.breached = False
+        self.live_pnl: Dict[str, Optional[float]] = {}
+        self.last_truth: Optional[BrokerTruth] = None
+        self.escalation_notices: List[str] = []
+        self.realised_loss_today = 0.0
 
     # ------------------------------------------------------------------
     # Tick
     # ------------------------------------------------------------------
 
     def tick(self) -> None:
+        self.tick_count += 1
+        now = self.now_fn()
+
         health = self.feed_monitor.check()
         if not health.healthy:
-            self.entries_paused = True
-            return
-        self.entries_paused = False
+            # The engine has no market connection of its own: a stale feed and
+            # a dead observation runner are the same underlying fact.
+            self._pause("feed_stale")
+        elif not self.failures.should_auto_pause():
+            self._resume()
 
         positions = self.store.open_positions()
 
-        loss_check = self.risk_policy.check_daily_loss(positions)
-        if loss_check.breached:
-            self.entries_paused = True
-            # TODO(phase 7): square off every open position and auto-stop once
-            # all of them are confirmed CLOSED.
+        # Reconciliation first: everything below decides against broker truth.
+        run_step(
+            STEP_RECONCILE,
+            lambda: self._drive_open_orders(positions),
+            tracker=self.failures,
+            on_escalate=self._on_escalate,
+        )
 
-        self.ingest_triggers()
-        self._drive_open_orders(positions)
-        self._ensure_protection(positions)
-        # Trailing intentionally removed for now — being rebuilt from scratch.
+        positions = self.store.open_positions()
+        run_step(
+            STEP_PROTECTION,
+            lambda: self._ensure_protection(positions),
+            tracker=self.failures,
+            on_escalate=self._on_escalate,
+        )
+
+        run_step(
+            STEP_COMMANDS,
+            self._handle_commands,
+            tracker=self.failures,
+            on_escalate=self._on_escalate,
+        )
+
+        self._check_daily_loss()
+        if self.shutdown_reason is None and engine_clock.eod_squareoff_due(now):
+            self._begin_shutdown(CloseReason.EOD_SQUAREOFF)
+
+        if self.shutdown_reason is not None:
+            run_step(
+                STEP_SQUAREOFF,
+                self._advance_shutdown,
+                tracker=self.failures,
+                on_escalate=self._on_escalate,
+            )
+            # No new entries once the day is ending.
+            return
+
+        run_step(
+            STEP_INGEST,
+            self.ingest_triggers,
+            tracker=self.failures,
+            on_escalate=self._on_escalate,
+        )
+        # Trailing intentionally removed for now -- being rebuilt from scratch.
         # See Reference/execution_engine_rebuild_notes.md. Positions stay in
         # PROTECTED with a static stop until trailing is redesigned.
+
+    @property
+    def entries_allowed(self) -> bool:
+        return (
+            not self.entries_paused
+            and not self.entries_stopped
+            and self.shutdown_reason is None
+            and engine_clock.new_entries_allowed(self.now_fn())
+        )
+
+    def _pause(self, reason: str) -> None:
+        self.entries_paused = True
+        self.pause_reason = reason
+
+    def _resume(self) -> None:
+        if self.breached:
+            return  # a breach is permanent for the session
+        self.entries_paused = False
+        self.pause_reason = None
+
+    def _on_escalate(self, step: str, detail: str) -> None:
+        notice = f"{step}: {detail}"
+        self.escalation_notices.append(notice)
+        self.store.append_event(
+            "__engine__", "step_escalated", {"step": step, "detail": detail}
+        )
+        if self.failures.should_auto_pause():
+            self._pause(f"step_escalated:{step}")
 
     # ------------------------------------------------------------------
     # Trigger ingestion
@@ -126,7 +243,7 @@ class ExecutionEngine:
             self.handle_trigger(candidate)
 
     def handle_trigger(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
-        if self.entries_paused or self.entries_stopped:
+        if self.entries_paused or self.entries_stopped or self.shutdown_reason is not None:
             return None
 
         classification = candidate.vwap_classification
@@ -169,11 +286,25 @@ class ExecutionEngine:
             is_live=self.is_live,
             run_id=self.run_id,
         )
-        if outcome.result is EntryResult.FILLED:
-            # TODO(phase 4/6): act on outcome.verdict — place the stop, or
-            # flatten immediately on abnormal slippage.
-            pass
+        if outcome.result is EntryResult.FILLED and outcome.position is not None:
+            self._act_on_fill(outcome.position, outcome.verdict)
         return outcome
+
+    def _act_on_fill(
+        self, position: Position, verdict: Optional[FillVerdict]
+    ) -> None:
+        """Protect it, or -- past 1.5x the cap -- skip the stop and flatten."""
+        if verdict is FillVerdict.FLATTEN_ABNORMAL_SLIPPAGE:
+            flatten(
+                position,
+                reason=CloseReason.ABNORMAL_SLIPPAGE_FLATTEN,
+                broker=self.broker,
+                store=self.store,
+            )
+            position.extra["manual_review"] = "abnormal_slippage"
+            self.store.save(position)
+            return
+        ensure_protected(position, broker=self.broker, store=self.store)
 
     # ------------------------------------------------------------------
     # Entry gates, rechecked immediately before sending
@@ -182,9 +313,11 @@ class ExecutionEngine:
     def _entry_gate(self, candidate: TriggerCandidate) -> Optional[str]:
         """Time has passed since the trigger fired; re-verify everything."""
         if self.entries_paused:
-            return "entries_paused"
+            return self.pause_reason or "entries_paused"
         if self.entries_stopped:
             return "entries_stopped"
+        if self.shutdown_reason is not None:
+            return f"session_ending:{self.shutdown_reason.value}"
         if not engine_clock.new_entries_allowed(self.now_fn()):
             return "past_entry_cutoff"
         if not self.feed_monitor.check().healthy:
@@ -218,8 +351,259 @@ class ExecutionEngine:
         return None
 
     # ------------------------------------------------------------------
+    # Reconciliation
+    # ------------------------------------------------------------------
+
+    def _drive_open_orders(self, positions: List[Position]) -> None:
+        """Ask the broker what is true and make local records match it.
+
+        One batched read for the whole tick, then a pure decision per position.
+        """
+        if not positions:
+            self.live_pnl = {}
+            return
+
+        truth = fetch_broker_truth(self.broker, symbols_of(positions))
+        self.last_truth = truth
+        if not truth.ok:
+            # Never act on a read that failed: a broker outage must not look
+            # like every position having gone flat.
+            self.store.append_event(
+                "__engine__", "broker_truth_unavailable", {"reason": truth.reason}
+            )
+            return
+
+        self.live_pnl = {
+            p.trade_id: truth.pnl.get(p.candidate.tradingsymbol) for p in positions
+        }
+
+        for position in positions:
+            decision = reconcile(position, truth)
+            if decision.is_noop:
+                continue
+            self._apply_reconciliation(position, decision, truth)
+
+    def _apply_reconciliation(self, position: Position, decision, truth: BrokerTruth) -> None:
+        if decision.has(ReconcileAction.FINALIZE_EXIT):
+            closing = identify_closing_order(position, truth.orders_by_id.values())
+            finalize_exit(
+                position,
+                closing=closing,
+                store=self.store,
+                fallback_qty=int(position.qty or 0),
+            )
+            return
+
+        if decision.has(ReconcileAction.APPLY_ENTRY_FILL):
+            cap = float(position.extra.get("risk_cap_rupees") or 0.0) or self.risk_policy.per_trade_cap(
+                vwap_limited=position.candidate.vwap_classification == "LIMITED"
+            )
+            verdict = apply_entry_fill(
+                position,
+                fill_price=float(decision.fill_price),
+                filled_qty=int(decision.fill_qty),
+                risk_cap_rupees=cap,
+            )
+            if decision.order_id:
+                position.entry_order_id = decision.order_id
+            self.store.save_with_event(
+                position,
+                "entry_filled",
+                {
+                    "fill_price": decision.fill_price,
+                    "filled_qty": decision.fill_qty,
+                    "risk_taken_rupees": position.risk_taken_rupees,
+                    "verdict": verdict.value,
+                    "source": "reconciliation",
+                },
+            )
+            self._act_on_fill(position, verdict)
+            return
+
+        if decision.has(ReconcileAction.ENTRY_REJECTED):
+            position.extra["reject_reason"] = decision.reason
+            transition(position, ExecutionState.REJECTED)
+            self.store.save_with_event(
+                position, "entry_rejected", {"reason": decision.reason}
+            )
+            return
+
+        if decision.has(ReconcileAction.ENTRY_CANCELLED):
+            position.extra["cancel_reason"] = decision.reason
+            transition(position, ExecutionState.CANCELLED)
+            self.store.save_with_event(
+                position, "cancelled", {"reason": decision.reason}
+            )
+            return
+
+        changed = False
+        if decision.has(ReconcileAction.ADOPT_QTY):
+            position.extra["qty_adopted_from_broker"] = {
+                "was": position.qty,
+                "now": decision.broker_qty,
+            }
+            position.qty = int(decision.broker_qty or 0)
+            changed = True
+
+        if decision.has(ReconcileAction.ADOPT_STOP_PRICE):
+            position.extra["stop_adopted_from_broker"] = {
+                "was": position.stop_price,
+                "now": decision.broker_stop_price,
+            }
+            position.stop_price = decision.broker_stop_price
+            changed = True
+
+        if decision.has(ReconcileAction.REPLACE_STOP):
+            # The stop is genuinely gone, so the position genuinely is not
+            # protected. Say so, and let the protection step re-place it.
+            position.stop_order_id = None
+            if position.state in (ExecutionState.PROTECTED, ExecutionState.TRAILING):
+                transition(position, ExecutionState.ENTERED)
+            self.store.save_with_event(
+                position, "stop_missing_at_broker", {"qty": position.qty}
+            )
+            return
+
+        if changed:
+            self.store.save_with_event(
+                position,
+                "reconciled",
+                {
+                    "qty": position.qty,
+                    "stop_price": position.stop_price,
+                    "actions": [a.value for a in decision.actions],
+                },
+            )
+
+    def _ensure_protection(self, positions: List[Position]) -> None:
+        for position in positions:
+            if position.state != ExecutionState.ENTERED:
+                continue
+            ensure_protected(position, broker=self.broker, store=self.store)
+
+    # ------------------------------------------------------------------
+    # Commands
+    # ------------------------------------------------------------------
+
+    def _handle_commands(self) -> None:
+        if self.command_source is None:
+            return
+        for command in self.command_source():
+            self.apply_command(command)
+
+    def apply_command(self, command) -> None:
+        """Apply one command. The queue marks it applied or rejected."""
+        from engine_commands import CommandKind
+
+        kind = command.kind
+        if kind is CommandKind.STOP:
+            self.entries_stopped = True
+            command.applied({"entries_stopped": True})
+            return
+
+        if kind is CommandKind.START:
+            if not engine_clock.new_entries_allowed(self.now_fn()):
+                # Same window rule as the initial start, applied to every
+                # click -- not just the first one of the day.
+                command.rejected("past_entry_cutoff")
+                return
+            self.entries_stopped = False
+            command.applied({"entries_stopped": False})
+            return
+
+        if kind is CommandKind.CLOSE_POSITION:
+            position = self._find_open(command.trade_id)
+            if position is None:
+                command.rejected("position_not_open")
+                return
+            outcome = flatten(
+                position,
+                reason=CloseReason.MANUAL_CLOSE,
+                broker=self.broker,
+                store=self.store,
+            )
+            if outcome.submitted:
+                command.applied({"order_id": outcome.order_id})
+            else:
+                command.rejected(str(outcome.reason))
+            return
+
+        if kind is CommandKind.KILL_ALL:
+            self._begin_shutdown(CloseReason.KILL_ALL)
+            command.applied({"shutdown": CloseReason.KILL_ALL.value})
+            return
+
+        command.rejected("unhandled_command")
+
+    def _find_open(self, trade_id: Optional[str]) -> Optional[Position]:
+        if not trade_id:
+            return None
+        for position in self.store.open_positions():
+            if position.trade_id == trade_id:
+                return position
+        return None
+
+    # ------------------------------------------------------------------
+    # Daily loss and shutdown
+    # ------------------------------------------------------------------
+
+    def _check_daily_loss(self) -> None:
+        closed = self.store.closed_today(self.session_date)
+        check = self.risk_policy.check_daily_loss(closed)
+        self.realised_loss_today = check.closed_loss_rupees
+        if not check.breached:
+            return
+        if not self.breached:
+            self.breached = True
+            self.store.append_event(
+                "__engine__",
+                "daily_loss_breached",
+                {"closed_loss": check.closed_loss_rupees, "cap": check.cap_rupees},
+            )
+        # Permanent for the session: realised losses cannot decrease.
+        self._pause("daily_loss_breached")
+        if self.shutdown_reason is None:
+            self._begin_shutdown(CloseReason.DAILY_LOSS_BREACH)
+
+    def _begin_shutdown(self, reason: CloseReason) -> None:
+        self.shutdown_reason = reason
+        self.shutdown_complete = False
+        self._pause(f"shutdown:{reason.value}")
+        self.store.append_event(
+            "__engine__", "shutdown_started", {"reason": reason.value}
+        )
+
+    def _advance_shutdown(self) -> SquareoffProgress:
+        """Close everything, every tick, until nothing is left.
+
+        Idempotent by construction: the set of open positions only shrinks, and
+        a CLOSED position can never reappear in it.
+        """
+        assert self.shutdown_reason is not None
+        positions = self.store.open_positions()
+        progress = squareoff_all(
+            positions, reason=self.shutdown_reason, broker=self.broker, store=self.store
+        )
+        if progress.complete and not self.store.open_positions():
+            if not self.shutdown_complete:
+                self.shutdown_complete = True
+                self.store.append_event(
+                    "__engine__",
+                    "shutdown_complete",
+                    {"reason": self.shutdown_reason.value},
+                )
+        return progress
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def unprotected_count(self) -> int:
+        return sum(
+            1
+            for p in self.store.open_positions()
+            if p.state in (ExecutionState.ENTERED, ExecutionState.ENTRY_SUBMITTED)
+        )
 
     def _skip(self, candidate: TriggerCandidate, reason: str) -> None:
         position = Position(
@@ -242,15 +626,3 @@ class ExecutionEngine:
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
         return (now - created_at.astimezone(timezone.utc)).total_seconds()
-
-    def _drive_open_orders(self, positions: List[Position]) -> None:
-        for position in positions:
-            if position.state != ExecutionState.ENTRY_SUBMITTED:
-                continue
-            # TODO(phase 3): continuous reconciliation against broker truth.
-
-    def _ensure_protection(self, positions: List[Position]) -> None:
-        for position in positions:
-            if position.state != ExecutionState.ENTERED:
-                continue
-            # TODO(phase 4): place the structural stop, transition to PROTECTED.
