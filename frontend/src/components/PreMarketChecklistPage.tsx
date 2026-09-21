@@ -369,27 +369,6 @@ export function PreMarketChecklistPage({
   const nextRecoveryStep = recoverySteps.find((step) => !isOk(step.status))
   const remainingRecoverySteps = recoverySteps.filter((step) => !isOk(step.status)).length
 
-  const runNextRecoveryStep = () => {
-    if (!nextRecoveryStep) return
-    if (nextRecoveryStep.id === 'kite') {
-      void handleCheckToken()
-      return
-    }
-    if (nextRecoveryStep.id === 'instruments') {
-      void handleGenerate('instruments')
-      return
-    }
-    if (nextRecoveryStep.id === 'historical') {
-      void handleGenerate('historical')
-      return
-    }
-    if (nextRecoveryStep.id === 'baselines') {
-      void handleGenerate('baselines')
-      return
-    }
-    void handleGenerate('five-minute')
-  }
-
   const kiteBadge =
     kiteStatus === 'ok'
       ? 'ACTIVE & AUTHENTICATED'
@@ -667,23 +646,6 @@ export function PreMarketChecklistPage({
               Next: <span className="font-semibold">{nextRecoveryStep.title}</span> — {nextRecoveryStep.detail}
             </p>
           </div>
-          <div className="flex gap-1 items-center shrink-0">
-            <button
-              type="button"
-              onClick={runNextRecoveryStep}
-              disabled={generatingTask !== null || tokenChecking}
-              className="bg-black drop-shadow-sm inline-flex gap-1 items-center px-3 py-1 rounded-[2px] text-white text-[14px] font-bold leading-5 disabled:opacity-50"
-            >
-              {generatingTask !== null || tokenChecking ? 'Working…' : nextRecoveryStep.actionLabel}
-            </button>
-            <button
-              type="button"
-              onClick={() => focusStage(nextRecoveryStep.id)}
-              className="bg-white border border-[rgba(255,218,214,0.7)] drop-shadow-sm px-[7px] py-[5px] rounded-[2px] text-[#93000a] text-[14px] font-semibold leading-5"
-            >
-              Open Step
-            </button>
-          </div>
         </section>
       )}
 
@@ -943,50 +905,50 @@ export function PreMarketChecklistPage({
             <StageMetricCard
               label="BASELINE VECTOR STATUS"
               badge={baselines.status === 'ok' ? <ValidBadge /> : <InvalidBadge />}
+              alignTop
               danger={baselines.status !== 'ok'}
             >
-              <p
-                className={`font-bold text-[13px] ${
-                  baselines.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'
-                }`}
-              >
+              <p className={`font-bold text-[13px] ${baselines.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
                 {baselines.status === 'ok' ? 'Valid' : 'Invalid (Missing / Stale)'}
               </p>
-              <div className="w-full bg-[#ffdad6]/50 h-1.5 rounded mt-1 overflow-hidden">
-                <div
-                  className={`h-full ${baselines.status === 'ok' ? 'bg-[#006c4a]' : 'bg-[#ba1a1a]'}`}
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      Math.round(
-                        (baselines.symbols_covered / Math.max(1, baselines.expected_count)) * 100,
-                      ),
-                    )}%`,
-                  }}
-                />
+              <div className="mt-1.5 grid w-full grid-cols-2 gap-x-3 border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
+                <span className="text-[#76777d]">Vectors ready</span>
+                <span className="font-mono font-semibold text-right text-[#0b1c30]">
+                  {baselines.symbols_covered}/{baselines.expected_count}
+                </span>
+                <span className="text-[#76777d]">Reliable</span>
+                <span className="font-mono font-semibold text-right text-[#0b1c30]">
+                  {baselines.reliable_count}
+                </span>
               </div>
-              <p className="text-[11px] text-[#45464d] mt-0.5">
-                {baselines.symbols_covered}/{baselines.expected_count} READY · Reliable{' '}
-                {baselines.reliable_count}
-              </p>
             </StageMetricCard>
-            <StageMetricCard label="DATA AS OF" danger={baselines.status !== 'ok'}>
-              <p className="font-mono text-[12px] font-semibold text-[#0b1c30]">
+            <StageMetricCard label="DATA AS OF" alignTop danger={baselines.status !== 'ok'}>
+              <p className={`font-bold text-[13px] ${baselines.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
                 {baselines.baseline_as_of ?? '—'}
               </p>
-              <p className="text-[11px] text-[#ba1a1a]">
-                Expected: {baselines.expected_as_of ?? '—'}
+              <p className="text-[11px] text-[#45464d]">
+                {baselines.status === 'ok' ? 'Baseline is current' : 'Baseline is stale or missing'}
               </p>
+              <div className="mt-1.5 flex w-full items-center justify-between border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
+                <span className="text-[#76777d]">Expected</span>
+                <span className="font-mono font-semibold text-[#0b1c30]">
+                  {baselines.expected_as_of ?? '—'}
+                </span>
+              </div>
             </StageMetricCard>
-            <StageMetricCard label="TARGET GENERATION" danger={baselines.status !== 'ok'}>
-              <p className="font-bold text-[13px] text-[#ba1a1a]">
-                {baselines.status === 'ok' ? 'NOT REQUIRED' : `${data.session_date} (Target)`}
+            <StageMetricCard label="TARGET GENERATION" alignTop danger={baselines.status !== 'ok'}>
+              <p className={`font-bold text-[13px] ${baselines.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
+                {baselines.status === 'ok' ? 'NOT REQUIRED' : 'REQUIRED'}
               </p>
-              <p className="text-[11px] text-[#ba1a1a]">
-                {baselines.status === 'ok'
-                  ? 'Partition current'
-                  : 'Immediate Generation Required • Pipeline Halted'}
+              <p className="text-[11px] text-[#45464d]">
+                {baselines.status === 'ok' ? 'Partition current' : 'Immediate generation required'}
               </p>
+              <div className="mt-1.5 flex w-full items-center justify-between border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
+                <span className="text-[#76777d]">Target date</span>
+                <span className="font-mono font-semibold text-[#0b1c30]">
+                  {baselines.expected_as_of ?? data.session_date}
+                </span>
+              </div>
             </StageMetricCard>
           </ChecklistStage>
 
