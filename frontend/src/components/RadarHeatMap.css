@@ -2,25 +2,37 @@
    so its tokens (--rhm-*) never leak into or collide with the app's own
    --color-* variables in index.css. */
 .radar-heat-map {
-  --rhm-bg: #0a0d12;
-  --rhm-surface: #161a21;
-  --rhm-card: #1b2029;
-  --rhm-border: #2a303b;
-  --rhm-ink: #eef1f5;
-  --rhm-ink-muted: #8b93a3;
-  --rhm-ink-on-accent: #0a0d12;
+  /* Neon-on-dark theme. One semantic color per meaning, reused everywhere
+     (status cards, price direction, VWAP badge) so the palette stays simple:
+     gray = idle, yellow/amber = building, green = go, cyan = live/triggered,
+     pink-red = rejected/stop. */
+  --rhm-bg: #05070c;
+  --rhm-surface: #0b0f18;
+  --rhm-card: #10151f;
+  --rhm-border: #1e2733;
+  --rhm-ink: #eafcff;
+  --rhm-ink-muted: #6b7787;
+  --rhm-ink-on-accent: #05070c;
 
-  --rhm-waiting: #3f4652;       --rhm-waiting-ink: #aab1bd;
-  --rhm-spike: #eab308;         --rhm-spike-ink: var(--rhm-ink-on-accent);
-  --rhm-setup: #f0973b;         --rhm-setup-ink: var(--rhm-ink-on-accent);
-  --rhm-armed: #22c55e;         --rhm-armed-ink: var(--rhm-ink-on-accent);   --rhm-armed-glow: rgba(34,197,94,0.55);
-  --rhm-triggered: #047857;     --rhm-triggered-ink: #e8fff5;                --rhm-triggered-glow: rgba(4,120,87,0.6);
-  --rhm-rejected: #ef4444;      --rhm-rejected-ink: var(--rhm-ink-on-accent);
-  --rhm-negated: #5c1d1d;       --rhm-negated-ink: #e3b8b8;
+  --rhm-cyan: #00e5ff;
 
-  --rhm-up: #4ade80;
-  --rhm-down: #f87171;
-  --rhm-focus: #60a5fa;
+  --rhm-waiting: #3d4756;       --rhm-waiting-ink: #8b97a8;
+  --rhm-spike: #f4ff2b;         --rhm-spike-ink: var(--rhm-ink-on-accent);
+  --rhm-setup: #ffb400;         --rhm-setup-ink: var(--rhm-ink-on-accent);
+  --rhm-armed: #39ff14;         --rhm-armed-ink: var(--rhm-ink-on-accent);   --rhm-armed-glow: rgba(57,255,20,0.55);
+  --rhm-triggered: #08313a;     --rhm-triggered-ink: #d9fbff;                --rhm-triggered-glow: rgba(0,229,255,0.65);
+  --rhm-rejected: #ff2e6d;      --rhm-rejected-ink: var(--rhm-ink-on-accent);
+  --rhm-negated: #401b23;       --rhm-negated-ink: #c98fa0;
+
+  --rhm-up: #39ff14;
+  --rhm-down: #ff2e6d;
+  --rhm-focus: #00e5ff;
+
+  /* VWAP confirmation badge — reuses the same semantic colors above */
+  --rhm-vwap-accept: var(--rhm-armed);
+  --rhm-vwap-limited: var(--rhm-setup);
+  --rhm-vwap-reject: var(--rhm-rejected);
+  --rhm-vwap-unavailable: var(--rhm-ink-muted);
 
   --rhm-radius-sm: 4px;
   --rhm-radius-md: 8px;
@@ -36,29 +48,6 @@
   padding: 8px 14px;
   display: flex; flex-direction: column; gap: 6px;
   flex: 1 1 auto; min-height: 0;
-}
-
-@media (prefers-color-scheme: light) {
-  .radar-heat-map:not([data-rhm-theme="dark"]) {
-    --rhm-bg: #f2f3f6; --rhm-surface: #ffffff; --rhm-card: #eaecf0; --rhm-border: #d7dbe1;
-    --rhm-ink: #161a21; --rhm-ink-muted: #5b6472; --rhm-ink-on-accent: #0a0d12;
-    --rhm-waiting: #aab1bd; --rhm-waiting-ink: #3f4652;
-    --rhm-spike: #00dcff; --rhm-setup: #ff7a00;
-    --rhm-armed: #00ee55; --rhm-armed-glow: rgba(22,163,74,0.35);
-    --rhm-triggered: #065f46; --rhm-triggered-glow: rgba(6,95,70,0.4);
-    --rhm-rejected: #ff0000; --rhm-negated: #7a2626; --rhm-negated-ink: #f5e2e2;
-    --rhm-up: #15803d; --rhm-down: #b91c1c; --rhm-focus: #2563eb;
-  }
-}
-.radar-heat-map[data-rhm-theme="light"] {
-  --rhm-bg: #f2f3f6; --rhm-surface: #ffffff; --rhm-card: #eaecf0; --rhm-border: #d7dbe1;
-  --rhm-ink: #161a21; --rhm-ink-muted: #5b6472; --rhm-ink-on-accent: #0a0d12;
-  --rhm-waiting: #aab1bd; --rhm-waiting-ink: #3f4652;
-  --rhm-spike: #00dcff; --rhm-setup: #ff7a00;
-  --rhm-armed: #00ee55; --rhm-armed-glow: rgba(22,163,74,0.35);
-  --rhm-triggered: #065f46; --rhm-triggered-glow: rgba(6,95,70,0.4);
-  --rhm-rejected: #ff0000; --rhm-negated: #7a2626; --rhm-negated-ink: #f5e2e2;
-  --rhm-up: #15803d; --rhm-down: #b91c1c; --rhm-focus: #2563eb;
 }
 
 .radar-heat-map .rhm-header {
@@ -115,7 +104,7 @@
 .radar-heat-map .rhm-stat-num { font-family: var(--rhm-font-mono); font-size: 15px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .radar-heat-map .rhm-stat-label { font-size: 8px; color: var(--rhm-ink-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .radar-heat-map .rhm-stat.armed .rhm-stat-num { color: var(--rhm-armed); }
-.radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-triggered); }
+.radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-cyan); }
 .radar-heat-map .rhm-stat.rejected .rhm-stat-num { color: var(--rhm-rejected); }
 
 .radar-heat-map .rhm-grid-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; border-radius: var(--rhm-radius-md); }
@@ -173,7 +162,7 @@
 .radar-heat-map .rhm-card.ARMED .rhm-dot { background: var(--rhm-armed); box-shadow: 0 0 8px var(--rhm-armed); }
 .radar-heat-map .rhm-card.ARMED .rhm-status-label { color: var(--rhm-armed); }
 
-.radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-triggered); box-shadow: 0 0 0 1px var(--rhm-triggered), 0 0 16px var(--rhm-triggered-glow); }
+.radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-cyan); box-shadow: 0 0 0 1px var(--rhm-cyan), 0 0 16px var(--rhm-triggered-glow); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-symbol, .radar-heat-map .rhm-card.TRIGGERED .rhm-price { color: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-dot { background: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-status-label { color: var(--rhm-triggered-ink); }
@@ -187,6 +176,13 @@
 .radar-heat-map .rhm-card.NEGATED .rhm-symbol, .radar-heat-map .rhm-card.NEGATED .rhm-price { color: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-dot { background: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-status-label { color: var(--rhm-negated-ink); }
+
+/* VWAP confirmation badge dot, shown on TRIGGERED cards */
+.radar-heat-map .rhm-vwap-dot { width: 6px; height: 6px; border-radius: 999px; flex: 0 0 auto; }
+.radar-heat-map .rhm-vwap-dot.ACCEPT { background: var(--rhm-vwap-accept); box-shadow: 0 0 6px var(--rhm-vwap-accept); }
+.radar-heat-map .rhm-vwap-dot.LIMITED { background: var(--rhm-vwap-limited); box-shadow: 0 0 6px var(--rhm-vwap-limited); }
+.radar-heat-map .rhm-vwap-dot.REJECT { background: var(--rhm-vwap-reject); box-shadow: 0 0 6px var(--rhm-vwap-reject); }
+.radar-heat-map .rhm-vwap-dot.UNAVAILABLE { background: var(--rhm-vwap-unavailable); }
 
 .radar-heat-map .rhm-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
