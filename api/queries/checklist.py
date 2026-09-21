@@ -202,18 +202,11 @@ def _freshness_message(
     required_prior: str,
     newest_stale_latest: Optional[str],
     stale_count: int,
-    stale_sample: List[str],
 ) -> str:
-    sample = ", ".join(stale_sample[:5])
-    more = "" if stale_count <= 5 else f" (+{stale_count - 5} more)"
-    if newest_stale_latest:
-        actual = f"newest stale latest {newest_stale_latest}"
-    else:
-        actual = "no data"
+    latest = f"latest {newest_stale_latest}" if newest_stale_latest else "no data"
     return (
-        f"{area_label}: need coverage through prior session {required_prior}, "
-        f"{stale_count}/{EXPECTED_COUNT} symbols behind ({actual}"
-        f"{': ' + sample + more if sample else ''})"
+        f"{area_label}: {stale_count}/{EXPECTED_COUNT} symbols behind "
+        f"prior session {required_prior} ({latest})"
     )
 
 
@@ -664,7 +657,6 @@ def _build_historical(historical_db: Path, session_date: str) -> dict:
             required_prior=required_prior,
             newest_stale_latest=newest_stale,
             stale_count=stale_count,
-            stale_sample=stale_sample,
         )
     elif below_threshold:
         status = "needs_update"
@@ -963,7 +955,6 @@ def _build_five_minute(
             required_prior=required_prior,
             newest_stale_latest=newest_stale,
             stale_count=stale_count,
-            stale_sample=stale_sample,
         )
     elif symbols_covered_on_p < EXPECTED_COUNT:
         status = "needs_update"
@@ -1193,13 +1184,13 @@ def fetch_premarket_checklist(
         blockers.append(kite_auth["message"])
     for name, area in (
         ("Instruments", instruments),
-        ("Historical candles", historical),
+        (None, historical),  # message already leads with "1m candles: ..."
         ("Baselines", baselines),
-        ("5-minute candles", five_minute),
+        (None, five_minute),  # message already leads with "5m candles: ..."
         ("Offline checks", offline),
     ):
         if area["status"] in ("failed", "needs_update"):
-            blockers.append(f"{name}: {area['message']}")
+            blockers.append(f"{name}: {area['message']}" if name else area["message"])
 
     if overall == "ok":
         next_step = "Start live observation runner during market hours"
