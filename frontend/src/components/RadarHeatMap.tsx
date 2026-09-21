@@ -11,6 +11,14 @@ type CardStatus = 'WAITING' | 'SPIKE' | 'SETUP_READY' | 'ARMED' | 'TRIGGERED' | 
 
 const STATUSES: CardStatus[] = ['WAITING', 'SPIKE', 'SETUP_READY', 'ARMED', 'TRIGGERED', 'REJECTED', 'NEGATED']
 
+// Fixed, high-separation palette for the 17 sector groups. The stronger
+// saturation/value keeps adjacent sector bands distinguishable at a glance.
+const SECTOR_BACKGROUND_COLORS = [
+  '#f3b4b4', '#f4c48a', '#f2df86', '#c8e58a', '#9ddd9d', '#8fd8c8',
+  '#8fcfe5', '#91b9e8', '#9fa9e8', '#b99fe2', '#d09cdd', '#e0a1c4',
+  '#e9aaa2', '#d7c28a', '#a9d28b', '#8bcfcf', '#a8b8e6',
+]
+
 const STATUS_LABEL: Record<CardStatus, string> = {
   WAITING: 'Waiting',
   SPIKE: 'Spike',
@@ -133,8 +141,7 @@ export function RadarHeatMap({
     const names = (sectorMap?.sectors ?? []).map((group) => group.name).sort((a, b) => a.localeCompare(b))
     const map = new Map<string, string>()
     names.forEach((name, i) => {
-      const hue = Math.round((360 / Math.max(names.length, 1)) * i)
-      map.set(name, `hsl(${hue}, 68%, 82%)`)
+      map.set(name, SECTOR_BACKGROUND_COLORS[i % SECTOR_BACKGROUND_COLORS.length])
     })
     return map
   }, [sectorMap])
