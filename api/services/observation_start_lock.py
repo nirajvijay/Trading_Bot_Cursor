@@ -244,6 +244,15 @@ def is_start_lease_active(
     if session_date and info.session_date and info.session_date != session_date:
         # Different session lease: still blocks concurrent starts on this host.
         pass
+    age = _lease_age_seconds(info)
+    if age is not None and age >= LEASE_STALE_SECONDS:
+        # Lease outlived the startup gap it's meant to cover. A live PID here
+        # is not proof the lease is still meaningful — an API restart (e.g.
+        # during a deploy) can orphan the lease file while its recorded PID
+        # coincidentally gets reused by an unrelated process, wedging every
+        # future start behind a false "already running" forever. Reclaim.
+        _clear_lock(path)
+        return False
     if _pid_alive(info.pid):
         return True
     # Dead PID → reclaim opportunistically.
