@@ -2,31 +2,31 @@
    so its tokens (--rhm-*) never leak into or collide with the app's own
    --color-* variables in index.css. */
 .radar-heat-map {
-  /* Neon-on-dark theme. One semantic color per meaning, reused everywhere
+  /* Neon-on-white theme. One semantic color per meaning, reused everywhere
      (status cards, price direction, VWAP badge) so the palette stays simple:
-     gray = idle, yellow/amber = building, green = go, cyan = live/triggered,
+     gray = idle, yellow/amber = building, green = go, blue = live/triggered,
      pink-red = rejected/stop. */
-  --rhm-bg: #05070c;
-  --rhm-surface: #0b0f18;
-  --rhm-card: #10151f;
-  --rhm-border: #1e2733;
-  --rhm-ink: #eafcff;
-  --rhm-ink-muted: #6b7787;
-  --rhm-ink-on-accent: #05070c;
+  --rhm-bg: #f4f6fb;
+  --rhm-surface: #ffffff;
+  --rhm-card: #ffffff;
+  --rhm-border: #e2e6ee;
+  --rhm-ink: #0b1220;
+  --rhm-ink-muted: #6b7280;
+  --rhm-ink-on-accent: #ffffff;
 
-  --rhm-cyan: #00e5ff;
+  --rhm-cyan: #0091ff;
 
-  --rhm-waiting: #3d4756;       --rhm-waiting-ink: #8b97a8;
-  --rhm-spike: #f4ff2b;         --rhm-spike-ink: var(--rhm-ink-on-accent);
-  --rhm-setup: #ffb400;         --rhm-setup-ink: var(--rhm-ink-on-accent);
-  --rhm-armed: #39ff14;         --rhm-armed-ink: var(--rhm-ink-on-accent);   --rhm-armed-glow: rgba(57,255,20,0.55);
-  --rhm-triggered: #08313a;     --rhm-triggered-ink: #d9fbff;                --rhm-triggered-glow: rgba(0,229,255,0.65);
-  --rhm-rejected: #ff2e6d;      --rhm-rejected-ink: var(--rhm-ink-on-accent);
-  --rhm-negated: #401b23;       --rhm-negated-ink: #c98fa0;
+  --rhm-waiting: #cbd2db;       --rhm-waiting-ink: #6b7280;
+  --rhm-spike: #b5c400;         --rhm-spike-ink: #ffffff;
+  --rhm-setup: #ff8a00;         --rhm-setup-ink: #ffffff;
+  --rhm-armed: #00c853;         --rhm-armed-ink: #ffffff;                    --rhm-armed-glow: rgba(0,200,83,0.35);
+  --rhm-triggered: #0091ff;     --rhm-triggered-ink: #ffffff;                --rhm-triggered-glow: rgba(0,145,255,0.4);
+  --rhm-rejected: #ff1744;      --rhm-rejected-ink: #ffffff;
+  --rhm-negated: #fbe4e8;       --rhm-negated-ink: #b0324a;
 
-  --rhm-up: #39ff14;
-  --rhm-down: #ff2e6d;
-  --rhm-focus: #00e5ff;
+  --rhm-up: #00c853;
+  --rhm-down: #ff1744;
+  --rhm-focus: #0091ff;
 
   /* VWAP confirmation badge — reuses the same semantic colors above */
   --rhm-vwap-accept: var(--rhm-armed);
@@ -143,9 +143,19 @@
 .radar-heat-map .rhm-change.neg { color: var(--rhm-down); }
 
 .radar-heat-map .rhm-card-bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+.radar-heat-map .rhm-status-group { display: flex; align-items: baseline; gap: 3px; min-width: 0; }
 .radar-heat-map .rhm-status-label { font-size: 7.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
 .radar-heat-map .rhm-updated { font-size: 7px; color: var(--rhm-ink-muted); font-variant-numeric: tabular-nums; }
 .radar-heat-map .rhm-distance { font-size: 7.5px; font-family: var(--rhm-font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Repeat-setup indicator: symbol has armed/triggered/rejected more than
+   once this session. Neutral color so it doesn't compete with the card's
+   own status color — it's a "there's history here" signal, not an outcome. */
+.radar-heat-map .rhm-setup-count {
+  font-size: 7px; font-family: var(--rhm-font-mono); font-weight: 700;
+  color: var(--rhm-ink-muted); background: var(--rhm-border);
+  border-radius: 999px; padding: 1px 4px; flex: 0 0 auto;
+}
 
 .radar-heat-map .rhm-card.WAITING .rhm-dot { background: var(--rhm-waiting); }
 .radar-heat-map .rhm-card.WAITING .rhm-status-label { color: var(--rhm-waiting-ink); }

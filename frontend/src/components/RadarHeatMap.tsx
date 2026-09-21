@@ -205,7 +205,14 @@ export function RadarHeatMap({
                   <span className={`rhm-change ${pct >= 0 ? 'pos' : 'neg'}`}>{formatPercent(card.row.pct_change)}</span>
                 </div>
                 <div className="rhm-card-bottom">
-                  <span className="rhm-status-label">{STATUS_LABEL[card.status]}</span>
+                  <span className="rhm-status-group">
+                    <span className="rhm-status-label">{STATUS_LABEL[card.status]}</span>
+                    {(card.row.setup_count ?? 0) > 1 && (
+                      <span className="rhm-setup-count" title={`${card.row.setup_count} setups this session`}>
+                        ×{card.row.setup_count}
+                      </span>
+                    )}
+                  </span>
                   {card.distance != null ? (
                     <span className="rhm-distance" title="Distance to trigger price">
                       Δ{formatPrice(card.distance)}
