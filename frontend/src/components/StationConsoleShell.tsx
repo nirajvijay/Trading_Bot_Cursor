@@ -106,7 +106,7 @@ export function StationConsoleShell({
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[#f8f9ff]">
       <header className="shrink-0 bg-white border-b border-[#e5e7eb] shadow-[0_1px_1px_rgba(0,0,0,0.04)]">
-        <div className="flex items-center justify-between gap-3 px-6 py-2.5 min-h-[52px]">
+        <div className="flex items-center justify-between gap-3 px-6 py-2 min-h-[44px]">
           <div className="flex items-center gap-3 min-w-0 flex-wrap">
             <span className="text-[15px] font-extrabold tracking-[0.08em] uppercase text-[#0b1c30] whitespace-nowrap">
               NIFTY RADAR
@@ -165,7 +165,7 @@ export function StationConsoleShell({
                   key={tab.id}
                   type="button"
                   onClick={() => onTabChange(tab.id)}
-                  className={`relative px-3.5 py-2.5 text-[12px] tracking-wide whitespace-nowrap transition-colors ${
+                  className={`relative px-3.5 py-1.5 text-[12px] tracking-wide whitespace-nowrap transition-colors ${
                     active
                       ? 'text-[#005db7] font-bold'
                       : 'text-[#45464d] hover:text-[#0b1c30]'
