@@ -11,7 +11,7 @@ import { MfaSetupPage } from './components/MfaSetupPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
-import { TradingEnginePage } from './components/TradingEnginePage'
+import { ExecutionDeskPage } from './components/execution/ExecutionDeskPage'
 import { StationConsoleShell } from './components/StationConsoleShell'
 import { type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
@@ -259,7 +259,7 @@ export default function App() {
             onNavigateToObservation={() => setActiveTab('radar')}
           />
         ) : activeTab === 'trading' ? (
-          <TradingEnginePage sessionDate={sessionDate} />
+          <ExecutionDeskPage sessionDate={sessionDate} />
         ) : activeTab === 'admin' ? (
           <AdminConsolePage />
         ) : (

@@ -446,3 +446,138 @@ export interface AdminActionResponse {
   entries_paused?: boolean | null
   detail?: string | null
 }
+
+// ---------------------------------------------------------------------------
+// Rebuilt execution engine (/execution). Additive: the Trading* types above
+// belong to the old engine and are untouched.
+// ---------------------------------------------------------------------------
+
+export interface ExecutionSessionCaps {
+  per_trade_cap_rupees: number
+  per_trade_cap_vwap_limited_rupees: number
+  daily_loss_cap_rupees: number
+  total_capital_rupees: number
+  leverage_factor: number
+}
+
+export interface ExecutionPrecondition {
+  key: string
+  ok: boolean
+  detail: string
+}
+
+export interface ExecutionPreflight {
+  can_start: boolean
+  checks: ExecutionPrecondition[]
+  engine_state: string
+  engine_reason: string | null
+  refusals: string[]
+}
+
+export interface ExecutionCapital {
+  total_capital_rupees: number
+  leverage_factor: number
+  buying_power_rupees: number
+  margin_used_rupees: number
+  remaining_capital_rupees: number
+  remaining_buying_power_rupees: number
+}
+
+/** "running" | "stopped" | "crashed" | "absent" */
+export type ExecutionEngineState = 'running' | 'stopped' | 'crashed' | 'absent'
+
+export interface ExecutionStatus {
+  engine_state: ExecutionEngineState
+  engine_reason: string | null
+  heartbeat_age_seconds: number | null
+  stopped_on_purpose: boolean
+  stop_reason: string | null
+  run_id: string | null
+  session_date: string | null
+  is_live: boolean
+  tick_count: number
+  entries_allowed: boolean
+  entries_stopped: boolean
+  entries_paused: boolean
+  pause_reason: string | null
+  open_positions: number
+  unprotected: number
+  realised_loss_today: number
+  daily_loss_cap: number
+  remaining_daily: number
+  caps: ExecutionSessionCaps
+  capital: ExecutionCapital | null
+  total_live_pnl: number | null
+  live_pnl_as_of: string | null
+  live_pnl_complete: boolean
+  last_error: string | null
+  escalations: Record<string, string>
+}
+
+export interface ExecutionPosition {
+  trade_id: string
+  setup_id: string
+  session_date: string
+  tradingsymbol: string
+  direction: string
+  vwap_classification: string | null
+  state: string
+  qty: number
+  entry_price: number | null
+  stop_price: number | null
+  risk_taken_rupees: number | null
+  realised_pnl: number | null
+  live_pnl: number | null
+  entry_order_id: string | null
+  stop_order_id: string | null
+  exit_order_id: string | null
+  is_live: boolean
+  run_id: string | null
+  close_reason: string | null
+  skip_reason: string | null
+  stop_adopted_from_broker: boolean
+  manual_review: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ExecutionPositions {
+  session_date: string
+  open: ExecutionPosition[]
+  closed: ExecutionPosition[]
+  rejected: ExecutionPosition[]
+  total_live_pnl: number | null
+  live_pnl_as_of: string | null
+  live_pnl_complete: boolean
+}
+
+export interface ExecutionEvent {
+  event_id: number
+  trade_id: string
+  at: string
+  event_type: string
+  payload: Record<string, unknown>
+}
+
+export interface ExecutionEvents {
+  trade_id: string
+  events: ExecutionEvent[]
+}
+
+export type ExecutionCommandKind = 'stop' | 'start' | 'close_position' | 'kill_all'
+
+export interface ExecutionCommand {
+  command_id: number
+  kind: string
+  status: 'pending' | 'applied' | 'rejected'
+  trade_id: string | null
+  result: Record<string, unknown> | null
+  at: string | null
+  applied_at: string | null
+}
+
+export interface ExecutionStartResponse {
+  success: boolean
+  message: string
+  pid: number | null
+}

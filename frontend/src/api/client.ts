@@ -22,6 +22,14 @@ import type {
   SessionCoverage,
   SessionResponse,
   SymbolTimelineResponse,
+  ExecutionCommand,
+  ExecutionCommandKind,
+  ExecutionEvents,
+  ExecutionPositions,
+  ExecutionPreflight,
+  ExecutionSessionCaps,
+  ExecutionStartResponse,
+  ExecutionStatus,
 } from './types'
 
 const BASE = '/api/v1'
@@ -294,4 +302,42 @@ export function fetchAdminAudit(limit = 50, offset = 0): Promise<AdminAuditRespo
 
 export function postAdminRollback(targetVersionId: string): Promise<AdminConfigResponse> {
   return postJson('/admin/config/rollback', { target_version_id: targetVersionId })
+}
+
+// --- Rebuilt execution engine (/execution) ---------------------------------
+
+export function fetchExecutionStatus(): Promise<ExecutionStatus> {
+  return getJson('/execution/status')
+}
+
+export function fetchExecutionPreflight(): Promise<ExecutionPreflight> {
+  return getJson('/execution/preflight')
+}
+
+export function fetchExecutionPositions(sessionDate?: string): Promise<ExecutionPositions> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson(`/execution/positions${query}`)
+}
+
+export function fetchExecutionEvents(tradeId: string): Promise<ExecutionEvents> {
+  return getJson(`/execution/positions/${encodeURIComponent(tradeId)}/events`)
+}
+
+export function postExecutionStart(body: {
+  caps: ExecutionSessionCaps
+  session_date?: string
+  live_orders?: boolean
+}): Promise<ExecutionStartResponse> {
+  return postJson('/execution/start', body)
+}
+
+export function postExecutionCommand(
+  kind: ExecutionCommandKind,
+  tradeId?: string,
+): Promise<ExecutionCommand> {
+  return postJson('/execution/commands', { kind, trade_id: tradeId ?? null })
+}
+
+export function fetchExecutionCommand(commandId: number): Promise<ExecutionCommand> {
+  return getJson(`/execution/commands/${commandId}`)
 }
