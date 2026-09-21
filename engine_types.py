@@ -62,4 +62,13 @@ class Position:
     stop_order_id: Optional[str] = None
     exit_order_id: Optional[str] = None
     realised_pnl: Optional[float] = None
+    # The real post-fill risk (qty x |real fill - stop|), compared against
+    # 1.5x the tier cap. Top-level rather than buried in extra because it is
+    # central to the abnormal-slippage decision.
+    risk_taken_rupees: Optional[float] = None
+    # Which BrokerPort implementation produced this trade, and which engine
+    # run — both needed to keep real trades cleanly separable from test ones
+    # and to disambiguate a mid-day restart.
+    is_live: bool = False
+    run_id: Optional[str] = None
     extra: dict = field(default_factory=dict)
