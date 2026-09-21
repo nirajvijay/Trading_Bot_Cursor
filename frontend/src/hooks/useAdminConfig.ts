@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  ApiError,
   fetchAdminConfig,
   patchAdminConfig,
   postAdminPause,
@@ -60,13 +59,6 @@ function parseForm(form: AdminFormState): AdminConfigValues {
     vwap_accept_gap_exclusive_max: percentToRatio(acceptPct),
     vwap_limited_gap_inclusive_max: percentToRatio(limitedPct),
   }
-}
-
-function isStepUpRequired(err: unknown): boolean {
-  if (err instanceof ApiError) {
-    return err.status === 403 && err.message.toLowerCase().includes('step-up')
-  }
-  return false
 }
 
 interface RefreshOptions {
@@ -145,7 +137,6 @@ export function useAdminConfig(enabled: boolean) {
       setConfig(data)
       setForm(configToForm(data))
     } catch (err) {
-      if (isStepUpRequired(err)) throw err
       setError(err instanceof Error ? err.message : 'Failed to save config')
       throw err
     } finally {
@@ -160,7 +151,6 @@ export function useAdminConfig(enabled: boolean) {
       await postAdminPause()
       await refresh({ silent: true })
     } catch (err) {
-      if (isStepUpRequired(err)) throw err
       setError(err instanceof Error ? err.message : 'Failed to pause entries')
       throw err
     } finally {
@@ -175,7 +165,6 @@ export function useAdminConfig(enabled: boolean) {
       await postAdminResume()
       await refresh({ silent: true })
     } catch (err) {
-      if (isStepUpRequired(err)) throw err
       setError(err instanceof Error ? err.message : 'Failed to resume entries')
       throw err
     } finally {

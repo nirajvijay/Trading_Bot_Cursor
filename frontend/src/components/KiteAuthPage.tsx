@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   fetchAuthStatus,
   fetchLoginUrl,
   postCheckToken,
   postKiteStart,
   postSession,
-  postStepUp,
 } from '../api/client'
 import { formatTimeIst } from '../lib/format'
 import type { AuthStatusResponse, CheckTokenResponse, SessionResponse } from '../api/types'
@@ -58,7 +57,7 @@ function kiteBannerFromQuery(): { kind: 'ok' | 'error'; text: string } | null {
   return null
 }
 
-export function KiteAuthPage() {
+export function KiteAuthPage({embedded = false, onTokenChecked}: {embedded?: boolean; onTokenChecked?: () => void}) {
   const [status, setStatus] = useState<AuthStatusResponse | null>(null)
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
   const [requestToken, setRequestToken] = useState('')
@@ -71,10 +70,6 @@ export function KiteAuthPage() {
   const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null)
   const [logMessage, setLogMessage] = useState('Awaiting input sequence...')
   const [showPaste, setShowPaste] = useState(false)
-  const [showStepUp, setShowStepUp] = useState(false)
-  const [stepUpPassword, setStepUpPassword] = useState('')
-  const [stepUpTotp, setStepUpTotp] = useState('')
-  const [pendingAfterStepUp, setPendingAfterStepUp] = useState<'kite-start' | 'paste' | null>(null)
   const [kiteBanner, setKiteBanner] = useState(kiteBannerFromQuery)
 
   const loadStatus = useCallback(async () => {
@@ -82,7 +77,10 @@ export function KiteAuthPage() {
     try {
       const data = await fetchAuthStatus()
       setStatus(data)
-      setError(null)
+      setLastCheck(data.token_valid == null ? null : {
+        valid: data.token_valid, message: 'Last server token check', user_id: data.token_user_id,
+      })
+      setLastCheckedAt(data.token_checked_at ?? null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load auth status')
       setLogMessage('Status load failed.')
@@ -134,16 +132,12 @@ export function KiteAuthPage() {
       const msg = err instanceof Error ? err.message : 'Failed to start Kite login'
       setError(msg)
       setLogMessage(msg)
-      if (msg.toLowerCase().includes('step-up')) {
-        setShowStepUp(true)
-      }
       setActionLoading(false)
     }
   }
 
   async function handleStartKiteLogin() {
-    setPendingAfterStepUp('kite-start')
-    setShowStepUp(true)
+    await runKiteStart()
   }
 
   async function finalizePasteLogin() {
@@ -168,31 +162,6 @@ export function KiteAuthPage() {
       setError(msg)
       setLogMessage(msg)
     } finally {
-      setActionLoading(false)
-    }
-  }
-
-  async function handleStepUpSubmit(event: FormEvent) {
-    event.preventDefault()
-    setActionLoading(true)
-    setError(null)
-    try {
-      await postStepUp(stepUpPassword, stepUpTotp.trim() || undefined)
-      const next = pendingAfterStepUp
-      setShowStepUp(false)
-      setStepUpPassword('')
-      setStepUpTotp('')
-      setPendingAfterStepUp(null)
-      if (next === 'paste') {
-        setActionLoading(false)
-        await finalizePasteLogin()
-      } else {
-        await runKiteStart()
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Step-up failed'
-      setError(msg)
-      setLogMessage(msg)
       setActionLoading(false)
     }
   }
@@ -230,9 +199,7 @@ export function KiteAuthPage() {
       setLogMessage('Token input required.')
       return
     }
-    setPendingAfterStepUp('paste')
-    setShowStepUp(true)
-    setLogMessage('Complete step-up to finalize paste login.')
+    await finalizePasteLogin()
   }
 
   async function handleCheckToken() {
@@ -252,6 +219,7 @@ export function KiteAuthPage() {
         setLogMessage(data.message)
       }
       await loadStatus()
+      onTokenChecked?.()
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to check access token'
       setError(msg)
@@ -273,6 +241,114 @@ export function KiteAuthPage() {
   }
 
   const alertMessage = error ?? success
+  const tokenOk = tokenValid === 'YES'
+
+
+  if (embedded) {
+    return (
+      <div className="mc-kite">
+                {(kiteBanner || alertMessage) && (
+          <p
+            className={`mc-notice ${
+              kiteBanner?.kind === 'error' || error ? 'is-error' : ''
+            }`}
+            role={error || kiteBanner?.kind === 'error' ? 'alert' : 'status'}
+          >
+            {kiteBanner?.text ?? alertMessage}
+            {kiteBanner && (
+              <button type="button" className="mc-inline-link" onClick={() => setKiteBanner(null)}>
+                Dismiss
+              </button>
+            )}
+          </p>
+        )}
+
+        <div className="mc-kite-status">
+          {loading && !status ? (
+            <span className="mc-hint">Loading…</span>
+          ) : (
+            <>
+              <span className={tokenOk ? 'mc-status is-ok' : 'mc-status'}>
+                Token {tokenOk ? 'valid' : tokenValid === 'NO' ? 'invalid' : 'unchecked'}
+              </span>
+              <span className="mc-kite-meta">
+                {status?.access_token_present ? 'Present' : 'Missing'}
+                {maskedUserId !== '—' ? ` · ${maskedUserId}` : ''}
+                {lastCheckedAt ? ` · ${formatTimeIst(lastCheckedAt)} IST` : ''}
+              </span>
+            </>
+          )}
+        </div>
+
+        <div className="mc-step-actions">
+          <button
+            type="button"
+            className="mc-btn is-primary"
+            onClick={() => void handleStartKiteLogin()}
+            disabled={actionLoading || loading}
+          >
+            {actionLoading ? 'Working…' : 'Start Kite login'}
+          </button>
+          <button
+            type="button"
+            className="mc-btn"
+            onClick={() => void handleCheckToken()}
+            disabled={actionLoading || loading}
+          >
+            Check token
+          </button>
+          <button
+            type="button"
+            className="mc-inline-link"
+            onClick={() => setShowPaste((v) => !v)}
+          >
+            {showPaste ? 'Hide paste login' : 'Paste login'}
+          </button>
+        </div>
+
+        {showPaste && (
+          <div className="mc-kite-paste">
+            <button
+              type="button"
+              className="mc-btn"
+              onClick={() => void handleGenerateLoginUrl()}
+              disabled={actionLoading}
+            >
+              Generate login URL
+            </button>
+            <input
+              readOnly
+              value={loginUrl ?? ''}
+              placeholder="Login URL"
+              className="mc-input"
+            />
+            <button
+              type="button"
+              className="mc-btn"
+              onClick={handleOpenLogin}
+              disabled={!loginUrl || actionLoading}
+            >
+              Open Kite
+            </button>
+            <textarea
+              className="mc-input mc-textarea"
+              placeholder="Paste redirect URL or request_token"
+              value={requestToken}
+              onChange={(e) => setRequestToken(e.target.value)}
+            />
+            <button
+              type="button"
+              className="mc-btn is-primary"
+              onClick={() => void handleGenerateSession()}
+              disabled={actionLoading}
+            >
+              Generate access token
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-background">
@@ -325,52 +401,7 @@ export function KiteAuthPage() {
         </div>
       )}
 
-      {showStepUp && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <form
-            onSubmit={(e) => void handleStepUpSubmit(e)}
-            className="w-full max-w-sm bg-white border border-outline-variant p-4 space-y-3"
-          >
-            <h2 className="text-sm font-bold text-on-surface">Confirm step-up</h2>
-            <p className="text-[11px] text-on-surface-variant">
-              Password{status?.access_token_present ? '' : ''} and MFA (if enabled) required before
-              changing the Kite token.
-            </p>
-            <input
-              type="password"
-              className="w-full border border-outline-variant px-2 py-1.5 text-sm"
-              placeholder="Password"
-              value={stepUpPassword}
-              onChange={(e) => setStepUpPassword(e.target.value)}
-              required
-            />
-            <input
-              className="w-full border border-outline-variant px-2 py-1.5 text-sm font-data"
-              placeholder="MFA code (if enabled)"
-              value={stepUpTotp}
-              onChange={(e) => setStepUpTotp(e.target.value)}
-            />
-            <div className="flex gap-2 justify-end">
-              <button
-                type="button"
-                className="px-3 py-1.5 text-[10px] label-caps border border-outline-variant"
-                onClick={() => setShowStepUp(false)}
-                disabled={actionLoading}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-3 py-1.5 text-[10px] label-caps bg-primary text-white font-bold disabled:opacity-50"
-                disabled={actionLoading}
-              >
-                Confirm
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
+      
       <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-2 gap-3 p-4 overflow-hidden">
         <section className="bg-white border border-outline-variant flex flex-col min-h-0 overflow-hidden">
           <div className="shrink-0 px-3 py-2 border-b border-outline-variant bg-surface-container-low">
@@ -442,7 +473,7 @@ export function KiteAuthPage() {
             <ul className="text-[10px] text-on-surface-variant space-y-0.5 list-disc pl-4 leading-snug">
               <li>Updates server secrets store only. Does not place orders.</li>
               <li>API secrets and raw tokens are never shown in the UI.</li>
-              <li>Token changes require website step-up authentication.</li>
+              <li>Website sign-in uses password and MFA. After login, Kite token setup uses your session only.</li>
             </ul>
           </section>
 

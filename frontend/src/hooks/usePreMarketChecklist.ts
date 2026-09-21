@@ -23,12 +23,15 @@ export function usePreMarketChecklist(sessionDate: string, enabled: boolean) {
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
       const result = await fetchPreMarketChecklist(sessionDate)
       setData(result)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load checklist')
+      setError(err instanceof Error && err.name === 'TimeoutError'
+        ? 'Checklist checks took longer than two minutes. Please retry; readiness has not been confirmed.'
+        : err instanceof Error ? err.message : 'Failed to load checklist')
     } finally {
       setLoading(false)
     }

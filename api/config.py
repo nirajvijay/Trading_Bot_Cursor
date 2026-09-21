@@ -85,11 +85,51 @@ def trading_engine_status_file() -> Path:
     )
 
 
-def trading_engine_db_path() -> Path:
-    override = os.environ.get("TRADING_ENGINE_DB_PATH")
+def trading_engine_legacy_db_path() -> Path:
+    """Pre-clean-start ledger. Archive source only — never the active PAPER path."""
+    override = os.environ.get("TRADING_ENGINE_LEGACY_DB_PATH")
     if override:
         return Path(override).expanduser()
     return local_data_dir() / "trading_engine.db"
+
+
+def trading_engine_v1_paper_db_path() -> Path:
+    """Dedicated V1 PAPER ledger namespace (not shared with LIVE)."""
+    override = os.environ.get("TRADING_ENGINE_V1_PAPER_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+    return local_data_dir() / "trading_engine_v1_paper.db"
+
+
+def trading_engine_db_path() -> Path:
+    """Active API/PAPER trading ledger.
+
+    Defaults to the V1 PAPER-only namespace. Tests may override via
+    TRADING_ENGINE_DB_PATH. LIVE execution must refuse paper-only paths.
+    """
+    override = os.environ.get("TRADING_ENGINE_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+    return trading_engine_v1_paper_db_path()
+
+
+def trading_engine_paper_account_db_path(ledger: Path | None = None) -> Path:
+    """Durable PaperBroker SQLite beside the active PAPER ledger."""
+    base = Path(ledger) if ledger is not None else trading_engine_db_path()
+    # Prefer trading_engine_v1_paper_account.db over ..._v1_paper_paper_account.db.
+    if base.name == "trading_engine_v1_paper.db" or base.stem.endswith("_v1_paper"):
+        return base.with_name("trading_engine_v1_paper_account.db")
+    return base.with_name(base.stem + "_paper_account.db")
+
+
+def is_paper_only_ledger_path(path: Path) -> bool:
+    """True when path is the V1 PAPER-only namespace (by resolved path or name)."""
+    resolved = Path(path).expanduser().resolve()
+    paper = trading_engine_v1_paper_db_path().expanduser().resolve()
+    if resolved == paper:
+        return True
+    name = resolved.name
+    return name == "trading_engine_v1_paper.db" or name.endswith("_v1_paper.db")
 
 
 def trading_engine_stop_file() -> Path:

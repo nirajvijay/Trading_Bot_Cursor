@@ -61,6 +61,27 @@ class ControlTests(unittest.TestCase):
     def approve(self,**extra):
         return self.command("approve_entry",setup_id="signal",continuation_rule_version="v1",**extra)
 
+    def test_auto_trail_default_is_armed_and_frozen_per_trade(self):
+        admin = AdminConfigStore(self.admin_path)
+        admin.update_config({"auto_trail_default_enabled":0},actor="test")
+        self.assertEqual(admin.load_effective_payload()["auto_trail_default_enabled"],1)
+        self.version = admin.active_version_id()
+        admin.close()
+        self.arm()
+        result = self.approve(qty_override=5)
+        self.assertEqual(result["state"],"succeeded",result)
+        trade = self.store.get_trade(result["result"]["trade_id"])
+        self.assertFalse(trade.auto_trail_enabled)
+        self.assertTrue(trade.auto_trail_owner_disabled)
+        admin = AdminConfigStore(self.admin_path)
+        admin.update_config({"auto_trail_default_enabled":1},actor="test")
+        admin.arm_effective_config(actor="test")
+        admin.close()
+        self.cycle.tick()
+        self.assertFalse(self.store.get_trade(trade.trade_id).auto_trail_enabled)
+        self.cycle.set_auto_trail(trade.trade_id,enabled=True)
+        self.assertTrue(self.store.get_trade(trade.trade_id).auto_trail_enabled)
+
     def test_disarmed_blocks_then_manual_never_auto_submits(self):
         self.cycle.tick()
         self.assertEqual(self.broker.market_place_count,0)

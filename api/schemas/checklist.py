@@ -57,7 +57,7 @@ class KiteAuthCheck(BaseModel):
     masked_access_token: Optional[str] = None
     token_validated_today: bool = False
     token_checked_at: Optional[str] = None
-    copy_command: str = "python3 login.py --check-token"
+    token_generated_at: Optional[str] = None
     generate_action: Optional[GenerateAction] = None
 
 

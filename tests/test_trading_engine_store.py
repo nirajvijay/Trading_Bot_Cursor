@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from trading_engine_store import TradingEngineStore, make_broker_tag, make_trade_id
@@ -16,6 +17,20 @@ class StoreTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def test_latest_run_same_second_uses_newest_insert_after_reopen(self):
+        store = TradingEngineStore(self.path)
+        with patch('trading_engine_store._utc_now', return_value='2026-08-17T08:30:00+00:00'):
+            first = store.start_run(session_date='2026-08-17', live_orders_enabled=False, pid=1)
+            second = store.start_run(session_date='2026-08-17', live_orders_enabled=False, pid=2)
+        self.assertNotEqual(first, second)
+        self.assertEqual(store.latest_run()['run_id'], second)
+        store.close()
+        reopened = TradingEngineStore(self.path)
+        try:
+            self.assertEqual(reopened.latest_run()['run_id'], second)
+        finally:
+            reopened.close()
 
     def test_events_survive_reopen(self) -> None:
         store = TradingEngineStore(self.path)

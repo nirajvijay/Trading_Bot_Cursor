@@ -78,18 +78,12 @@ def require_step_up(
     request: Request,
     ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> WebAuthContext:
-    """Require recent step-up (~10 min) for Kite token-changing actions."""
-    if ctx.auth_disabled:
-        return ctx
-    store = get_web_auth_store()
-    # Refresh session from store in case step-up was just granted.
-    session = store.get_session(ctx.session.id)
-    if session is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    if not store.has_valid_step_up(session):
-        raise HTTPException(status_code=403, detail="Step-up authentication required")
-    ctx.session = session
-    request.state.web_auth = ctx
+    """Post-login step-up re-auth is disabled for this single-owner cockpit.
+
+    Sign-in still requires password (+ MFA when enabled). After that, a valid
+    website session + CSRF is enough for mutating owner actions.
+    """
+    _ = request
     return ctx
 
 

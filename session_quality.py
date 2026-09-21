@@ -97,9 +97,9 @@ def load_session_minutes(
         SELECT DISTINCT substr(candle_time, 12, 5)
         FROM {table}
         WHERE instrument_token = ?
-          AND substr(candle_time, 1, 10) = ?
+          AND candle_time >= ? AND candle_time < ?
         """,
-        (instrument_token, session_date),
+        (instrument_token, session_date, session_date + "~"),
     ).fetchall()
     minutes: list[int] = []
     for (hm,) in rows:
@@ -141,10 +141,10 @@ def list_candidate_session_dates(
             SELECT DISTINCT substr(candle_time, 1, 10) AS session_date
             FROM {table}
             WHERE instrument_token = ?
-              AND substr(candle_time, 1, 10) <= ?
+              AND candle_time < ?
             ORDER BY session_date DESC
             """,
-            (instrument_token, as_of),
+            (instrument_token, as_of + "~"),
         ).fetchall()
     else:
         rows = conn.execute(

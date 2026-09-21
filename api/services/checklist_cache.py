@@ -19,7 +19,7 @@ from universe_manifest import MANIFEST_FILENAME, default_manifest_path, symbol_l
 
 IST = ZoneInfo("Asia/Kolkata")
 CACHE_FILENAME = "checklist_cache.json"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _ensure_dir(path: Path) -> None:

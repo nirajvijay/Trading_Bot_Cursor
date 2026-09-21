@@ -1,29 +1,78 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AppFooter } from './components/AppFooter'
+import { AppSidebar } from './components/AppSidebar'
 import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
-import { ApiError, fetchMe, postLogin, postLogout, setAuthHandlers } from './api/client'
-import { KiteAuthPage } from './components/KiteAuthPage'
+import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
-import { RadarHeatMap } from './components/RadarHeatMap'
-import { AdminConsolePage } from './components/admin/AdminConsolePage'
-import { TradingEnginePage } from './components/TradingEnginePage'
-import { StationConsoleShell } from './components/StationConsoleShell'
-import { type AppTab } from './components/TopAppBar'
+import { SectorBoard } from './components/SectorBoard'
+import { PublicHome } from './components/PublicHome'
+import { PrivateStatusStrip } from './components/PrivateStatusStrip'
+import { AdminWorkspace } from './components/admin/AdminWorkspace'
+import { TradingDesk } from './components/TradingDesk'
+import { StatusStrip } from './components/StatusStrip'
+import { TopAppBar, type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
+import { FeedAlertBanner } from './components/FeedAlertBanner'
 import { resolveFeedStatus, resolveRunnerPresence } from './lib/feedStatus'
-import { mergeKiteAuthStatus, computeEffectiveOverallStatus } from './hooks/usePreMarketChecklist'
-import type { MeResponse } from './api/types'
+import type { MeResponse, RadarRow } from './api/types'
+
+function exportCsv(rows: RadarRow[]) {
+  const headers = [
+    'Symbol',
+    'Last 1m Close',
+    '% Change',
+    'Phase',
+    'Direction',
+    'Spike',
+    'Pullback',
+    'Continuation',
+    'Volume',
+    'Trigger Price',
+    'Distance %',
+    'Last Event',
+    'Updated',
+  ]
+  const lines = rows.map((r) =>
+    [
+      r.symbol,
+      r.last_1m_close ?? '',
+      r.pct_change ?? '',
+      r.phase,
+      r.direction ?? '',
+      r.spike,
+      r.pullback,
+      r.continuation,
+      r.volume ?? '',
+      r.trigger_price ?? '',
+      r.distance_pct ?? '',
+      r.last_event,
+      r.updated_at ?? '',
+    ].join(','),
+  )
+  const blob = new Blob([[headers.join(','), ...lines].join('\n')], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'nifty100-radar.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 export default function App() {
+  // The public route mounts no authenticated hooks and makes no private API calls.
+  return window.location.pathname === '/' ? <PublicHome /> : <OwnerApp />
+}
+
+function OwnerApp() {
   const [me, setMe] = useState<MeResponse | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [authChecked, setAuthChecked] = useState(false)
-  const [activeTab, setActiveTab] = useState<AppTab>('radar')
+  const [activeTab, setActiveTab] = useState<AppTab>('checklist')
   const [sessionDate, setSessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
   const authenticated = Boolean(me)
@@ -36,6 +85,7 @@ export default function App() {
     sessions,
     loading,
     error,
+    refresh: refreshRadar,
   } = useRadarDashboard(sessionDate, 5000, radarEnabled)
   const {
     data: checklistData,
@@ -43,7 +93,10 @@ export default function App() {
     error: checklistError,
     refresh: refreshChecklist,
   } = usePreMarketChecklist(sessionDate, authenticated)
-  const { refresh: refreshObservationReadiness } = useObservationReadiness(sessionDate, radarEnabled)
+  const {
+    readiness: observationReadiness,
+    refresh: refreshObservationReadiness,
+  } = useObservationReadiness(sessionDate, radarEnabled)
   const refreshAfterTokenCheck = useCallback(async () => {
     await Promise.all([refreshChecklist(), refreshObservationReadiness()])
   }, [refreshChecklist, refreshObservationReadiness])
@@ -52,6 +105,9 @@ export default function App() {
     checklistData,
     refreshAfterTokenCheck,
   )
+  const [startingObservation, setStartingObservation] = useState(false)
+  const [observationError, setObservationError] = useState<string | null>(null)
+
   const clearSession = useCallback(() => {
     setMe(null)
   }, [])
@@ -94,6 +150,7 @@ export default function App() {
   const handleLogin = useCallback(async (username: string, password: string, totp?: string) => {
     const data = await postLogin(username, password, totp)
     setMe(data)
+    setActiveTab('checklist')
   }, [])
 
   const handleLogout = useCallback(async () => {
@@ -105,12 +162,27 @@ export default function App() {
     clearSession()
   }, [clearSession])
 
+
+  const handleStartObservation = useCallback(async () => {
+    setStartingObservation(true)
+    setObservationError(null)
+    try {
+      await postStartObservation(sessionDate)
+      await Promise.all([refreshRadar(), refreshObservationReadiness()])
+    } catch (err) {
+      setObservationError(err instanceof Error ? err.message : 'Failed to start observation')
+    } finally {
+      setStartingObservation(false)
+    }
+  }, [sessionDate, refreshRadar, refreshObservationReadiness])
+
   const filteredRows = useMemo(() => {
     const q = search.trim().toUpperCase()
     if (!q) return rows
     return rows.filter((r) => r.symbol.includes(q))
   }, [rows, search])
 
+  const observationReadinessForUi = observationReadiness
   const runnerPresence = resolveRunnerPresence(status, statusFetchOk)
   const feedStatus = resolveFeedStatus(status, runnerPresence)
 
@@ -118,30 +190,6 @@ export default function App() {
     await refreshChecklist()
     await refreshObservationReadiness()
   }, [refreshChecklist, refreshObservationReadiness])
-
-  const brokerAuthOk = useMemo(() => {
-    if (!checklistData) return false
-    const kiteBase = checklistData.areas.kite_auth
-    const tokenValidatedFromApi = kiteBase.token_validated_today === true
-    const kiteStatus = mergeKiteAuthStatus(
-      kiteBase.status,
-      tokenCheck !== null || tokenValidatedFromApi,
-      tokenCheck?.valid ?? (tokenValidatedFromApi ? true : null),
-    )
-    return kiteStatus === 'ok'
-  }, [checklistData, tokenCheck])
-
-  const checklistGateLocked = useMemo(() => {
-    if (!checklistData) return true
-    const kiteBase = checklistData.areas.kite_auth
-    const tokenValidatedFromApi = kiteBase.token_validated_today === true
-    const kiteStatus = mergeKiteAuthStatus(
-      kiteBase.status,
-      tokenCheck !== null || tokenValidatedFromApi,
-      tokenCheck?.valid ?? (tokenValidatedFromApi ? true : null),
-    )
-    return computeEffectiveOverallStatus(checklistData, kiteStatus) !== 'ok'
-  }, [checklistData, tokenCheck])
 
   if (!authChecked || authLoading) {
     return (
@@ -168,61 +216,68 @@ export default function App() {
   }
 
   return (
-    <StationConsoleShell
-      activeTab={activeTab}
-      onTabChange={setActiveTab}
-      sessionDate={sessionDate}
-      sessions={sessions}
-      onSessionChange={setSessionDate}
-      search={search}
-      onSearchChange={setSearch}
-      username={me?.username}
-      onLogout={() => void handleLogout()}
-      coverage={coverage}
-      status={status}
-      runnerPresence={runnerPresence}
-      feedStatus={feedStatus}
-      brokerAuthOk={brokerAuthOk}
-      checklistGateLocked={checklistGateLocked}
-    >
-      <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
-        {activeTab === 'radar' ? (
-          <>
-            {error && (
-              <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm shrink-0">
-                {error}
-              </div>
-            )}
-            <RadarHeatMap
-              rows={filteredRows}
-              loading={loading}
-              sessionDate={sessionDate}
-              search=""
+    <div className="flex h-full overflow-hidden">
+      <AppSidebar activeTab={activeTab} onTabChange={setActiveTab} />
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+        <TopAppBar
+          activeTab={activeTab}
+          sessionDate={sessionDate}
+          coverage={coverage}
+          status={status}
+          sessions={sessions}
+          onSessionChange={setSessionDate}
+          search={search}
+          onSearchChange={setSearch}
+          username={me?.username}
+          onLogout={() => void handleLogout()}
+        />
+        <PrivateStatusStrip />
+        <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          {activeTab === 'radar' ? (
+            <>
+              <StatusStrip
+                coverage={coverage}
+                status={status}
+                runnerPresence={runnerPresence}
+                observationReadiness={observationReadinessForUi}
+                startingObservation={startingObservation}
+                observationError={observationError}
+                onStartObservation={() => void handleStartObservation()}
+                onExport={() => exportCsv(filteredRows)}
+              />
+              <FeedAlertBanner feed={feedStatus} />
+              {error && (
+                <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm shrink-0">
+                  {error}
+                </div>
+              )}
+              <SectorBoard
+                rows={rows}
+                loading={loading}
+                sessionDate={sessionDate}
+                search={search}
+              />
+            </>
+          ) : activeTab === 'checklist' ? (
+            <PreMarketChecklistPage
+              data={checklistData}
+              loading={checklistLoading}
+              error={checklistError}
+              onRefresh={handleChecklistRefresh}
+              onGoToAuth={() => setActiveTab('checklist')}
+              tokenCheck={tokenCheck}
+              tokenCheckedAt={tokenCheckedAt}
+              tokenChecking={tokenChecking}
+              onCheckToken={checkToken}
             />
-          </>
-        ) : activeTab === 'checklist' ? (
-          <PreMarketChecklistPage
-            data={checklistData}
-            loading={checklistLoading}
-            error={checklistError}
-            onRefresh={handleChecklistRefresh}
-            onGoToAuth={() => setActiveTab('auth')}
-            tokenCheck={tokenCheck}
-            tokenCheckedAt={tokenCheckedAt}
-            tokenChecking={tokenChecking}
-            onCheckToken={checkToken}
-          />
-        ) : activeTab === 'trading' ? (
-          <TradingEnginePage sessionDate={sessionDate} />
-        ) : activeTab === 'admin' ? (
-          <AdminConsolePage />
-        ) : (
-          <KiteAuthPage />
-        )}
-      </main>
-      {activeTab !== 'checklist' && (
+          ) : activeTab === 'trading' ? (
+            <TradingDesk sessionDate={sessionDate} />
+          ) : (
+            <AdminWorkspace />
+          )}
+        </main>
         <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
-      )}
-    </StationConsoleShell>
+      </div>
+    </div>
   )
 }

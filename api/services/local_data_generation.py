@@ -239,8 +239,28 @@ def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple
             return False, f"Failed to start generation: {exc}"
 
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "Unknown error").strip()
-            tail = "\n".join(detail.splitlines()[-8:])
+            detail = (result.stdout or result.stderr or "Unknown error").strip()
+            # Prefer the generator's own summary lines when present (honest as-of).
+            lines = [ln for ln in detail.splitlines() if ln.strip()]
+            if task == "baselines" and lines:
+                useful = [
+                    ln
+                    for ln in lines
+                    if any(
+                        key in ln.lower()
+                        for key in (
+                            "requested",
+                            "wrote",
+                            "reason",
+                            "as_of",
+                            "incomplete",
+                            "baseline generation",
+                        )
+                    )
+                ]
+                tail = "\n".join((useful or lines)[-12:])
+            else:
+                tail = "\n".join(lines[-8:])
             return False, f"Generation failed (exit {result.returncode}):\n{tail}"
 
         from api.services.checklist_cache import invalidate_checklist_cache

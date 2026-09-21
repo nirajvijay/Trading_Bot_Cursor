@@ -14,8 +14,7 @@ from api import config
 from api.admin_config.store import AdminConfigStore
 from api.auth.deps import (
     require_web_session,
-    require_web_session_mutating,
-    require_step_up, WebAuthContext,
+    require_web_session_mutating, WebAuthContext,
 )
 from api.queries.trading import load_snapshot
 from api.schemas.trading import (
@@ -40,6 +39,26 @@ from trading_engine_store import TradingEngineStore
 from trading_engine_types import DEFAULT_TOTAL_CAPITAL, DEMO_LEVERAGE_FACTOR
 
 router = APIRouter(prefix="/trading-engine", tags=["trading-engine"])
+
+
+@router.get("/report", dependencies=[Depends(require_web_session)])
+def trading_report(session_date: str, download: bool = False):
+    from datetime import date
+    from fastapi.responses import JSONResponse
+    from trading_engine_report import session_report
+    try:
+        day = date.fromisoformat(session_date).isoformat()
+    except ValueError:
+        raise HTTPException(400, "invalid_session_date")
+    store = TradingEngineStore(config.trading_engine_db_path())
+    try:
+        report = session_report(store, day)
+    finally:
+        store.close()
+    headers = {"Cache-Control": "no-store"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="nifty-radar-{day}.json"'
+    return JSONResponse(report, headers=headers)
 
 
 def _session_date(session_date: Optional[str]) -> str:
@@ -111,7 +130,7 @@ def trading_snapshot(
 @router.post(
     "/start",
     response_model=TradingStartResponse,
-    dependencies=[Depends(require_step_up)],
+    dependencies=[Depends(require_web_session_mutating)],
 )
 def trading_start(
     body: TradingStartRequest = Body(default_factory=TradingStartRequest),
@@ -215,7 +234,7 @@ def trading_auto_trail(
 
 
 @router.post("/commands", status_code=202)
-def trading_command(body: TradingCommandRequest, ctx: WebAuthContext = Depends(require_step_up)) -> dict:
+def trading_command(body: TradingCommandRequest, ctx: WebAuthContext = Depends(require_web_session_mutating)) -> dict:
     if body.kind in {"close_position","trail_stop","set_auto_trail"} and not body.trade_id:
         raise HTTPException(400,"trade_id_required")
     if body.kind == "trail_stop" and body.new_stop is None:
@@ -271,11 +290,70 @@ def trading_command_status(command_id: int) -> dict:
 def trading_setups() -> dict:
     from trading_engine_handoff import fetch_triggered_since
     from trading_engine_quotes import age_seconds
+    from trading_engine_v1_paper_clean_start import (
+        candidate_blocked_by_clean_start,
+        max_aware_instant_iso,
+        require_paper_v1_ready,
+    )
     now = datetime.now(timezone.utc)
     day = _session_date(None)
-    candidates = fetch_triggered_since(config.live_db_path(), created_at_gte=day)
-    return {"setups":[{**asdict(c), "signal_age_seconds":age_seconds(now,c.trigger_exchange_ts)}
-                       for c in candidates if c.session_date == day][-100:]}
+    boundary = None
+    floor = day
+    store = TradingEngineStore(config.trading_engine_db_path())
+    try:
+        require_paper_v1_ready(store)
+        boundary = store.signal_accept_not_before()
+        if boundary:
+            # Prefer durable boundary over bare session-date floor when both apply.
+            floor = max_aware_instant_iso(day + "T00:00:00+00:00", boundary, field="setups_floor")
+    finally:
+        store.close()
+    candidates = fetch_triggered_since(config.live_db_path(), created_at_gte=floor)
+    setups = []
+    for c in candidates:
+        if c.session_date != day:
+            continue
+        if candidate_blocked_by_clean_start(c, boundary):
+            continue
+        setups.append({**asdict(c), "signal_age_seconds": age_seconds(now, c.trigger_exchange_ts)})
+    return {"setups": setups[-100:]}
+
+
+@router.get("/trades/{trade_id}/audit", dependencies=[Depends(require_web_session)])
+def trading_trade_audit(trade_id: str) -> dict:
+    """Persisted accounting and immutable plan; never refresh through broker writes."""
+    store = TradingEngineStore(config.trading_engine_db_path())
+    try:
+        trade = store.get_trade(trade_id)
+        if trade is None:
+            raise HTTPException(404, "trade_not_found")
+        raw = asdict(trade)
+        original = raw.pop("original_setup_json", None)
+        try:
+            original = json.loads(original) if original else None
+        except (ValueError, TypeError):
+            original = None
+        events = []
+        for row in store.list_events(trade_id):
+            event = dict(row)
+            event["payload"] = json.loads(event.pop("payload_json") or "{}")
+            events.append(event)
+        from api.queries.trading import live_trade_mark, current_run_heartbeat
+        from api.services.trading_engine_runner import read_heartbeat
+        from trading_engine_cycle import feed_age_seconds_from_runner_status
+        now = datetime.now(timezone.utc)
+        feed_age = feed_age_seconds_from_runner_status(config.RUNNER_STATUS_FILE, now=now,
+                                                       expected_session_date=trade.session_date)
+        heartbeat = current_run_heartbeat(read_heartbeat() or {}, store.latest_run(),
+            running=is_engine_running(), session_date=_session_date(None))
+        mark = live_trade_mark(trade, heartbeat, now, feed_age)
+        return {"trade": raw, "original_setup": original, "live_mark": mark,
+                "original_setup_available": original is not None,
+                "events": events, "orders": [dict(r) for r in store.list_order_links(trade_id)],
+                "as_of": datetime.now(timezone.utc).isoformat(),
+                "source": "durable_reconciliation_snapshot"}
+    finally:
+        store.close()
 
 
 @router.post("/preview", dependencies=[Depends(require_web_session_mutating)])
@@ -292,11 +370,23 @@ def trading_preview(body: TradingPreviewRequest) -> dict:
         run = store.latest_run()
         if run is None:
             raise HTTPException(409,"start_engine_first")
+        from trading_engine_v1_paper_clean_start import (
+            candidate_blocked_by_clean_start,
+            max_aware_instant_iso,
+            require_paper_v1_ready,
+        )
+        require_paper_v1_ready(store)
         day = _session_date(None)
-        candidates = [c for c in fetch_triggered_since(config.live_db_path(), created_at_gte=day)
+        boundary = store.signal_accept_not_before()
+        floor = day
+        if boundary:
+            floor = max_aware_instant_iso(day + "T00:00:00+00:00", boundary, field="preview_floor")
+        candidates = [c for c in fetch_triggered_since(config.live_db_path(), created_at_gte=floor)
             if c.setup_id == body.setup_id and c.continuation_rule_version == body.continuation_rule_version and c.session_date == day]
         if len(candidates) != 1:
             raise HTTPException(404,"setup_missing_or_ambiguous")
+        if candidate_blocked_by_clean_start(candidates[0], boundary):
+            raise HTTPException(409, "setup_before_clean_start_boundary")
         try:
             broker = KiteBroker(_get_kite(), live_orders_enabled=False)
         except Exception as exc:
@@ -315,6 +405,11 @@ def trading_preview(body: TradingPreviewRequest) -> dict:
 
 @router.get("/control", dependencies=[Depends(require_web_session)])
 def trading_control() -> dict:
+    from api.queries.trading import (
+        control_incident_trade,
+        control_recovery_events,
+        current_run_heartbeat,
+    )
     from api.admin_config.store import AdminConfigStore
     from api.services.trading_engine_runner import read_heartbeat
     from trading_engine_quotes import age_seconds
@@ -327,9 +422,8 @@ def trading_control() -> dict:
         run = store.latest_run()
         arm = store.session_arm(day)
         running = is_engine_running()
-        heartbeat = read_heartbeat() or {}
-        if heartbeat.get("session_date") != day:
-            heartbeat = {}
+        heartbeat = current_run_heartbeat(read_heartbeat() or {}, run,
+            running=running, session_date=day)
         feed_age = feed_age_seconds_from_runner_status(config.RUNNER_STATUS_FILE,now=now,expected_session_date=day)
         sync_age = age_seconds(now,heartbeat.get("broker_sync_at"))
         loss = heartbeat.get("loss_halt") or {}
@@ -339,13 +433,20 @@ def trading_control() -> dict:
         else:
             mark_age = None
         trades = store.list_trades(None)
-        incidents = [asdict(t) for t in trades if t.status == "reconciliation_required"]
-        recovery_events = [dict(r) for r in store.list_events("__recovery__")][-100:]
+        incidents = [asdict(t) for t in trades if control_incident_trade(t)]
+        recovery_events = control_recovery_events(store, limit=100)
         effective = admin.load_effective_payload()
         saved = admin.load_active_payload()
         permission = "disarmed"
-        if arm and arm["armed"] and run and arm["run_id"] == run["run_id"]:
-            permission = "paused" if admin.read_entries_paused() else "armed"
+        if running and arm and arm["armed"] and run and arm["run_id"] == run["run_id"]:
+            if admin.read_entries_paused() or heartbeat.get("draining"):
+                permission = "paused"
+            elif incidents or heartbeat.get("recovery_unresolved") or loss.get("halted"):
+                permission = "recovery_required"
+            elif sync_age is None or sync_age >= 5 or feed_age is None or feed_age >= 5:
+                permission = "data_not_ready"
+            else:
+                permission = "armed"
         return {"run":dict(run) if run else None,"arm":arm,
             "strip":{"execution_mode":"LIVE" if run and run["live_orders_enabled"] else "PAPER",
                 "entry_mode":arm["entry_mode"] if arm else "MANUAL","entry_permission":permission,

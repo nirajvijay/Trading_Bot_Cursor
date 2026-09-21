@@ -36,6 +36,9 @@ def _flat(cycle):
 
 
 def _arm(cycle, payload, actor):
+    from trading_engine_v1_paper_clean_start import require_paper_v1_ready
+
+    require_paper_v1_ready(cycle.store)
     mode = payload.get("execution_mode", "PAPER")
     entry_mode = payload.get("entry_mode", "MANUAL")
     if mode not in {"PAPER","LIVE"} or entry_mode not in {"MANUAL","AUTOPILOT"}:

@@ -105,11 +105,23 @@ class PaperTests(unittest.TestCase):
         self.assertIsNone(self.broker.position_quote("AAA").pnl)
 
     def test_real_cycle_manual_restart_rearm_and_close_preserves_account(self):
+        self._exercise_session("MANUAL")
+
+    def test_real_cycle_autopilot_restart_close_and_daily_report(self):
+        self._exercise_session("AUTOPILOT")
+
+    def _exercise_session(self, entry_mode):
         from api.admin_config.store import AdminConfigStore
         from trading_engine_cycle import TradingEngineCycle
         from trading_engine_store import TradingEngineStore
         from tests.test_trading_engine_cycle import _seed_live
+        from api import config
+        from api.services.checklist_cache import write_checklist_cache
         root = Path(self.tmp.name)
+        for target, value in (("runtime_cache_dir", lambda: root), ("LOCAL_DATA_DIR", root)):
+            override = patch.object(config, target, value)
+            override.start()
+            self.addCleanup(override.stop)
         admin_path, live_path = root/"admin.db", root/"live.db"
         admin = AdminConfigStore(admin_path)
         admin.update_config({"round_trip_charge_bps": 0, "estimated_slippage_bps": 0}, actor="test")
@@ -126,7 +138,6 @@ class PaperTests(unittest.TestCase):
                 session_date="2026-08-17", started_at=NOW.isoformat(), run_id=run,
                 live_orders_enabled=False, admin_config_db=admin_path,
                 clock_fn=lambda: NOW, feed_age_seconds_fn=lambda: 0)
-            cycle._arming_readiness = lambda: True
             return cycle
         cycle = new_cycle()
         def command(kind, **payload):
@@ -135,21 +146,32 @@ class PaperTests(unittest.TestCase):
             cycle.process_commands()
             return store.command_record(cid)
         def arm():
-            result = command("arm_session", execution_mode="PAPER", entry_mode="MANUAL",
+            result = command("arm_session", execution_mode="PAPER", entry_mode=entry_mode,
                              run_id=cycle.run_id, config_version_id=version)
             self.assertEqual(result["state"], "succeeded", result)
         try:
+            blocked = command("arm_session", execution_mode="PAPER", entry_mode=entry_mode,
+                              run_id=cycle.run_id, config_version_id=version)
+            self.assertEqual(blocked["state"], "failed", blocked)
+            self.assertEqual(self.broker.limit_place_count, 0)
+            # Exercise the production checklist cache/readiness path using isolated
+            # evidence. This is not a claim that real market preparation was run.
+            write_checklist_cache({"session_date":"2026-08-17", "overall_status":"ok"})
             arm()
-            result = command("approve_entry", setup_id="paper-signal", continuation_rule_version="v1", qty_override=5)
-            self.assertEqual(result["state"], "succeeded", result)
+            if entry_mode == "MANUAL":
+                result = command("approve_entry", setup_id="paper-signal", continuation_rule_version="v1", qty_override=5)
+                self.assertEqual(result["state"], "succeeded", result)
+            else:
+                cycle.tick()
             original = store.list_trades(None)[0]
-            self.assertEqual(original.protected_qty, 5)
+            expected_qty = 5 if entry_mode == "MANUAL" else 81
+            self.assertEqual(original.protected_qty, expected_qty)
             cycle.close()
             self.broker.close()
             self.broker = self.open()
             cycle = new_cycle()
             cycle.tick()
-            self.assertEqual(self.broker.net_position_qty("AAA"), 5)
+            self.assertEqual(self.broker.net_position_qty("AAA"), expected_qty)
             self.assertEqual(self.broker.limit_place_count, 1)
             self.assertIsNotNone(cycle._entry_arm_block_reason())
             arm()
@@ -159,6 +181,17 @@ class PaperTests(unittest.TestCase):
             self.assertEqual(store.get_trade(original.trade_id).status, "closed")
             self.assertEqual(self.broker.market_place_count, 2)
             self.assertFalse(any(o.pending_quantity for o in self.broker.list_orders()))
+            from trading_engine_report import session_report
+            report = session_report(store, "2026-08-17")
+            paper = report["modes"]["PAPER"]
+            self.assertEqual(paper["strategy_outcomes"]["closed_with_complete_prices"], 1)
+            metric = paper["strategy_outcomes"]["trade_execution_metrics"][0]
+            self.assertIsNotNone(metric["first_observed_fill_to_cover_seconds"])
+            self.assertIsNotNone(metric["gross_r_outcome"])
+            self.assertEqual(metric["estimated_round_trip_charges"], 0)
+            self.assertEqual(paper["engineering_quality"]["unresolved_exposure_trade_ids"], [])
+            self.assertEqual(paper["engineering_quality"]["current_unprotected_trade_ids"], [])
+            self.assertEqual(report["modes"]["LIVE"]["strategy_outcomes"]["observed_trade_records"], 0)
         finally:
             cycle.close()
             store.close()

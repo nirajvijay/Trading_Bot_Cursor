@@ -114,6 +114,9 @@ export interface RunnerStatus {
 }
 
 export interface AuthStatusResponse {
+  token_valid?: boolean | null
+  token_checked_at?: string | null
+  token_user_id?: string | null
   api_key_configured: boolean
   api_secret_configured: boolean
   access_token_present: boolean
@@ -225,6 +228,12 @@ export interface HistoricalCandlesCheck {
   expected_count: number
   missing_count: number
   missing_symbols_sample: string[]
+  prior_session_complete?: boolean | null
+  prior_session_completed_symbols?: number
+  bars_on_prior_min?: number | null
+  bars_on_prior_avg?: number | null
+  bars_on_prior_max?: number | null
+  last_candle_time_on_prior?: string | null
   copy_command: string
   db_path?: string | null
   generate_action?: GenerateAction | null
@@ -320,6 +329,7 @@ export interface ObservationStartResponse {
 export type TradingEngineState = 'stopped' | 'starting' | 'running' | 'error' | 'critical'
 
 export interface TradingTradeRow {
+  pnl_provisional?: boolean
   trade_id: string
   setup_id: string
   symbol: string
@@ -383,6 +393,7 @@ export interface TradingStartResponse {
 }
 
 export interface AdminConfigValues {
+  [key: string]: number | string
   per_trade_risk_cap_inr: number
   limited_per_trade_risk_cap_inr: number
   daily_loss_cap_inr: number
@@ -391,6 +402,9 @@ export interface AdminConfigValues {
 }
 
 export interface AdminConfigResponse {
+  effective_values: Record<string, number | string>
+  effective_version_id: string | null
+  pending_next_arm: string[]
   version_id: string
   entries_paused: boolean
   values: AdminConfigValues

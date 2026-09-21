@@ -1,64 +1,22 @@
-import { useCallback, useState, type FormEvent } from 'react'
-import { ApiError, postAdminRollback } from '../../api/client'
+import { useCallback, type FormEvent } from 'react'
+import { postAdminRollback } from '../../api/client'
 import { useAdminConfig } from '../../hooks/useAdminConfig'
 import { formatVwapPercent } from '../../lib/adminVwapPercent'
 import { AdminAuditPanel } from './AdminAuditPanel'
-import { AdminStepUpModal } from './AdminStepUpModal'
-
-type PendingAction = 'save' | 'pause' | 'resume' | 'rollback' | null
 
 export function AdminConsolePage() {
   const admin = useAdminConfig(true)
-  const [stepUpOpen, setStepUpOpen] = useState(false)
-  const [pendingAction, setPendingAction] = useState<PendingAction>(null)
-  const [rollbackTargetId, setRollbackTargetId] = useState<string | null>(null)
-
-  const runPending = useCallback(async () => {
-    if (pendingAction === 'save') {
-      await admin.save()
-    } else if (pendingAction === 'pause') {
-      await admin.pause()
-    } else if (pendingAction === 'resume') {
-      await admin.resume()
-    } else if (pendingAction === 'rollback' && rollbackTargetId) {
-      await postAdminRollback(rollbackTargetId)
-      await admin.refresh({ syncForm: true })
-      setRollbackTargetId(null)
-    }
-    setPendingAction(null)
-  }, [admin, pendingAction, rollbackTargetId])
-
-  async function withStepUp(action: PendingAction, fn: () => Promise<void>, extra?: () => void) {
-    try {
-      await fn()
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 403 && err.message.toLowerCase().includes('step-up')) {
-        extra?.()
-        setPendingAction(action)
-        setStepUpOpen(true)
-        return
-      }
-      throw err
-    }
-  }
-
   const handleRollback = useCallback(
     async (targetVersionId: string) => {
-      await withStepUp(
-        'rollback',
-        async () => {
-          await postAdminRollback(targetVersionId)
-          await admin.refresh({ syncForm: true })
-        },
-        () => setRollbackTargetId(targetVersionId),
-      )
+      await postAdminRollback(targetVersionId)
+      await admin.refresh({ syncForm: true })
     },
     [admin],
   )
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    void withStepUp('save', () => admin.save())
+    void admin.save()
   }
 
   const paused = admin.config?.entries_paused ?? false
@@ -242,7 +200,7 @@ export function AdminConsolePage() {
               <button
                 type="button"
                 disabled={admin.pausing || paused}
-                onClick={() => void withStepUp('pause', () => admin.pause())}
+                onClick={() => void admin.pause()}
                 className="px-3 py-1.5 text-xs border border-amber-300 bg-amber-50 text-amber-900 rounded disabled:opacity-50"
               >
                 {admin.pausing && paused ? '…' : 'Pause entries'}
@@ -250,7 +208,7 @@ export function AdminConsolePage() {
               <button
                 type="button"
                 disabled={admin.pausing || !paused}
-                onClick={() => void withStepUp('resume', () => admin.resume())}
+                onClick={() => void admin.resume()}
                 className="px-3 py-1.5 text-xs border border-emerald-300 bg-emerald-50 text-emerald-900 rounded disabled:opacity-50"
               >
                 {admin.pausing && !paused ? '…' : 'Resume entries'}
@@ -266,19 +224,6 @@ export function AdminConsolePage() {
           )}
         </div>
       </div>
-
-      <AdminStepUpModal
-        open={stepUpOpen}
-        title="Confirm admin action"
-        onClose={() => {
-          setStepUpOpen(false)
-          setPendingAction(null)
-          setRollbackTargetId(null)
-        }}
-        onSuccess={() => {
-          void runPending()
-        }}
-      />
     </div>
   )
 }

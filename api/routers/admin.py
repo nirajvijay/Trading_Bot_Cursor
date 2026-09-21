@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from api import config
 from api.admin_config.store import AdminConfigStore, VersionConflictError
 from api.auth.audit import write_audit
-from api.auth.deps import WebAuthContext, require_step_up, require_web_session, require_web_session_mutating
+from api.auth.deps import WebAuthContext, require_web_session, require_web_session_mutating
 from api.auth.rate_limit import ACTION_ADMIN_CONFIG, check_rate_limit
 from api.queries.trading import load_snapshot
 from api.schemas.admin import (
@@ -107,7 +107,7 @@ def get_admin_config(
 def patch_admin_config(
     request: Request,
     body: AdminConfigPatchRequest,
-    ctx: WebAuthContext = Depends(require_step_up),
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> AdminConfigResponse:
     check_rate_limit(ACTION_ADMIN_CONFIG, request)
     store = _store()
@@ -143,7 +143,7 @@ def patch_admin_config(
 @router.post("/trading/pause", response_model=AdminActionResponse)
 def pause_trading(
     request: Request,
-    ctx: WebAuthContext = Depends(require_step_up),
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> AdminActionResponse:
     check_rate_limit(ACTION_ADMIN_CONFIG, request)
     store = _store()
@@ -171,7 +171,7 @@ def pause_trading(
 @router.post("/trading/resume", response_model=AdminActionResponse, status_code=202)
 def resume_trading(
     request: Request,
-    ctx: WebAuthContext = Depends(require_step_up),
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> AdminActionResponse:
     check_rate_limit(ACTION_ADMIN_CONFIG, request)
     blocked = _resume_preconditions()
@@ -241,7 +241,7 @@ def get_audit(
 def rollback_config(
     request: Request,
     body: AdminRollbackRequest,
-    ctx: WebAuthContext = Depends(require_step_up),
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> AdminConfigResponse:
     check_rate_limit(ACTION_ADMIN_CONFIG, request)
     store = _store()
