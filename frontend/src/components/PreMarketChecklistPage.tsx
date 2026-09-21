@@ -645,87 +645,45 @@ export function PreMarketChecklistPage({
         </div>
       </section>
 
-      {/* Readiness recovery plan */}
-      {showCritical && (
-        <section className="bg-[rgba(255,218,214,0.3)] border border-[rgba(255,218,214,0.7)] flex flex-col gap-3 p-[13px] rounded-[4px] shadow-sm">
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div className="flex gap-3 items-start min-w-0">
-              <div className="bg-[#ba1a1a] drop-shadow-sm flex items-center justify-center rounded-[2px] size-9 shrink-0">
-                <img src="/figma/icon-6.svg" alt="" className="size-[17px]" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex gap-1 items-center flex-wrap">
-                  <p className="font-bold text-[15px] tracking-[-0.375px] text-[#ba1a1a] leading-5">
-                    Recovery Plan
-                  </p>
-                  <span className="bg-[#ba1a1a] inline-flex gap-1 items-center px-1.5 py-0.5 rounded-[2px]">
-                    <span className="size-1.5 rounded-full bg-white" />
-                    <span className="font-mono text-[10px] font-bold uppercase text-white leading-[15px]">
-                      {remainingRecoverySteps} STEPS REMAINING
-                    </span>
-                  </span>
-                  <span className="bg-[#ffdad6] border border-[rgba(255,218,214,0.5)] px-[7px] py-[3px] rounded-[2px] font-mono text-[10px] font-bold uppercase text-[#93000a] leading-[15px]">
-                    PIPELINE HALTED
-                  </span>
-                </div>
-                <p className="mt-1 text-[12px] leading-[18px] text-[#93000a]">
-                  Complete the first open step, then continue in order. Downstream generation stays locked until its prerequisite is ready.
-                </p>
-              </div>
-            </div>
-            {nextRecoveryStep && (
-              <div className="flex gap-1 items-center shrink-0">
-                <button
-                  type="button"
-                  onClick={runNextRecoveryStep}
-                  disabled={generatingTask !== null || tokenChecking}
-                  className="bg-black drop-shadow-sm inline-flex gap-1 items-center px-3 py-1 rounded-[2px] text-white text-[14px] font-bold leading-5 disabled:opacity-50"
-                >
-                  {generatingTask !== null || tokenChecking ? 'Working…' : nextRecoveryStep.actionLabel}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => focusStage(nextRecoveryStep.id)}
-                  className="bg-white border border-[rgba(255,218,214,0.7)] drop-shadow-sm px-[7px] py-[5px] rounded-[2px] text-[#93000a] text-[14px] font-semibold leading-5"
-                >
-                  Open Step
-                </button>
-              </div>
-            )}
+      {/* Readiness recovery notification */}
+      {showCritical && nextRecoveryStep && (
+        <section className="bg-[rgba(255,218,214,0.3)] border border-[rgba(255,218,214,0.7)] flex items-center gap-3 p-[13px] rounded-[4px] shadow-sm flex-wrap">
+          <div className="bg-[#ba1a1a] drop-shadow-sm flex items-center justify-center rounded-[2px] size-9 shrink-0">
+            <img src="/figma/icon-6.svg" alt="" className="size-[17px]" />
           </div>
-
-          <ol className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
-            {recoverySteps.map((step, index) => {
-              const complete = isOk(step.status)
-              const current = nextRecoveryStep?.id === step.id
-              return (
-                <li
-                  key={step.id}
-                  className={`border rounded-[3px] p-2.5 min-h-[100px] ${
-                    complete
-                      ? 'bg-white/80 border-[#82f5c1]'
-                      : current
-                        ? 'bg-white border-[#ba1a1a]'
-                        : 'bg-white/55 border-[rgba(255,218,214,0.65)]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-[10px] font-bold tracking-[0.5px] text-[#76777d]">
-                      STEP {String(index + 1).padStart(2, '0')}
-                    </span>
-                    <span className={`font-mono text-[10px] font-bold uppercase ${complete ? 'text-[#00714e]' : current ? 'text-[#ba1a1a]' : 'text-[#7d5800]'}`}>
-                      {complete ? 'COMPLETE' : current ? 'NEXT' : 'LOCKED'}
-                    </span>
-                  </div>
-                  <p className="mt-1 font-bold text-[13px] leading-[18px] text-[#0b1c30]">{step.title}</p>
-                  <p className="mt-1 text-[11px] leading-4 text-[#45464d]">{step.detail}</p>
-                  <p className="mt-1.5 border-t border-[#e5eeff] pt-1.5 text-[10px] leading-[14px] text-[#76777d]">
-                    Ready when: <span className="font-mono font-semibold text-[#0b1c30]">{step.completion}</span>
-                  </p>
-                </li>
-              )
-            })}
-          </ol>
+          <div className="min-w-0 flex-1">
+            <div className="flex gap-1.5 items-center flex-wrap">
+              <p className="font-bold text-[14px] tracking-[-0.35px] text-[#ba1a1a] leading-5">
+                Pipeline halted
+              </p>
+              <span className="bg-[#ba1a1a] inline-flex gap-1 items-center px-1.5 py-0.5 rounded-[2px]">
+                <span className="size-1.5 rounded-full bg-white" />
+                <span className="font-mono text-[10px] font-bold uppercase text-white leading-[15px]">
+                  {remainingRecoverySteps} STEP{remainingRecoverySteps === 1 ? '' : 'S'} LEFT
+                </span>
+              </span>
+            </div>
+            <p className="mt-0.5 text-[12px] leading-[17px] text-[#93000a] truncate">
+              Next: <span className="font-semibold">{nextRecoveryStep.title}</span> — {nextRecoveryStep.detail}
+            </p>
+          </div>
+          <div className="flex gap-1 items-center shrink-0">
+            <button
+              type="button"
+              onClick={runNextRecoveryStep}
+              disabled={generatingTask !== null || tokenChecking}
+              className="bg-black drop-shadow-sm inline-flex gap-1 items-center px-3 py-1 rounded-[2px] text-white text-[14px] font-bold leading-5 disabled:opacity-50"
+            >
+              {generatingTask !== null || tokenChecking ? 'Working…' : nextRecoveryStep.actionLabel}
+            </button>
+            <button
+              type="button"
+              onClick={() => focusStage(nextRecoveryStep.id)}
+              className="bg-white border border-[rgba(255,218,214,0.7)] drop-shadow-sm px-[7px] py-[5px] rounded-[2px] text-[#93000a] text-[14px] font-semibold leading-5"
+            >
+              Open Step
+            </button>
+          </div>
         </section>
       )}
 
