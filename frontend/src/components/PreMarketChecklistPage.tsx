@@ -25,6 +25,7 @@ interface Props {
   tokenCheckedAt: string | null
   tokenChecking: boolean
   onCheckToken: () => Promise<CheckTokenResponse>
+  onNavigateToObservation: () => void
 }
 
 function isOk(status: ChecklistStatus): boolean {
@@ -77,6 +78,7 @@ export function PreMarketChecklistPage({
   tokenCheckedAt,
   tokenChecking,
   onCheckToken,
+  onNavigateToObservation,
 }: Props) {
   const [generatingTask, setGeneratingTask] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
@@ -402,15 +404,6 @@ export function PreMarketChecklistPage({
 
   return (
     <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#f8f9ff] px-6 py-3 space-y-4">
-      {/* Inline breadcrumb (Figma) */}
-      <div className="flex gap-1 items-center font-mono text-[10px] leading-3 text-[#45464d]">
-        <span>DESK</span>
-        <span>/</span>
-        <span>NIFTY 100</span>
-        <span>/</span>
-        <span className="font-semibold uppercase text-[#0b1c30]">STATION CONSOLE</span>
-      </div>
-
       {error && (
         <div className="px-3 py-2 bg-[#ffdad6]/40 border border-[#ffdad6] text-[#ba1a1a] text-sm">
           {error}
@@ -610,9 +603,15 @@ export function PreMarketChecklistPage({
                 </span>
               </span>
             </div>
-            <p className="font-mono text-[13px] font-bold tracking-[-0.325px] text-[#ba1a1a] leading-[18px] py-1">
-              START OBSERVATION
-            </p>
+            <button
+              type="button"
+              onClick={onNavigateToObservation}
+              disabled={!overallReady}
+              className="bg-[#006c4a] inline-flex items-center rounded-[2px] px-2 py-1 font-mono text-[12px] font-bold tracking-[-0.325px] leading-[18px] text-left text-white hover:bg-[#00714e] disabled:cursor-not-allowed disabled:bg-[#ffdad6] disabled:text-[#ba1a1a] disabled:opacity-70"
+              title={overallReady ? 'Open the observation view' : 'Complete all 5 stages first'}
+            >
+              GO TO OBSERVATION
+            </button>
             <div className="border-t border-[rgba(255,218,214,0.5)] pt-[5px] flex gap-1 items-center">
               <img src="/figma/icon-5.svg" alt="" className="size-[11px]" />
               <p className="text-[11px] font-medium leading-[16.5px] text-[#ba1a1a]">

@@ -24,16 +24,14 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authChecked, setAuthChecked] = useState(false)
   const [activeTab, setActiveTab] = useState<AppTab>('radar')
-  const [sessionDate, setSessionDate] = useState(todayIst())
+  const [sessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
   const authenticated = Boolean(me)
   const radarEnabled = authenticated && activeTab === 'radar'
   const {
     rows,
-    coverage,
     status,
     statusFetchOk,
-    sessions,
     loading,
     error,
     refresh: refreshRadar,
@@ -216,14 +214,10 @@ export default function App() {
       activeTab={activeTab}
       onTabChange={setActiveTab}
       sessionDate={sessionDate}
-      sessions={sessions}
-      onSessionChange={setSessionDate}
       search={search}
       onSearchChange={setSearch}
       username={me?.username}
       onLogout={() => void handleLogout()}
-      coverage={coverage}
-      status={status}
       runnerPresence={runnerPresence}
       feedStatus={feedStatus}
       brokerAuthOk={brokerAuthOk}
@@ -262,6 +256,7 @@ export default function App() {
             tokenCheckedAt={tokenCheckedAt}
             tokenChecking={tokenChecking}
             onCheckToken={checkToken}
+            onNavigateToObservation={() => setActiveTab('radar')}
           />
         ) : activeTab === 'trading' ? (
           <TradingEnginePage sessionDate={sessionDate} />

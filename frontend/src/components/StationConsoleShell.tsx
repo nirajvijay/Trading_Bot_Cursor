@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { marketStatusNow } from '../lib/format'
 import type { FeedStatusView, RunnerPresence } from '../lib/feedStatus'
-import type { RunnerStatus, SessionCoverage } from '../api/types'
 import type { AppTab } from './TopAppBar'
 
 const TABS: { id: AppTab; label: string }[] = [
   { id: 'checklist', label: 'Checklist' },
-  { id: 'radar', label: 'Radar Stream' },
+  { id: 'radar', label: 'Observation' },
   { id: 'trading', label: 'Execution Desk' },
   { id: 'admin', label: 'Diagnostics & Logs' },
   { id: 'auth', label: 'Settings' },
@@ -16,14 +15,10 @@ interface Props {
   activeTab: AppTab
   onTabChange: (tab: AppTab) => void
   sessionDate: string
-  sessions: string[]
-  onSessionChange: (date: string) => void
   search: string
   onSearchChange: (value: string) => void
   username?: string
   onLogout?: () => void
-  coverage: SessionCoverage | null
-  status: RunnerStatus | null
   runnerPresence: RunnerPresence
   feedStatus: FeedStatusView
   brokerAuthOk?: boolean
@@ -65,14 +60,10 @@ export function StationConsoleShell({
   activeTab,
   onTabChange,
   sessionDate,
-  sessions,
-  onSessionChange,
   search,
   onSearchChange,
   username,
   onLogout,
-  coverage,
-  status,
   runnerPresence,
   feedStatus,
   brokerAuthOk = false,
@@ -88,14 +79,12 @@ export function StationConsoleShell({
 
   const clock = istParts(now).clock
   const marketLabel = useMemo(() => marketOpensInLabel(now), [now])
-  const subscribed = status?.subscribed_tokens ?? coverage?.subscribed ?? 100
   const feedConnected =
     feedStatus.code === 'STABLE' ||
     (runnerPresence === 'running' && feedStatus.tone !== 'error')
-  // Radar Stream renders its own search/sector/status toolbar (RadarHeatMap);
+  // Observation renders its own search/sector/status toolbar (RadarHeatMap);
   // showing this bar too would duplicate it.
   const showRadarTools = false
-  const showSessionSelect = activeTab === 'trading' || activeTab === 'checklist'
   const phaseLabel =
     activeTab === 'checklist'
       ? checklistGateLocked
@@ -182,12 +171,11 @@ export function StationConsoleShell({
             })}
           </nav>
           <div className="hidden sm:flex items-center gap-3 pb-2 shrink-0 font-mono text-[10px] text-[#45464d]">
-            <span>UNIVERSE: {subscribed}/100</span>
-            <span className="hidden lg:inline">SESSION: {sessionDate}</span>
+            <span>SESSION: {sessionDate}</span>
           </div>
         </div>
 
-        {(showRadarTools || showSessionSelect) && activeTab !== 'checklist' && (
+        {showRadarTools && activeTab !== 'checklist' && (
           <div className="flex flex-wrap items-center justify-end gap-2 px-6 py-2 bg-[#eff4ff]/60 border-t border-[#e5eeff]">
             {showRadarTools && (
               <input
@@ -197,45 +185,9 @@ export function StationConsoleShell({
                 onChange={(e) => onSearchChange(e.target.value)}
               />
             )}
-            {showSessionSelect && (
-              <select
-                className="bg-white border border-[#e5e7eb] text-[10px] px-2 py-1 font-mono"
-                value={sessionDate}
-                onChange={(e) => onSessionChange(e.target.value)}
-                aria-label="Session date"
-              >
-                <option value={sessionDate}>{sessionDate}</option>
-                {sessions
-                  .filter((s) => s !== sessionDate)
-                  .map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-              </select>
-            )}
           </div>
         )}
 
-        {activeTab === 'checklist' && (
-          <div className="flex justify-end px-6 py-1.5 bg-[#eff4ff]/40 border-t border-[#e5eeff]">
-            <select
-              className="bg-white border border-[#e5e7eb] text-[10px] px-2 py-1 font-mono rounded-[2px]"
-              value={sessionDate}
-              onChange={(e) => onSessionChange(e.target.value)}
-              aria-label="Session date"
-            >
-              <option value={sessionDate}>{sessionDate}</option>
-              {sessions
-                .filter((s) => s !== sessionDate)
-                .map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-            </select>
-          </div>
-        )}
       </header>
 
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">{children}</div>
