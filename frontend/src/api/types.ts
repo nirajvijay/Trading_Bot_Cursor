@@ -128,7 +128,13 @@ export interface LoginUrlResponse {
 }
 
 export interface KiteStartResponse {
-  authorize_url: string
+  mode?: 'auto' | 'oauth'
+  authorize_url?: string | null
+  success?: boolean
+  message?: string | null
+  user_id?: string | null
+  masked_access_token?: string | null
+  auto_failure_reason?: string | null
 }
 
 export interface MeResponse {
@@ -201,6 +207,7 @@ export interface KiteAuthCheck {
   masked_access_token?: string | null
   token_validated_today?: boolean
   token_checked_at?: string | null
+  token_generated_at?: string | null
   copy_command: string
 }
 

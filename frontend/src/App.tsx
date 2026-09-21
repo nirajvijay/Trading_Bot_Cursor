@@ -4,19 +4,17 @@ import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
-import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
+import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
 import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
-import { RadarHeatMap } from './components/RadarHeatMap'
+import { RadarStreamWorkstation } from './components/RadarStreamWorkstation'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
 import { TradingEnginePage } from './components/TradingEnginePage'
-import { StatusStrip } from './components/StatusStrip'
 import { StationConsoleShell } from './components/StationConsoleShell'
 import { type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
-import { FeedAlertBanner } from './components/FeedAlertBanner'
 import { resolveFeedStatus, resolveRunnerPresence } from './lib/feedStatus'
 import { mergeKiteAuthStatus, computeEffectiveOverallStatus } from './hooks/usePreMarketChecklist'
 import type { MeResponse, RadarRow } from './api/types'
@@ -184,6 +182,17 @@ export default function App() {
     await refreshObservationReadiness()
   }, [refreshChecklist, refreshObservationReadiness])
 
+  const handleStartKiteLogin = useCallback(async () => {
+    const result = await postKiteStart()
+    if (result.mode === 'auto' && result.success) {
+      await handleChecklistRefresh()
+      await checkToken()
+      return result
+    }
+    if (result.authorize_url) window.location.assign(result.authorize_url)
+    return result
+  }, [handleChecklistRefresh, checkToken])
+
   const brokerAuthOk = useMemo(() => {
     if (!checklistData) return false
     const kiteBase = checklistData.areas.kite_auth
@@ -252,37 +261,30 @@ export default function App() {
     >
       <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {activeTab === 'radar' ? (
-          <>
-            <StatusStrip
-              coverage={coverage}
-              status={status}
-              runnerPresence={runnerPresence}
-              observationReadiness={observationReadinessForUi}
-              startingObservation={startingObservation}
-              observationError={observationError}
-              onStartObservation={() => void handleStartObservation()}
-              onExport={() => exportCsv(filteredRows)}
-            />
-            <FeedAlertBanner feed={feedStatus} />
-            {error && (
-              <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm shrink-0">
-                {error}
-              </div>
-            )}
-            <RadarHeatMap
-              rows={filteredRows}
-              loading={loading}
-              sessionDate={sessionDate}
-              search=""
-            />
-          </>
+          <RadarStreamWorkstation
+            rows={rows}
+            coverage={coverage}
+            status={status}
+            runnerPresence={runnerPresence}
+            feedStatus={feedStatus}
+            observationReadiness={observationReadinessForUi}
+            startingObservation={startingObservation}
+            observationError={observationError}
+            sessionDate={sessionDate}
+            externalSearch={search}
+            loading={loading}
+            error={error}
+            onStartObservation={() => void handleStartObservation()}
+            onRefresh={() => void refreshRadar()}
+            onExport={() => exportCsv(filteredRows)}
+          />
         ) : activeTab === 'checklist' ? (
           <PreMarketChecklistPage
             data={checklistData}
             loading={checklistLoading}
             error={checklistError}
             onRefresh={handleChecklistRefresh}
-            onGoToAuth={() => setActiveTab('auth')}
+            onStartKiteLogin={handleStartKiteLogin}
             tokenCheck={tokenCheck}
             tokenCheckedAt={tokenCheckedAt}
             tokenChecking={tokenChecking}
@@ -296,7 +298,9 @@ export default function App() {
           <KiteAuthPage />
         )}
       </main>
-      <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
+      {activeTab !== 'checklist' && (
+        <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
+      )}
     </StationConsoleShell>
   )
 }

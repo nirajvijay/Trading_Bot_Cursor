@@ -1,8 +1,7 @@
 import { cpSync, rmSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 
-// The editable source has not yet been recovered to match the approved UI.
-// Production must serve the preserved release until that recovery is verified.
+// Explicit emergency snapshot build. Normal production builds compile src/.
 const approved = new URL('../Reference/live-release-auto-login-button-20260916121611/frontend/dist/', import.meta.url)
 const expected = {
   'index.html': '3670385dad25e77f8e29e4461d2ea260e0bc6738845e744a791e8f0a72830af5',
@@ -17,4 +16,4 @@ for (const [file, hash] of Object.entries(expected)) {
 const output = new URL('./dist/', import.meta.url)
 rmSync(output, { recursive: true, force: true })
 cpSync(approved, output, { recursive: true })
-console.log('Verified and restored approved auto-login-button-20260916121611 assets. Source edits require build:source-preview and visual recovery before production use.')
+console.log('Verified and restored approved auto-login-button-20260916121611 assets. This explicit snapshot build does not include later source edits.')

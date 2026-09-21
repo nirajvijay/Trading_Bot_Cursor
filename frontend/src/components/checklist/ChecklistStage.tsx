@@ -1,7 +1,5 @@
 import type { ReactNode } from 'react'
 import type { ChecklistStatus } from '../../api/types'
-import { ChecklistStatusPill } from './ChecklistStatusPill'
-import { CopyCommandButton } from './CopyCommandButton'
 
 export type StageTone = 'ok' | 'blocked' | 'pending' | 'warning'
 
@@ -12,34 +10,36 @@ function toneFromStatus(status: ChecklistStatus): StageTone {
   return 'pending'
 }
 
-const TONE_BORDER: Record<StageTone, string> = {
-  ok: 'border-emerald-200',
-  blocked: 'border-red-200',
-  warning: 'border-amber-200',
-  pending: 'border-outline-variant',
+const STATUS_PILL: Record<StageTone, { wrap: string; dot: string; text: string }> = {
+  ok: {
+    wrap: 'bg-[#82f5c1]',
+    dot: 'bg-[#006c4a]',
+    text: 'text-[#00714e]',
+  },
+  blocked: {
+    wrap: 'bg-[#ffdad6]',
+    dot: 'bg-[#ba1a1a]',
+    text: 'text-[#93000a]',
+  },
+  warning: {
+    wrap: 'bg-[#ffe08c]/40]',
+    dot: 'bg-[#7d5800]',
+    text: 'text-[#7d5800]',
+  },
+  pending: {
+    wrap: 'bg-[#e5eeff]',
+    dot: 'bg-[#76777d]',
+    text: 'text-[#45464d]',
+  },
 }
 
-const TONE_HEADER: Record<StageTone, string> = {
-  ok: 'bg-emerald-50/40',
-  blocked: 'bg-red-50/50',
-  warning: 'bg-amber-50/40',
-  pending: 'bg-surface-container-low',
-}
-
-const TONE_BADGE: Record<StageTone, string> = {
-  ok: 'bg-emerald-50 text-positive border-emerald-200',
-  blocked: 'bg-red-50 text-negative border-red-200',
-  warning: 'bg-amber-50 text-warning border-amber-200',
-  pending: 'bg-surface-container text-on-surface-variant border-outline-variant',
-}
-
-export function stageBadgeLabel(status: ChecklistStatus, custom?: string | null): string {
+export function figmaStatusLabel(status: ChecklistStatus, custom?: string | null): string {
   if (custom) return custom
   switch (status) {
     case 'ok':
-      return 'OK'
+      return 'ACTIVE & AUTHENTICATED'
     case 'failed':
-      return 'BLOCKED'
+      return 'BLOCKED: MISSING FOR TODAY'
     case 'needs_update':
       return 'NEEDS UPDATE'
     case 'warning':
@@ -54,6 +54,7 @@ interface Action {
   onClick: () => void
   variant?: 'primary' | 'secondary' | 'danger'
   loading?: boolean
+  iconSrc?: string
 }
 
 interface Props {
@@ -63,25 +64,34 @@ interface Props {
   badgeLabel?: string | null
   expanded: boolean
   onToggle: () => void
-  statusMessage?: string | null
   children?: ReactNode
-  primaryAction?: Action
   secondaryAction?: Action
-  generateActionLabel?: string | null
-  onGenerate?: () => void
-  generating?: boolean
-  copyCommand?: string
-  copyLabel?: string
+  primaryAction?: Action
 }
 
-function actionClass(variant: Action['variant'] = 'secondary'): string {
-  if (variant === 'primary') {
-    return 'bg-primary text-white border-primary hover:bg-primary/90'
-  }
-  if (variant === 'danger') {
-    return 'bg-negative text-white border-negative hover:bg-negative/90'
-  }
-  return 'bg-white text-on-surface border-outline-variant hover:bg-surface-container-low'
+function actionBtn(action: Action) {
+  const base =
+    'inline-flex gap-1.5 h-8 items-center justify-center w-[190px] shrink-0 px-4 rounded-[2px] text-[12px] leading-[18px] disabled:opacity-50'
+  const variant =
+    action.variant === 'primary'
+      ? 'bg-black text-white'
+      : action.variant === 'danger'
+        ? 'bg-[#ba1a1a] text-white'
+        : 'bg-[#e5eeff] text-[#0b1c30]'
+  return (
+    <button
+      key={action.label}
+      type="button"
+      onClick={action.onClick}
+      disabled={action.loading}
+      className={`${base} ${variant}`}
+    >
+      {action.iconSrc && (
+        <img src={action.iconSrc} alt="" className="h-3.5 w-3.5 object-contain" />
+      )}
+      {action.loading ? 'Working…' : action.label}
+    </button>
+  )
 }
 
 export function ChecklistStage({
@@ -91,126 +101,120 @@ export function ChecklistStage({
   badgeLabel,
   expanded,
   onToggle,
-  statusMessage,
   children,
-  primaryAction,
   secondaryAction,
-  generateActionLabel,
-  onGenerate,
-  generating = false,
-  copyCommand,
-  copyLabel,
+  primaryAction,
 }: Props) {
+  const isKiteAuthStage = stageNumber === 'STAGE 01'
   const tone = toneFromStatus(status)
-  const showMessage = statusMessage && status !== 'ok' && status !== 'not_checked'
+  const pill = STATUS_PILL[tone]
+  const borderAccent =
+    tone === 'blocked'
+      ? 'border-[#ffdad6]/80'
+      : tone === 'ok'
+        ? 'border-[#e5eeff]'
+        : 'border-[#e5e7eb]'
 
   return (
     <section
-      className={`border rounded-sm bg-white overflow-hidden ${TONE_BORDER[tone]}`}
+      className={`bg-white flex flex-col overflow-hidden rounded-[4px] shadow-[0px_1px_2px_0px_rgba(0,0,0,0.05)] border ${borderAccent}`}
       data-expanded={expanded ? 'true' : 'false'}
     >
-      <div
-        className={`flex items-center gap-2 px-3 py-2.5 border-b ${
-          expanded ? 'border-outline-variant/70' : 'border-transparent'
-        } ${TONE_HEADER[tone]}`}
-      >
+      <div className="flex items-center justify-between gap-3 p-3 w-full">
         <button
           type="button"
           onClick={onToggle}
-          className="flex items-center gap-2 min-w-0 flex-1 text-left"
+          className={`group flex flex-1 items-center min-w-0 text-left ${
+            isKiteAuthStage ? 'gap-2.5' : 'gap-1.5'
+          }`}
           aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${stageNumber} ${title}`}
         >
-          <span className="material-symbols-outlined text-[18px] text-on-surface-variant shrink-0">
-            {expanded ? 'expand_more' : 'chevron_right'}
-          </span>
-          <span className="label-caps text-on-surface-variant shrink-0">{stageNumber}</span>
-          <h3 className="label-caps text-on-surface font-extrabold truncate tracking-wide">{title}</h3>
           <span
-            className={`label-caps px-1.5 py-0.5 border rounded-sm shrink-0 ${TONE_BADGE[tone]}`}
+            className={`flex size-6 shrink-0 items-center justify-center rounded-[2px] border transition-colors ${
+              isKiteAuthStage
+                ? 'border-[#d3e4fe] bg-[#eff4ff] text-[#005db7] group-hover:bg-[#d3e4fe]'
+                : 'border-transparent text-[#76777d] group-hover:bg-[#eff4ff]'
+            }`}
+            aria-hidden="true"
           >
-            {stageBadgeLabel(status, badgeLabel)}
+            <span
+              className={`material-symbols-outlined text-[17px] transition-transform ${
+                expanded ? 'rotate-0' : '-rotate-90'
+              }`}
+            >
+              expand_more
+            </span>
           </span>
-          <ChecklistStatusPill status={status} message={statusMessage} />
+          <span className="bg-[#e5eeff] px-1.5 py-0.5 rounded-[2px] shrink-0 font-mono text-[11px] font-bold leading-[14px] text-[#0b1c30]">
+            {stageNumber}
+          </span>
+          <div
+            className={`min-w-0 ${
+              isKiteAuthStage
+                ? 'flex flex-wrap items-center gap-x-2 gap-y-1'
+                : 'flex flex-col gap-1 items-start'
+            }`}
+          >
+            <h3 className="font-bold text-[18px] leading-6 tracking-[-0.45px] text-[#0b1c30] truncate">
+              {title}
+            </h3>
+            <span
+              className={`inline-flex shrink-0 gap-1.5 items-center px-1.5 py-0.5 rounded-xl ${pill.wrap}`}
+            >
+              <span className={`size-1.5 rounded-full ${pill.dot}`} />
+              <span
+                className={`font-mono text-[10px] font-semibold tracking-[0.5px] uppercase leading-3 ${pill.text}`}
+              >
+                {figmaStatusLabel(status, badgeLabel)}
+              </span>
+            </span>
+          </div>
         </button>
-
-        <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-          {primaryAction && (
-            <button
-              type="button"
-              onClick={primaryAction.onClick}
-              disabled={primaryAction.loading}
-              className={`px-2.5 py-1 rounded label-caps text-[10px] font-bold border disabled:opacity-50 ${actionClass(
-                primaryAction.variant,
-              )}`}
-            >
-              {primaryAction.loading ? 'Working…' : primaryAction.label}
-            </button>
-          )}
-          {!expanded && secondaryAction && (
-            <button
-              type="button"
-              onClick={secondaryAction.onClick}
-              className={`px-2.5 py-1 rounded label-caps text-[10px] font-bold border ${actionClass(
-                secondaryAction.variant,
-              )}`}
-            >
-              {secondaryAction.label}
-            </button>
-          )}
+        <div className="flex gap-1 items-center shrink-0 flex-wrap justify-end">
+          {secondaryAction && actionBtn(secondaryAction)}
+          {primaryAction && actionBtn(primaryAction)}
         </div>
       </div>
 
-      {expanded && (
-        <div className="px-3 py-3 space-y-3">
-          {showMessage && (
-            <div
-              className={`px-2.5 py-2 text-[11px] leading-snug border rounded-sm ${
-                tone === 'blocked'
-                  ? 'bg-red-50 text-negative border-red-200'
-                  : tone === 'warning'
-                    ? 'bg-amber-50 text-warning border-amber-200'
-                    : 'bg-surface-container text-on-surface-variant border-outline-variant'
-              }`}
-            >
-              {statusMessage}
-            </div>
-          )}
-
-          {children && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-1">
-              {children}
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-outline-variant/60">
-            {secondaryAction && (
-              <button
-                type="button"
-                onClick={secondaryAction.onClick}
-                className={`px-2.5 py-1 rounded label-caps text-[10px] font-bold border ${actionClass(
-                  secondaryAction.variant,
-                )}`}
-              >
-                {secondaryAction.label}
-              </button>
-            )}
-            {generateActionLabel && onGenerate && (
-              <button
-                type="button"
-                onClick={onGenerate}
-                disabled={generating}
-                className={`px-2.5 py-1 rounded label-caps text-[10px] font-bold border disabled:opacity-50 ${
-                  tone === 'blocked' ? actionClass('danger') : actionClass('primary')
-                }`}
-              >
-                {generating ? 'Generating…' : generateActionLabel}
-              </button>
-            )}
-            {copyCommand && <CopyCommandButton command={copyCommand} label={copyLabel} />}
+      {expanded && children && (
+        <div className="bg-[rgba(239,244,255,0.6)] border-t border-[#e5eeff] flex flex-col items-start pb-1.5 pt-[7px] px-3 w-full">
+          <div className="flex gap-1.5 items-stretch justify-center py-1 w-full flex-wrap lg:flex-nowrap">
+            {children}
           </div>
         </div>
       )}
     </section>
+  )
+}
+
+export function StageMetricCard({
+  label,
+  badge,
+  children,
+  danger = false,
+  alignTop = false,
+}: {
+  label: string
+  badge?: ReactNode
+  children: ReactNode
+  danger?: boolean
+  alignTop?: boolean
+}) {
+  return (
+    <div
+      className={`bg-white border flex flex-col items-start ${alignTop ? 'justify-start' : 'justify-between'} p-[7px] rounded-[2px] flex-1 min-w-[200px] self-stretch ${
+        danger ? 'border-[rgba(255,218,214,0.8)]' : 'border-[#e5eeff]'
+      }`}
+    >
+      <div className="flex items-center justify-between w-full gap-2">
+        <span className="font-mono text-[10px] font-semibold tracking-[0.5px] uppercase text-[#76777d] leading-[15px]">
+          {label}
+        </span>
+        {badge}
+      </div>
+      <div className="flex flex-col gap-0.5 items-start w-full mt-1">{children}</div>
+    </div>
   )
 }
 
