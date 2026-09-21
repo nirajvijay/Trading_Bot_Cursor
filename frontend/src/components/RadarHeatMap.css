@@ -151,14 +151,14 @@
 .radar-heat-map .rhm-card {
   position: relative;
   flex: 1 1 auto;
-  display: flex; flex-direction: column; justify-content: center; gap: 6px;
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
   border-radius: var(--rhm-radius-sm);
   border: 1px solid var(--rhm-border);
   background: var(--rhm-card);
   box-shadow: var(--rhm-shadow-card);
   padding: 5px 7px;
   cursor: pointer;
-  overflow: hidden;
+  overflow: visible;
   min-width: 0; min-height: 0;
   transition: transform 0.08s ease;
 }
@@ -173,20 +173,48 @@
 }
 .radar-heat-map .rhm-dot { width: 7px; height: 7px; border-radius: 999px; flex: 0 0 auto; }
 
-.radar-heat-map .rhm-card-mid { display: flex; align-items: baseline; min-width: 0; font-family: var(--rhm-font-mono); font-variant-numeric: tabular-nums; }
-.radar-heat-map .rhm-price { font-size: 11px; font-weight: 600; color: var(--rhm-ink); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.radar-heat-map .rhm-change { font-size: 9.5px; font-weight: 700; margin-left: 5px; flex: 0 0 auto; }
-.radar-heat-map .rhm-change.pos { color: var(--rhm-up); }
-.radar-heat-map .rhm-change.neg { color: var(--rhm-down); }
-
 .radar-heat-map .rhm-card-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 4px; min-width: 0; }
 .radar-heat-map .rhm-status-group { display: flex; align-items: baseline; gap: 3px; min-width: 0; overflow: hidden; }
 .radar-heat-map .rhm-status-label {
   font-size: 7.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
-.radar-heat-map .rhm-updated { font-size: 7px; color: var(--rhm-ink-muted); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
-.radar-heat-map .rhm-distance { font-size: 7.5px; font-family: var(--rhm-font-mono); font-weight: 600; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+/* Prices stay out of the scan view but remain available without a click. */
+.radar-heat-map .rhm-hover-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  padding: 5px 7px;
+  border: 1px solid var(--rhm-ink);
+  border-radius: var(--rhm-radius-sm);
+  background: var(--rhm-ink);
+  color: var(--rhm-ink-on-accent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  font-family: var(--rhm-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 3px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.radar-heat-map .rhm-card:hover .rhm-hover-tooltip,
+.radar-heat-map .rhm-card:focus-visible .rhm-hover-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.radar-heat-map .rhm-sector-slot:nth-child(-n + 10) .rhm-hover-tooltip {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translate(-50%, -3px);
+}
+.radar-heat-map .rhm-sector-slot:nth-child(-n + 10) .rhm-card:hover .rhm-hover-tooltip,
+.radar-heat-map .rhm-sector-slot:nth-child(-n + 10) .rhm-card:focus-visible .rhm-hover-tooltip {
+  transform: translate(-50%, 0);
+}
 
 /* Repeat-setup indicator: symbol has armed/triggered/rejected more than
    once this session. Neutral color so it doesn't compete with the card's
@@ -213,17 +241,16 @@
 .radar-heat-map .rhm-card.ARMED .rhm-status-label { color: var(--rhm-armed); }
 
 .radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-cyan); box-shadow: 0 0 0 1px var(--rhm-cyan), 0 0 16px var(--rhm-triggered-glow); }
-.radar-heat-map .rhm-card.TRIGGERED .rhm-symbol, .radar-heat-map .rhm-card.TRIGGERED .rhm-price { color: var(--rhm-triggered-ink); }
+.radar-heat-map .rhm-card.TRIGGERED .rhm-symbol { color: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-dot { background: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-status-label { color: var(--rhm-triggered-ink); }
-.radar-heat-map .rhm-card.TRIGGERED .rhm-updated { color: var(--rhm-triggered-ink); opacity: 0.7; }
 
 .radar-heat-map .rhm-card.REJECTED { background: color-mix(in srgb, var(--rhm-rejected) 22%, var(--rhm-card)); border-color: var(--rhm-rejected); }
 .radar-heat-map .rhm-card.REJECTED .rhm-dot { background: var(--rhm-rejected); }
 .radar-heat-map .rhm-card.REJECTED .rhm-status-label { color: var(--rhm-rejected); }
 
 .radar-heat-map .rhm-card.NEGATED { background: var(--rhm-negated); border-color: var(--rhm-negated); opacity: 0.75; }
-.radar-heat-map .rhm-card.NEGATED .rhm-symbol, .radar-heat-map .rhm-card.NEGATED .rhm-price { color: var(--rhm-negated-ink); }
+.radar-heat-map .rhm-card.NEGATED .rhm-symbol { color: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-dot { background: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-status-label { color: var(--rhm-negated-ink); }
 

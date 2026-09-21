@@ -52,24 +52,13 @@ interface Card {
   row: RadarRow
   status: CardStatus
   sector: string | null
-  distance: number | null
-  updatedSecAgo: number | null
 }
 
 function buildCard(row: RadarRow, sectorOf: Map<string, string>): Card {
-  const distance =
-    row.trigger_price != null && row.last_1m_close != null
-      ? Math.abs(row.trigger_price - row.last_1m_close)
-      : null
-  const updatedSecAgo = row.updated_at
-    ? Math.max(0, Math.round((Date.now() - new Date(row.updated_at).getTime()) / 1000))
-    : null
   return {
     row,
     status: mapPhaseToStatus(row.phase),
     sector: sectorOf.get(row.symbol) ?? null,
-    distance,
-    updatedSecAgo,
   }
 }
 
@@ -245,14 +234,13 @@ export function RadarHeatMap({
             const matchesFilter = activeFilter === 'ALL' || card.status === activeFilter
             const matchesSector = activeSector === 'ALL' || card.sector === activeSector
             const dim = !(matchesSearch && matchesFilter && matchesSector)
-            const pct = card.row.pct_change ?? 0
             const tint = card.sector ? sectorTint.get(card.sector) : undefined
+            const hoverDetails = `${formatPrice(card.row.last_1m_close)} · ${formatPercent(card.row.pct_change)}`
             return (
               <div
                 key={card.row.symbol}
                 className="rhm-sector-slot"
                 style={{ background: tint ?? 'transparent' }}
-                title={card.sector ?? undefined}
               >
                 <div
                   className={`rhm-card ${card.status}${dim ? ' rhm-dim' : ''}`}
@@ -264,10 +252,6 @@ export function RadarHeatMap({
                     <span className="rhm-symbol">{card.row.symbol}</span>
                     <span className="rhm-dot" />
                   </div>
-                  <div className="rhm-card-mid">
-                    <span className="rhm-price">{formatPrice(card.row.last_1m_close)}</span>
-                    <span className={`rhm-change ${pct >= 0 ? 'pos' : 'neg'}`}>{formatPercent(card.row.pct_change)}</span>
-                  </div>
                   <div className="rhm-card-bottom">
                     <span className="rhm-status-group">
                       <span className="rhm-status-label">{STATUS_LABEL[card.status]}</span>
@@ -277,14 +261,10 @@ export function RadarHeatMap({
                         </span>
                       )}
                     </span>
-                    {card.distance != null ? (
-                      <span className="rhm-distance" title="Distance to trigger price">
-                        Δ{formatPrice(card.distance)}
-                      </span>
-                    ) : (
-                      <span className="rhm-updated">{card.updatedSecAgo != null ? `${card.updatedSecAgo}s ago` : '—'}</span>
-                    )}
                   </div>
+                  <span className="rhm-hover-tooltip" role="tooltip">
+                    {hoverDetails}
+                  </span>
                 </div>
               </div>
             )
