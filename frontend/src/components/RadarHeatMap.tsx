@@ -138,7 +138,26 @@ export function RadarHeatMap({
     return map
   }, [sectorMap])
 
-  const cards = useMemo(() => rows.map((row) => buildCard(row, sectorOf)), [rows, sectorOf])
+  // Stable, evenly-spaced pastel hue per sector, so every card in a sector
+  // shares the same background tint and grouped sectors read as color bands.
+  const sectorTint = useMemo(() => {
+    const names = (sectorMap?.sectors ?? []).map((group) => group.name).sort((a, b) => a.localeCompare(b))
+    const map = new Map<string, string>()
+    names.forEach((name, i) => {
+      const hue = Math.round((360 / Math.max(names.length, 1)) * i)
+      map.set(name, `hsl(${hue}, 55%, 90%)`)
+    })
+    return map
+  }, [sectorMap])
+
+  const cards = useMemo(() => {
+    const built = rows.map((row) => buildCard(row, sectorOf))
+    return built.slice().sort((a, b) => {
+      const sa = a.sector ?? '￿'
+      const sb = b.sector ?? '￿'
+      return sa === sb ? a.row.symbol.localeCompare(b.row.symbol) : sa.localeCompare(sb)
+    })
+  }, [rows, sectorOf])
 
   const counts = useMemo(() => {
     const c: Record<CardStatus, number> = { WAITING: 0, SPIKE: 0, SETUP_READY: 0, ARMED: 0, TRIGGERED: 0, REJECTED: 0, NEGATED: 0 }
@@ -227,38 +246,45 @@ export function RadarHeatMap({
             const matchesSector = activeSector === 'ALL' || card.sector === activeSector
             const dim = !(matchesSearch && matchesFilter && matchesSector)
             const pct = card.row.pct_change ?? 0
+            const tint = card.sector ? sectorTint.get(card.sector) : undefined
             return (
               <div
                 key={card.row.symbol}
-                className={`rhm-card ${card.status}${dim ? ' rhm-dim' : ''}`}
-                tabIndex={0}
-                onClick={() => setSelected(card.row.symbol)}
-                onKeyDown={(e) => e.key === 'Enter' && setSelected(card.row.symbol)}
+                className="rhm-sector-slot"
+                style={{ background: tint ?? 'transparent' }}
+                title={card.sector ?? undefined}
               >
-                <div className="rhm-card-top">
-                  <span className="rhm-symbol">{card.row.symbol}</span>
-                  <span className="rhm-dot" />
-                </div>
-                <div className="rhm-card-mid">
-                  <span className="rhm-price">{formatPrice(card.row.last_1m_close)}</span>
-                  <span className={`rhm-change ${pct >= 0 ? 'pos' : 'neg'}`}>{formatPercent(card.row.pct_change)}</span>
-                </div>
-                <div className="rhm-card-bottom">
-                  <span className="rhm-status-group">
-                    <span className="rhm-status-label">{STATUS_LABEL[card.status]}</span>
-                    {(card.row.setup_count ?? 0) > 1 && (
-                      <span className="rhm-setup-count" title={`${card.row.setup_count} setups this session`}>
-                        ×{card.row.setup_count}
-                      </span>
-                    )}
-                  </span>
-                  {card.distance != null ? (
-                    <span className="rhm-distance" title="Distance to trigger price">
-                      Δ{formatPrice(card.distance)}
+                <div
+                  className={`rhm-card ${card.status}${dim ? ' rhm-dim' : ''}`}
+                  tabIndex={0}
+                  onClick={() => setSelected(card.row.symbol)}
+                  onKeyDown={(e) => e.key === 'Enter' && setSelected(card.row.symbol)}
+                >
+                  <div className="rhm-card-top">
+                    <span className="rhm-symbol">{card.row.symbol}</span>
+                    <span className="rhm-dot" />
+                  </div>
+                  <div className="rhm-card-mid">
+                    <span className="rhm-price">{formatPrice(card.row.last_1m_close)}</span>
+                    <span className={`rhm-change ${pct >= 0 ? 'pos' : 'neg'}`}>{formatPercent(card.row.pct_change)}</span>
+                  </div>
+                  <div className="rhm-card-bottom">
+                    <span className="rhm-status-group">
+                      <span className="rhm-status-label">{STATUS_LABEL[card.status]}</span>
+                      {(card.row.setup_count ?? 0) > 1 && (
+                        <span className="rhm-setup-count" title={`${card.row.setup_count} setups this session`}>
+                          ×{card.row.setup_count}
+                        </span>
+                      )}
                     </span>
-                  ) : (
-                    <span className="rhm-updated">{card.updatedSecAgo != null ? `${card.updatedSecAgo}s ago` : '—'}</span>
-                  )}
+                    {card.distance != null ? (
+                      <span className="rhm-distance" title="Distance to trigger price">
+                        Δ{formatPrice(card.distance)}
+                      </span>
+                    ) : (
+                      <span className="rhm-updated">{card.updatedSecAgo != null ? `${card.updatedSecAgo}s ago` : '—'}</span>
+                    )}
+                  </div>
                 </div>
               </div>
             )
