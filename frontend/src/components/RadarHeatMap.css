@@ -55,10 +55,29 @@
   background: var(--rhm-surface); border: 1px solid var(--rhm-border); border-radius: var(--rhm-radius-md);
   padding: 7px 14px; flex: 0 0 auto;
 }
-.radar-heat-map .rhm-brand { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; }
-.radar-heat-map .rhm-brand-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--rhm-armed); box-shadow: 0 0 8px var(--rhm-armed-glow); }
-.radar-heat-map .rhm-brand-title { font-size: 15px; font-weight: 800; letter-spacing: 0.06em; }
-.radar-heat-map .rhm-brand-sub { font-size: 10px; color: var(--rhm-ink-muted); }
+.radar-heat-map .rhm-brand-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--rhm-armed); box-shadow: 0 0 8px var(--rhm-armed-glow); flex: 0 0 auto; }
+
+.radar-heat-map .rhm-start-btn {
+  flex: 0 0 auto; font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase;
+  background: var(--rhm-armed); color: var(--rhm-armed-ink); border: none; border-radius: var(--rhm-radius-md);
+  padding: 8px 14px; cursor: pointer;
+}
+.radar-heat-map .rhm-start-btn:disabled { background: var(--rhm-waiting); color: var(--rhm-waiting-ink); cursor: not-allowed; }
+
+.radar-heat-map .rhm-observation-status {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; color: var(--rhm-armed);
+  background: color-mix(in srgb, var(--rhm-armed) 14%, var(--rhm-card)); border: 1px solid var(--rhm-armed);
+  border-radius: var(--rhm-radius-md); padding: 8px 14px;
+}
+
+.radar-heat-map .rhm-refreshing { flex: 0 0 auto; font-size: 10px; color: var(--rhm-ink-muted); }
+
+.radar-heat-map .rhm-observation-error {
+  flex: 0 0 auto; font-size: 12px; color: var(--rhm-rejected);
+  background: color-mix(in srgb, var(--rhm-rejected) 10%, var(--rhm-surface)); border: 1px solid var(--rhm-rejected);
+  border-radius: var(--rhm-radius-md); padding: 6px 12px;
+}
 
 .radar-heat-map .rhm-theme-toggle {
   margin-left: auto; order: 5; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;

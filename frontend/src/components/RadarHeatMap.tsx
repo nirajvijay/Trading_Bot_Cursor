@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { RadarRow, UiPhase } from '../api/types'
+import type { ObservationReadiness, RadarRow, UiPhase } from '../api/types'
 import { fetchSectorMap, type SectorMap } from '../api/client'
 import { formatPrice, formatPercent } from '../lib/format'
 import { SymbolTimelinePanel } from './SymbolTimelinePanel'
 import { useSymbolTimeline } from '../hooks/useSymbolTimeline'
+import type { RunnerPresence } from '../lib/feedStatus'
 import './RadarHeatMap.css'
 
 type CardStatus = 'WAITING' | 'SPIKE' | 'SETUP_READY' | 'ARMED' | 'TRIGGERED' | 'REJECTED' | 'NEGATED'
@@ -94,11 +95,21 @@ export function RadarHeatMap({
   loading,
   search,
   sessionDate,
+  observationReadiness = null,
+  runnerPresence = 'unknown',
+  startingObservation = false,
+  observationError = null,
+  onStartObservation,
 }: {
   rows: RadarRow[]
   loading: boolean
   search: string
   sessionDate: string
+  observationReadiness?: ObservationReadiness | null
+  runnerPresence?: RunnerPresence
+  startingObservation?: boolean
+  observationError?: string | null
+  onStartObservation?: () => void
 }) {
   const [sectorMap, setSectorMap] = useState<SectorMap | null>(null)
   const [activeFilter, setActiveFilter] = useState<CardStatus | 'ALL'>('ALL')
@@ -133,14 +144,30 @@ export function RadarHeatMap({
 
   const searchTerm = search.trim().toUpperCase()
 
+  const runnerRunning = runnerPresence === 'running'
+  const canStart = observationReadiness?.can_start ?? false
+  const startDisabled = runnerRunning || !canStart || startingObservation || runnerPresence === 'unknown'
+
   return (
     <div className="radar-heat-map">
       <div className="rhm-header">
-        <div className="rhm-brand">
-          <span className="rhm-brand-dot" />
-          <span className="rhm-brand-title">STOCK RADAR</span>
-          <span className="rhm-brand-sub">{loading ? 'Refreshing…' : `${rows.length} observed`}</span>
-        </div>
+        {runnerRunning ? (
+          <div className="rhm-observation-status running">
+            <span className="rhm-brand-dot" />
+            Observation running
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="rhm-start-btn"
+            onClick={onStartObservation}
+            disabled={startDisabled}
+            title={!canStart ? (observationReadiness?.reason ?? 'Not ready to start') : 'Start the observation runner'}
+          >
+            {startingObservation ? 'Starting…' : 'Start Observation'}
+          </button>
+        )}
+        {loading && <span className="rhm-refreshing">Refreshing…</span>}
         <select className="rhm-sector-select" value={activeSector} onChange={(e) => setActiveSector(e.target.value)}>
           <option value="ALL">All sectors</option>
           {(sectorMap?.sectors ?? []).map((group) => (
@@ -179,6 +206,8 @@ export function RadarHeatMap({
           </div>
         </div>
       </div>
+
+      {observationError && <div className="rhm-observation-error">{observationError}</div>}
 
       <div className="rhm-grid-wrap">
         <div className="rhm-grid">

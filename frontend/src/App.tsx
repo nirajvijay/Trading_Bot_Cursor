@@ -4,7 +4,7 @@ import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
-import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, setAuthHandlers } from './api/client'
+import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
 import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
@@ -36,6 +36,7 @@ export default function App() {
     sessions,
     loading,
     error,
+    refresh: refreshRadar,
   } = useRadarDashboard(sessionDate, 5000, radarEnabled)
   const {
     data: checklistData,
@@ -43,7 +44,12 @@ export default function App() {
     error: checklistError,
     refresh: refreshChecklist,
   } = usePreMarketChecklist(sessionDate, authenticated)
-  const { refresh: refreshObservationReadiness } = useObservationReadiness(sessionDate, radarEnabled)
+  const { readiness: observationReadiness, refresh: refreshObservationReadiness } = useObservationReadiness(
+    sessionDate,
+    radarEnabled,
+  )
+  const [startingObservation, setStartingObservation] = useState(false)
+  const [observationError, setObservationError] = useState<string | null>(null)
   const refreshAfterTokenCheck = useCallback(async () => {
     await Promise.all([refreshChecklist(), refreshObservationReadiness()])
   }, [refreshChecklist, refreshObservationReadiness])
@@ -113,6 +119,19 @@ export default function App() {
 
   const runnerPresence = resolveRunnerPresence(status, statusFetchOk)
   const feedStatus = resolveFeedStatus(status, runnerPresence)
+
+  const handleStartObservation = useCallback(async () => {
+    setStartingObservation(true)
+    setObservationError(null)
+    try {
+      await postStartObservation(sessionDate)
+      await Promise.all([refreshRadar(), refreshObservationReadiness()])
+    } catch (err) {
+      setObservationError(err instanceof Error ? err.message : 'Failed to start observation')
+    } finally {
+      setStartingObservation(false)
+    }
+  }, [sessionDate, refreshRadar, refreshObservationReadiness])
 
   const handleChecklistRefresh = useCallback(async () => {
     await refreshChecklist()
@@ -204,7 +223,17 @@ export default function App() {
                 {error}
               </div>
             )}
-            <RadarHeatMap rows={filteredRows} loading={loading} sessionDate={sessionDate} search="" />
+            <RadarHeatMap
+              rows={filteredRows}
+              loading={loading}
+              sessionDate={sessionDate}
+              search=""
+              observationReadiness={observationReadiness}
+              runnerPresence={runnerPresence}
+              startingObservation={startingObservation}
+              observationError={observationError}
+              onStartObservation={() => void handleStartObservation()}
+            />
           </>
         ) : activeTab === 'checklist' ? (
           <PreMarketChecklistPage
