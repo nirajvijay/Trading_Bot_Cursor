@@ -25,3 +25,9 @@ class ObservationStartResponse(BaseModel):
     success: bool
     message: str
     pid: Optional[int] = None
+
+
+class ObservationStopResponse(BaseModel):
+    success: bool
+    message: str
+    pid: Optional[int] = None

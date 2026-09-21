@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -19,6 +20,7 @@ from api.services.observation_start_lock import (
     ObservationStartBusy,
     acquire_start_lock,
     is_start_lease_active,
+    read_start_lock,
     reconcile_start_lock_with_heartbeat,
     release_start_lock,
     update_start_lock_pid,
@@ -128,6 +130,27 @@ def is_runner_running(
     if heartbeat:
         return True
     return is_start_lease_active(date)
+
+
+def _current_runner_pid(status_file: Optional[Path] = None) -> Optional[int]:
+    """
+    Best-effort PID of the running observation process, from whichever source
+    is authoritative right now: the status heartbeat once the runner is up,
+    or the start lease during the startup gap before the first heartbeat.
+    """
+    path = status_file or _status_file()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            pid = data.get("pid")
+            if isinstance(pid, int) and pid > 0:
+                return pid
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    lease = read_start_lock()
+    if lease is not None and lease.pid > 0:
+        return lease.pid
+    return None
 
 
 def _relative(path: Path) -> str:
@@ -271,3 +294,34 @@ def start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, 
         pass
 
     return True, f"Observation runner started (pid {proc.pid})", proc.pid
+
+
+def stop_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, str, Optional[int]]:
+    """
+    Signal the running observation process to stop (graceful SIGTERM — the
+    runner handles this by closing the feed and exiting on its own).
+
+    The runner's status heartbeat naturally goes stale within
+    RUNNER_STALE_SECONDS once the process exits, at which point
+    is_runner_running() reports it as stopped.
+    """
+    date = session_date or _today_ist()
+    if not is_runner_running(session_date=date):
+        return False, "Observation runner is not running", None
+
+    pid = _current_runner_pid()
+    if pid is None:
+        return False, "Observation runner is running but its PID is unknown; cannot stop cleanly", None
+
+    try:
+        # start_new_session=True made the runner its own process-group leader,
+        # so signalling the group also reaches anything it spawned.
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        release_start_lock()
+        return False, "Observation runner already stopped", None
+    except PermissionError as exc:
+        return False, f"Failed to stop observation runner: {exc}", None
+
+    release_start_lock()
+    return True, f"Stop signal sent to observation runner (pid {pid})", pid

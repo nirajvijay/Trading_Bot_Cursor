@@ -98,8 +98,10 @@ export function RadarHeatMap({
   observationReadiness = null,
   runnerPresence = 'unknown',
   startingObservation = false,
+  stoppingObservation = false,
   observationError = null,
   onStartObservation,
+  onStopObservation,
 }: {
   rows: RadarRow[]
   loading: boolean
@@ -108,8 +110,10 @@ export function RadarHeatMap({
   observationReadiness?: ObservationReadiness | null
   runnerPresence?: RunnerPresence
   startingObservation?: boolean
+  stoppingObservation?: boolean
   observationError?: string | null
   onStartObservation?: () => void
+  onStopObservation?: () => void
 }) {
   const [sectorMap, setSectorMap] = useState<SectorMap | null>(null)
   const [activeFilter, setActiveFilter] = useState<CardStatus | 'ALL'>('ALL')
@@ -152,10 +156,16 @@ export function RadarHeatMap({
     <div className="radar-heat-map">
       <div className="rhm-header">
         {runnerRunning ? (
-          <div className="rhm-observation-status running">
+          <button
+            type="button"
+            className="rhm-observation-status running"
+            onClick={onStopObservation}
+            disabled={stoppingObservation}
+            title="Stop the observation runner"
+          >
             <span className="rhm-brand-dot" />
-            Observation running
-          </div>
+            {stoppingObservation ? 'Stopping…' : 'Observation running · Stop'}
+          </button>
         ) : (
           <button
             type="button"

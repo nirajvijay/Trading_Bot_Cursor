@@ -4,7 +4,7 @@ import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
-import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
+import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postStartObservation, postStopObservation, setAuthHandlers } from './api/client'
 import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
@@ -49,6 +49,7 @@ export default function App() {
     radarEnabled,
   )
   const [startingObservation, setStartingObservation] = useState(false)
+  const [stoppingObservation, setStoppingObservation] = useState(false)
   const [observationError, setObservationError] = useState<string | null>(null)
   const refreshAfterTokenCheck = useCallback(async () => {
     await Promise.all([refreshChecklist(), refreshObservationReadiness()])
@@ -130,6 +131,19 @@ export default function App() {
       setObservationError(err instanceof Error ? err.message : 'Failed to start observation')
     } finally {
       setStartingObservation(false)
+    }
+  }, [sessionDate, refreshRadar, refreshObservationReadiness])
+
+  const handleStopObservation = useCallback(async () => {
+    setStoppingObservation(true)
+    setObservationError(null)
+    try {
+      await postStopObservation(sessionDate)
+      await Promise.all([refreshRadar(), refreshObservationReadiness()])
+    } catch (err) {
+      setObservationError(err instanceof Error ? err.message : 'Failed to stop observation')
+    } finally {
+      setStoppingObservation(false)
     }
   }, [sessionDate, refreshRadar, refreshObservationReadiness])
 
@@ -231,8 +245,10 @@ export default function App() {
               observationReadiness={observationReadiness}
               runnerPresence={runnerPresence}
               startingObservation={startingObservation}
+              stoppingObservation={stoppingObservation}
               observationError={observationError}
               onStartObservation={() => void handleStartObservation()}
+              onStopObservation={() => void handleStopObservation()}
             />
           </>
         ) : activeTab === 'checklist' ? (

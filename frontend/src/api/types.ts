@@ -324,6 +324,12 @@ export interface ObservationStartResponse {
   pid?: number | null
 }
 
+export interface ObservationStopResponse {
+  success: boolean
+  message: string
+  pid?: number | null
+}
+
 export type TradingEngineState = 'stopped' | 'starting' | 'running' | 'error' | 'critical'
 
 export interface TradingTradeRow {

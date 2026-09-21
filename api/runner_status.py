@@ -20,6 +20,7 @@ def write_runner_status(
     last_tick_time: Optional[str],
     websocket_connected: Optional[bool] = None,
     vwap_qualifier: Optional[Mapping[str, Any]] = None,
+    pid: Optional[int] = None,
 ) -> None:
     payload: dict[str, Any] = {
         "session_date": session_date,
@@ -28,6 +29,7 @@ def write_runner_status(
         "last_tick_time": last_tick_time,
         "updated_at": datetime.now(IST).isoformat(),
         "websocket_connected": websocket_connected,
+        "pid": pid,
         "observation_phase": (
             "connected_waiting_market_data" if websocket_connected and last_tick_time is None
             else "receiving_market_data" if websocket_connected and feed_status == "STABLE"

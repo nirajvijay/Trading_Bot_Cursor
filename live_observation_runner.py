@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sqlite3
 import sys
@@ -758,6 +759,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     last_tick_time=last_tick.isoformat() if last_tick else None,
                     websocket_connected=receiver.connected,
                     vwap_qualifier=vwap_payload,
+                    pid=os.getpid(),
                 )
 
     metrics_thread = threading.Thread(

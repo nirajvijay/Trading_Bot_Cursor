@@ -11,8 +11,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth.deps import require_web_session, require_web_session_mutating
-from api.schemas.observation import ObservationReadinessResponse, ObservationStartResponse
-from api.services.observation_runner import compute_readiness, start_observation_runner
+from api.schemas.observation import ObservationReadinessResponse, ObservationStartResponse, ObservationStopResponse
+from api.services.observation_runner import compute_readiness, start_observation_runner, stop_observation_runner
 
 router = APIRouter(prefix="/observation", tags=["observation"])
 
@@ -62,3 +62,18 @@ def observation_start(
             raise HTTPException(status_code=409, detail=message)
         raise HTTPException(status_code=400, detail=message)
     return ObservationStartResponse(success=True, message=message, pid=pid)
+
+
+@router.post(
+    "/stop",
+    response_model=ObservationStopResponse,
+    dependencies=[Depends(require_web_session_mutating)],
+)
+def observation_stop(
+    session_date: Optional[str] = Query(default=None, description="IST session date YYYY-MM-DD"),
+) -> ObservationStopResponse:
+    success, message, pid = stop_observation_runner(session_date)
+    if not success:
+        status_code = 409 if "not running" in message.lower() else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    return ObservationStopResponse(success=True, message=message, pid=pid)

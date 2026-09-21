@@ -66,10 +66,15 @@
 
 .radar-heat-map .rhm-observation-status {
   flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  font-family: var(--rhm-font-ui);
   font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; color: var(--rhm-armed);
   background: color-mix(in srgb, var(--rhm-armed) 14%, var(--rhm-card)); border: 1px solid var(--rhm-armed);
-  border-radius: var(--rhm-radius-md); padding: 8px 14px;
+  border-radius: var(--rhm-radius-md); padding: 8px 14px; cursor: pointer;
 }
+.radar-heat-map .rhm-observation-status:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rhm-rejected) 14%, var(--rhm-card)); color: var(--rhm-rejected); border-color: var(--rhm-rejected);
+}
+.radar-heat-map .rhm-observation-status:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .radar-heat-map .rhm-refreshing { flex: 0 0 auto; font-size: 10px; color: var(--rhm-ink-muted); }
 

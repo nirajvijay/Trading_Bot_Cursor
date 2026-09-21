@@ -11,6 +11,7 @@ import type {
   MfaSetupResponse,
   ObservationReadiness,
   ObservationStartResponse,
+  ObservationStopResponse,
   TradingEngineSnapshot,
   TradingEngineStatus,
   TradingStartResponse,
@@ -209,6 +210,11 @@ export function fetchObservationReadiness(sessionDate?: string): Promise<Observa
 export function postStartObservation(sessionDate?: string): Promise<ObservationStartResponse> {
   const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
   return postJson<ObservationStartResponse>(`/observation/start${query}`)
+}
+
+export function postStopObservation(sessionDate?: string): Promise<ObservationStopResponse> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return postJson<ObservationStopResponse>(`/observation/stop${query}`)
 }
 
 export function fetchTradingEngineStatus(sessionDate?: string): Promise<TradingEngineStatus> {
