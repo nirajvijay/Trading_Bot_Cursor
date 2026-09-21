@@ -87,13 +87,6 @@ export function PreMarketChecklistPage({
   const [expanded, setExpanded] = useState<Record<StageId, boolean> | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(false)
   const [cliLines, setCliLines] = useState<string[]>([])
-  const [syncClock, setSyncClock] = useState(clockNow)
-
-  useEffect(() => {
-    const id = window.setInterval(() => setSyncClock(clockNow()), 1000)
-    return () => window.clearInterval(id)
-  }, [])
-
   const handleGenerate = useCallback(
     async (task: string) => {
       setGeneratingTask(task)
@@ -371,36 +364,11 @@ export function PreMarketChecklistPage({
   const nextRecoveryStep = recoverySteps.find((step) => !isOk(step.status))
   const remainingRecoverySteps = recoverySteps.filter((step) => !isOk(step.status)).length
 
-  const kiteBadge =
-    kiteStatus === 'ok'
-      ? 'ACTIVE & AUTHENTICATED'
-      : kiteStatus === 'failed'
-        ? 'AUTH FAILED'
-        : 'PENDING VALIDATION'
-
-  const instrumentsBadge =
-    instruments.status === 'ok' ? 'SYNCED & COMPLETE' : instruments.status === 'failed' ? 'SYNC FAILED' : 'NEEDS UPDATE'
-
-  const histBadge =
-    data.areas.historical_candles.status === 'ok'
-      ? 'VALID (NOT EXPIRED)'
-      : data.areas.historical_candles.status === 'failed'
-        ? 'BLOCKED'
-        : 'NEEDS UPDATE'
-
-  const baseBadge =
-    baselines.status === 'ok'
-      ? 'VALID'
-      : baselines.status === 'failed'
-        ? 'BLOCKED: MISSING FOR TODAY'
-        : 'INVALID (MISSING / STALE)'
-
-  const fiveBadge =
-    data.areas.five_minute_candles.status === 'ok'
-      ? 'SEEDED'
-      : data.areas.five_minute_candles.status === 'failed'
-        ? 'BLOCKED'
-        : 'PENDING: WAITING ON PRIOR STAGE'
+  const kiteBadge = kiteStatus === 'ok' ? 'VALID' : 'EXPIRED'
+  const instrumentsBadge = instruments.status === 'ok' ? 'VALID' : 'INVALID'
+  const histBadge = historical.status === 'ok' ? 'VALID' : 'INVALID'
+  const baseBadge = baselines.status === 'ok' ? 'VALID' : 'INVALID'
+  const fiveBadge = fiveMinute.status === 'ok' ? 'VALID' : 'INVALID'
 
   return (
     <div className="flex-1 overflow-y-auto custom-scrollbar bg-[#f8f9ff] px-6 py-3 space-y-4">
@@ -423,15 +391,11 @@ export function PreMarketChecklistPage({
               <h1 className="font-bold text-[22px] leading-7 tracking-[-0.55px] text-[#0b1c30]">
                 MORNING PRE-MARKET CHECKLIST
               </h1>
-              <span className="bg-[rgba(255,218,214,0.5)] border border-[rgba(255,218,214,0.5)] inline-flex gap-1.5 items-center px-[7px] py-[5px] rounded-xl shadow-sm">
-                <span className="relative size-2">
-                  <span className="absolute inset-0 rounded-xl bg-[#ba1a1a] opacity-75" />
-                  <span className="relative block size-2 rounded-xl bg-[#ba1a1a]" />
-                </span>
-                <img src="/figma/icon-1.svg" alt="" className="h-[13px] w-2.5" />
-                <span className="font-mono text-[10px] font-bold tracking-[0.5px] uppercase text-[#ba1a1a] leading-3">
-                  {gateLocked ? 'GATE LOCKED (INCOMPLETE)' : 'GATE OPEN'}
-                </span>
+              <span
+                className={overallReady ? 'inline-flex size-3 rounded-full bg-[#006c4a]' : 'inline-flex size-3 rounded-full bg-[#ba1a1a]'}
+                title={overallReady ? 'All stages complete' : 'One or more stages are incomplete'}
+                aria-label={overallReady ? 'All stages complete' : 'One or more stages are incomplete'}
+              >
               </span>
             </div>
             <p className="text-[13px] leading-[18px] text-[#45464d]">
@@ -589,34 +553,30 @@ export function PreMarketChecklistPage({
                 : 'bg-[rgba(255,218,214,0.5)] border-[rgba(255,218,214,0.5)]'
             }`}
           >
-            <div className="border-b border-[rgba(255,218,214,0.5)] pb-[5px] flex items-center justify-between">
+            <div className="border-b border-[#e5eeff] pb-[5px] flex items-center justify-between">
               <span className="inline-flex gap-1.5 items-center">
-                <span className="size-2 rounded-full bg-[#ba1a1a]" />
-                <span className="font-mono text-[10px] font-bold uppercase text-[#93000a] leading-3">
-                  {overallReady ? 'READY' : 'BLOCKED'}
+                <span className={overallReady ? 'size-2 rounded-full bg-[#006c4a]' : 'size-2 rounded-full bg-[#ba1a1a]'} />
+                <span className={overallReady ? 'font-mono text-[10px] font-bold uppercase text-[#00714e] leading-3' : 'font-mono text-[10px] font-bold uppercase text-[#93000a] leading-3'}>
+                  {overallReady ? 'READY TO OBSERVE' : 'NOT READY'}
                 </span>
               </span>
-              <span className="bg-[#ba1a1a] drop-shadow-sm inline-flex gap-1 items-center px-1.5 py-0.5 rounded-[2px]">
-                <img src="/figma/icon-4.svg" alt="" className="h-[10px] w-2" />
-                <span className="font-mono text-[10px] font-bold uppercase text-white leading-[15px]">
-                  {data.areas.dashboard_readiness.market_hour_trial_ready ? 'READY' : 'NOT READY'}
-                </span>
+              <span className={overallReady ? 'bg-[#82f5c1] inline-flex px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] font-bold uppercase text-[#00714e] leading-[15px]' : 'bg-[#ffdad6] inline-flex px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] font-bold uppercase text-[#93000a] leading-[15px]'}>
+                {overallReady ? 'ALL CLEAR' : 'CHECK STAGES'}
               </span>
             </div>
             <button
               type="button"
               onClick={onNavigateToObservation}
               disabled={!overallReady}
-              className="bg-[#006c4a] inline-flex items-center rounded-[2px] px-2 py-1 font-mono text-[12px] font-bold tracking-[-0.325px] leading-[18px] text-left text-white hover:bg-[#00714e] disabled:cursor-not-allowed disabled:bg-[#ffdad6] disabled:text-[#ba1a1a] disabled:opacity-70"
+              className="bg-[#006c4a] inline-flex items-center rounded-[2px] px-2 py-1 font-mono text-[12px] font-bold tracking-[-0.325px] leading-[18px] text-left text-white hover:bg-[#00714e] disabled:cursor-not-allowed disabled:bg-[#e5eeff] disabled:text-[#76777d] disabled:opacity-70"
               title={overallReady ? 'Open the observation view' : 'Complete all 5 stages first'}
             >
               GO TO OBSERVATION
             </button>
-            <div className="border-t border-[rgba(255,218,214,0.5)] pt-[5px] flex gap-1 items-center">
-              <img src="/figma/icon-5.svg" alt="" className="size-[11px]" />
-              <p className="text-[11px] font-medium leading-[16.5px] text-[#ba1a1a]">
+            <div className="border-t border-[#e5eeff] pt-[5px] flex gap-1 items-center">
+              <p className={overallReady ? 'text-[11px] font-medium leading-[16.5px] text-[#00714e]' : 'text-[11px] font-medium leading-[16.5px] text-[#45464d]'}>
                 {data.areas.dashboard_readiness.trial_ready_reason ||
-                  'All 5 stages required to enable observation'}
+                  (overallReady ? 'All 5 stages passed' : 'All 5 stages required to enable observation')}
               </p>
             </div>
           </div>
@@ -656,9 +616,6 @@ export function PreMarketChecklistPage({
               <h2 className="font-bold text-[18px] leading-6 text-[#0b1c30]">
                 Execution Gate Milestones
               </h2>
-              <span className="bg-[#e5eeff] ml-1 px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] font-semibold uppercase text-[#0b1c30] leading-3">
-                5 PIPELINE GATES
-              </span>
               {blockedCount > 0 && (
                 <span className="bg-[#ffdad6] border border-[rgba(255,218,214,0.5)] inline-flex gap-1 items-center px-[7px] py-[3px] rounded-[2px]">
                   <span className="size-1.5 rounded-full bg-[#ba1a1a]" />
@@ -668,10 +625,6 @@ export function PreMarketChecklistPage({
                 </span>
               )}
             </div>
-            <p className="font-mono text-[10px] text-[#45464d] leading-3">
-              SYNC CLOCK:{' '}
-              <span className="font-bold text-[#0b1c30]">{syncClock}.000 IST</span>
-            </p>
           </div>
 
           {/* Stage 01 */}
@@ -761,10 +714,11 @@ export function PreMarketChecklistPage({
             primaryAction={
               instruments.generate_action
                 ? {
-                    label: instruments.generate_action.label || 'Generate Instruments',
+                    label: 'Generate Instruments',
                     onClick: () => void handleGenerate('instruments'),
                     variant: 'primary',
                     loading: generatingTask === 'instruments',
+                    disabled: instruments.status === 'ok',
                     iconSrc: '/figma/icon-14.svg',
                   }
                 : undefined
@@ -772,7 +726,7 @@ export function PreMarketChecklistPage({
           >
             <StageMetricCard
               label="UNIVERSE"
-              badge={instruments.status === 'ok' ? <ValidBadge label="SYNCED" /> : <InvalidBadge />}
+              badge={instruments.status === 'ok' ? <ValidBadge /> : <InvalidBadge />}
             >
               <p className="font-bold text-[13px] text-[#0b1c30]">
                 {instruments.instruments_count} / {instruments.expected_count}
@@ -808,10 +762,11 @@ export function PreMarketChecklistPage({
             primaryAction={
               data.areas.historical_candles.generate_action
                 ? {
-                    label: data.areas.historical_candles.generate_action.label,
+                    label: 'Generate 1-Minute Candles',
                     onClick: () => void handleGenerate('historical'),
-                    variant: data.areas.historical_candles.status === 'ok' ? 'secondary' : 'primary',
+                    variant: 'primary',
                     loading: generatingTask === 'historical',
+                    disabled: data.areas.historical_candles.status === 'ok',
                   }
                 : undefined
             }
@@ -822,7 +777,7 @@ export function PreMarketChecklistPage({
                 data.areas.historical_candles.status === 'ok' ? (
                   <ValidBadge />
                 ) : (
-                  <InvalidBadge label={data.areas.historical_candles.message.toLowerCase().includes('incomplete') ? 'INCOMPLETE' : 'STALE'} />
+                    <InvalidBadge />
                 )
               }
               alignTop
@@ -893,10 +848,11 @@ export function PreMarketChecklistPage({
             primaryAction={
               baselines.generate_action
                 ? {
-                    label: baselines.generate_action.label,
+                    label: 'Generate Baselines',
                     onClick: () => void handleGenerate('baselines'),
-                    variant: baselines.status === 'ok' ? 'primary' : 'danger',
+                    variant: 'primary',
                     loading: generatingTask === 'baselines',
+                    disabled: baselines.status === 'ok',
                   }
                 : undefined
             }
@@ -966,10 +922,11 @@ export function PreMarketChecklistPage({
             primaryAction={
               data.areas.five_minute_candles.generate_action
                 ? {
-                    label: data.areas.five_minute_candles.generate_action.label,
+                    label: 'Generate 5-Minute Candles',
                     onClick: () => void handleGenerate('five-minute'),
-                    variant: data.areas.five_minute_candles.status === 'ok' ? 'primary' : 'danger',
+                    variant: 'primary',
                     loading: generatingTask === 'five-minute',
+                    disabled: data.areas.five_minute_candles.status === 'ok',
                   }
                 : undefined
             }
@@ -978,7 +935,7 @@ export function PreMarketChecklistPage({
               label="SEED STATUS"
               badge={
                 data.areas.five_minute_candles.status === 'ok' ? (
-                  <ValidBadge label="SEEDED" />
+                  <ValidBadge />
                 ) : (
                   <InvalidBadge />
                 )

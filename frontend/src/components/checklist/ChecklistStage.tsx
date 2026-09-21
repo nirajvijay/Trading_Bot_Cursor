@@ -54,6 +54,7 @@ interface Action {
   onClick: () => void
   variant?: 'primary' | 'secondary' | 'danger'
   loading?: boolean
+  disabled?: boolean
   iconSrc?: string
 }
 
@@ -83,7 +84,7 @@ function actionBtn(action: Action) {
       key={action.label}
       type="button"
       onClick={action.onClick}
-      disabled={action.loading}
+      disabled={action.loading || action.disabled}
       className={`${base} ${variant}`}
     >
       {action.iconSrc && (
@@ -105,7 +106,7 @@ export function ChecklistStage({
   secondaryAction,
   primaryAction,
 }: Props) {
-  const isKiteAuthStage = stageNumber === 'STAGE 01'
+  const isKiteAuthStage = true
   const tone = toneFromStatus(status)
   const pill = STATUS_PILL[tone]
   const borderAccent =
