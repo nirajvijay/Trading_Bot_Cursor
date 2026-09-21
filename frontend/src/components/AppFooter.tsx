@@ -44,7 +44,7 @@ export function AppFooter({
             TRADING ENGINE V1
           </span>
         </div>
-        <span className="label-caps tracking-wider">Simulation is not live-fill evidence · LIVE requires separate authorization</span>
+        <span className="label-caps tracking-wider">Demo 5x unless Live Kite orders is checked</span>
         <div className="flex items-center gap-1.5 font-data">
           <span className="material-symbols-outlined text-[14px]">schedule</span>
           <span>{now} IST</span>
@@ -75,10 +75,10 @@ export function AppFooter({
         <div className="flex items-center gap-4 font-data">
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-            MORNING PREPARATION
+            READ-ONLY CHECKS
           </span>
         </div>
-        <span className="label-caps tracking-wider">Prepare and validate data here · no orders</span>
+        <span className="label-caps tracking-wider">Copy commands to run locally</span>
         <div className="flex items-center gap-1.5 font-data">
           <span className="material-symbols-outlined text-[14px]">schedule</span>
           <span>{now} IST</span>
