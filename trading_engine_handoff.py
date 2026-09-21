@@ -25,7 +25,9 @@ SELECT
     a.trigger_price,
     a.tick_size,
     a.buffer_ticks,
-    a.session_date
+    a.session_date,
+    d.breakout_candle_volume,
+    d.avg_prior_3_1m_volume
 FROM live_continuation_decisions d
 JOIN live_continuation_arms a
   ON a.setup_id = d.setup_id
@@ -60,6 +62,8 @@ SELECT
     a.tick_size,
     a.buffer_ticks,
     a.session_date,
+    d.breakout_candle_volume,
+    d.avg_prior_3_1m_volume,
     v.classification
 FROM live_continuation_decisions d
 JOIN live_continuation_arms a
@@ -80,6 +84,43 @@ class VwapLookupError(Exception):
     """Hard SQLite failure reading live_vwap_qualifications."""
 
 
+def _candidate_from_row(row, *, classification: Optional[str] = None) -> TriggerCandidate:
+    """Build a candidate from a joined trigger row.
+
+    Shared by both fetchers so a column added to one query cannot silently go
+    unread by the other.
+    """
+    return TriggerCandidate(
+        setup_id=str(row["setup_id"]),
+        continuation_rule_version=str(row["continuation_rule_version"]),
+        session_date=str(row["session_date"]),
+        tradingsymbol=str(row["tradingsymbol"]),
+        instrument_token=int(row["instrument_token"]),
+        direction=str(row["direction"]),
+        trigger_price=float(row["trigger_price"]),
+        pullback_swing_high=(
+            None if row["pullback_swing_high"] is None else float(row["pullback_swing_high"])
+        ),
+        pullback_swing_low=(
+            None if row["pullback_swing_low"] is None else float(row["pullback_swing_low"])
+        ),
+        tick_size=float(row["tick_size"]),
+        buffer_ticks=int(row["buffer_ticks"]),
+        trigger_exchange_ts=(
+            None if row["trigger_exchange_ts"] is None else str(row["trigger_exchange_ts"])
+        ),
+        created_at=str(row["created_at"]),
+        last_price=(None if row["last_price"] is None else float(row["last_price"])),
+        vwap_classification=(None if classification is None else str(classification)),
+        breakout_candle_volume=(
+            None if row["breakout_candle_volume"] is None else int(row["breakout_candle_volume"])
+        ),
+        avg_prior_3_1m_volume=(
+            None if row["avg_prior_3_1m_volume"] is None else float(row["avg_prior_3_1m_volume"])
+        ),
+    )
+
+
 def fetch_triggered_since(
     live_db: Path,
     *,
@@ -96,41 +137,7 @@ def fetch_triggered_since(
     finally:
         conn.close()
 
-    out: List[TriggerCandidate] = []
-    for row in rows:
-        out.append(
-            TriggerCandidate(
-                setup_id=str(row["setup_id"]),
-                continuation_rule_version=str(row["continuation_rule_version"]),
-                session_date=str(row["session_date"]),
-                tradingsymbol=str(row["tradingsymbol"]),
-                instrument_token=int(row["instrument_token"]),
-                direction=str(row["direction"]),
-                trigger_price=float(row["trigger_price"]),
-                pullback_swing_high=(
-                    None
-                    if row["pullback_swing_high"] is None
-                    else float(row["pullback_swing_high"])
-                ),
-                pullback_swing_low=(
-                    None
-                    if row["pullback_swing_low"] is None
-                    else float(row["pullback_swing_low"])
-                ),
-                tick_size=float(row["tick_size"]),
-                buffer_ticks=int(row["buffer_ticks"]),
-                trigger_exchange_ts=(
-                    None
-                    if row["trigger_exchange_ts"] is None
-                    else str(row["trigger_exchange_ts"])
-                ),
-                created_at=str(row["created_at"]),
-                last_price=(
-                    None if row["last_price"] is None else float(row["last_price"])
-                ),
-            )
-        )
-    return out
+    return [_candidate_from_row(row) for row in rows]
 
 
 def fetch_vwap_classification(
@@ -200,41 +207,6 @@ def fetch_triggered_with_vwap_since(
     finally:
         conn.close()
 
-    out: List[TriggerCandidate] = []
-    for row in rows:
-        out.append(
-            TriggerCandidate(
-                setup_id=str(row["setup_id"]),
-                continuation_rule_version=str(row["continuation_rule_version"]),
-                session_date=str(row["session_date"]),
-                tradingsymbol=str(row["tradingsymbol"]),
-                instrument_token=int(row["instrument_token"]),
-                direction=str(row["direction"]),
-                trigger_price=float(row["trigger_price"]),
-                pullback_swing_high=(
-                    None
-                    if row["pullback_swing_high"] is None
-                    else float(row["pullback_swing_high"])
-                ),
-                pullback_swing_low=(
-                    None
-                    if row["pullback_swing_low"] is None
-                    else float(row["pullback_swing_low"])
-                ),
-                tick_size=float(row["tick_size"]),
-                buffer_ticks=int(row["buffer_ticks"]),
-                trigger_exchange_ts=(
-                    None
-                    if row["trigger_exchange_ts"] is None
-                    else str(row["trigger_exchange_ts"])
-                ),
-                created_at=str(row["created_at"]),
-                last_price=(
-                    None if row["last_price"] is None else float(row["last_price"])
-                ),
-                vwap_classification=(
-                    None if row["classification"] is None else str(row["classification"])
-                ),
-            )
-        )
-    return out
+    return [
+        _candidate_from_row(row, classification=row["classification"]) for row in rows
+    ]

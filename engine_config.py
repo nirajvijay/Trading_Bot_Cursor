@@ -16,8 +16,9 @@ formula".
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
-from engine_types import RiskLimits
+from engine_types import Position, RiskLimits
 
 # Defaults for the current account. Both caps and total capital are editable at
 # start (the Execution Desk's start panel); leverage stays 5x unless there is a
@@ -65,6 +66,27 @@ class SessionRiskConfig:
             per_trade_cap_vwap_limited_rupees=self.per_trade_cap_vwap_limited_rupees,
             daily_loss_cap_rupees=self.daily_loss_cap_rupees,
         )
+
+
+def margin_used_rupees(positions: Sequence[Position], leverage_factor: float) -> float:
+    """Capital committed to positions that currently hold size.
+
+    Notional divided by leverage, which is the MIS margin model. Uses the real
+    entry fill once known and the trigger price before that, so a position in
+    flight still consumes capital rather than looking free.
+    """
+    if leverage_factor <= 0:
+        return 0.0
+    total = 0.0
+    for position in positions:
+        qty = int(position.qty or 0)
+        if qty <= 0:
+            continue
+        price = position.entry_price or position.candidate.trigger_price
+        if not price:
+            continue
+        total += (qty * float(price)) / float(leverage_factor)
+    return total
 
 
 def validate(config: SessionRiskConfig) -> None:
