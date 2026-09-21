@@ -2,25 +2,37 @@
    so its tokens (--rhm-*) never leak into or collide with the app's own
    --color-* variables in index.css. */
 .radar-heat-map {
-  --rhm-bg: #0a0d12;
-  --rhm-surface: #161a21;
-  --rhm-card: #1b2029;
-  --rhm-border: #2a303b;
-  --rhm-ink: #eef1f5;
-  --rhm-ink-muted: #8b93a3;
-  --rhm-ink-on-accent: #0a0d12;
+  /* Neon-on-white theme. One semantic color per meaning, reused everywhere
+     (status cards, price direction, VWAP badge) so the palette stays simple:
+     gray = idle, yellow/amber = building, green = go, blue = live/triggered,
+     pink-red = rejected/stop. */
+  --rhm-bg: #f4f6fb;
+  --rhm-surface: #ffffff;
+  --rhm-card: #ffffff;
+  --rhm-border: #e2e6ee;
+  --rhm-ink: #0b1220;
+  --rhm-ink-muted: #6b7280;
+  --rhm-ink-on-accent: #ffffff;
 
-  --rhm-waiting: #3f4652;       --rhm-waiting-ink: #aab1bd;
-  --rhm-spike: #eab308;         --rhm-spike-ink: var(--rhm-ink-on-accent);
-  --rhm-setup: #f0973b;         --rhm-setup-ink: var(--rhm-ink-on-accent);
-  --rhm-armed: #22c55e;         --rhm-armed-ink: var(--rhm-ink-on-accent);   --rhm-armed-glow: rgba(34,197,94,0.55);
-  --rhm-triggered: #047857;     --rhm-triggered-ink: #e8fff5;                --rhm-triggered-glow: rgba(4,120,87,0.6);
-  --rhm-rejected: #ef4444;      --rhm-rejected-ink: var(--rhm-ink-on-accent);
-  --rhm-negated: #5c1d1d;       --rhm-negated-ink: #e3b8b8;
+  --rhm-cyan: #0091ff;
 
-  --rhm-up: #4ade80;
-  --rhm-down: #f87171;
-  --rhm-focus: #60a5fa;
+  --rhm-waiting: #cbd2db;       --rhm-waiting-ink: #6b7280;
+  --rhm-spike: #b5c400;         --rhm-spike-ink: #ffffff;
+  --rhm-setup: #ff8a00;         --rhm-setup-ink: #ffffff;
+  --rhm-armed: #00c853;         --rhm-armed-ink: #ffffff;                    --rhm-armed-glow: rgba(0,200,83,0.35);
+  --rhm-triggered: #0091ff;     --rhm-triggered-ink: #ffffff;                --rhm-triggered-glow: rgba(0,145,255,0.4);
+  --rhm-rejected: #ff1744;      --rhm-rejected-ink: #ffffff;
+  --rhm-negated: #fbe4e8;       --rhm-negated-ink: #b0324a;
+
+  --rhm-up: #00c853;
+  --rhm-down: #ff1744;
+  --rhm-focus: #0091ff;
+
+  /* VWAP confirmation badge — reuses the same semantic colors above */
+  --rhm-vwap-accept: var(--rhm-armed);
+  --rhm-vwap-limited: var(--rhm-setup);
+  --rhm-vwap-reject: var(--rhm-rejected);
+  --rhm-vwap-unavailable: var(--rhm-ink-muted);
 
   --rhm-radius-sm: 4px;
   --rhm-radius-md: 8px;
@@ -36,29 +48,6 @@
   padding: 8px 14px;
   display: flex; flex-direction: column; gap: 6px;
   flex: 1 1 auto; min-height: 0;
-}
-
-@media (prefers-color-scheme: light) {
-  .radar-heat-map:not([data-rhm-theme="dark"]) {
-    --rhm-bg: #f2f3f6; --rhm-surface: #ffffff; --rhm-card: #eaecf0; --rhm-border: #d7dbe1;
-    --rhm-ink: #161a21; --rhm-ink-muted: #5b6472; --rhm-ink-on-accent: #0a0d12;
-    --rhm-waiting: #aab1bd; --rhm-waiting-ink: #3f4652;
-    --rhm-spike: #00dcff; --rhm-setup: #ff7a00;
-    --rhm-armed: #00ee55; --rhm-armed-glow: rgba(22,163,74,0.35);
-    --rhm-triggered: #065f46; --rhm-triggered-glow: rgba(6,95,70,0.4);
-    --rhm-rejected: #ff0000; --rhm-negated: #7a2626; --rhm-negated-ink: #f5e2e2;
-    --rhm-up: #15803d; --rhm-down: #b91c1c; --rhm-focus: #2563eb;
-  }
-}
-.radar-heat-map[data-rhm-theme="light"] {
-  --rhm-bg: #f2f3f6; --rhm-surface: #ffffff; --rhm-card: #eaecf0; --rhm-border: #d7dbe1;
-  --rhm-ink: #161a21; --rhm-ink-muted: #5b6472; --rhm-ink-on-accent: #0a0d12;
-  --rhm-waiting: #aab1bd; --rhm-waiting-ink: #3f4652;
-  --rhm-spike: #00dcff; --rhm-setup: #ff7a00;
-  --rhm-armed: #00ee55; --rhm-armed-glow: rgba(22,163,74,0.35);
-  --rhm-triggered: #065f46; --rhm-triggered-glow: rgba(6,95,70,0.4);
-  --rhm-rejected: #ff0000; --rhm-negated: #7a2626; --rhm-negated-ink: #f5e2e2;
-  --rhm-up: #15803d; --rhm-down: #b91c1c; --rhm-focus: #2563eb;
 }
 
 .radar-heat-map .rhm-header {
@@ -115,7 +104,7 @@
 .radar-heat-map .rhm-stat-num { font-family: var(--rhm-font-mono); font-size: 15px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .radar-heat-map .rhm-stat-label { font-size: 8px; color: var(--rhm-ink-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .radar-heat-map .rhm-stat.armed .rhm-stat-num { color: var(--rhm-armed); }
-.radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-triggered); }
+.radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-cyan); }
 .radar-heat-map .rhm-stat.rejected .rhm-stat-num { color: var(--rhm-rejected); }
 
 .radar-heat-map .rhm-grid-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; border-radius: var(--rhm-radius-md); }
@@ -154,9 +143,19 @@
 .radar-heat-map .rhm-change.neg { color: var(--rhm-down); }
 
 .radar-heat-map .rhm-card-bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+.radar-heat-map .rhm-status-group { display: flex; align-items: baseline; gap: 3px; min-width: 0; }
 .radar-heat-map .rhm-status-label { font-size: 7.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
 .radar-heat-map .rhm-updated { font-size: 7px; color: var(--rhm-ink-muted); font-variant-numeric: tabular-nums; }
 .radar-heat-map .rhm-distance { font-size: 7.5px; font-family: var(--rhm-font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Repeat-setup indicator: symbol has armed/triggered/rejected more than
+   once this session. Neutral color so it doesn't compete with the card's
+   own status color — it's a "there's history here" signal, not an outcome. */
+.radar-heat-map .rhm-setup-count {
+  font-size: 7px; font-family: var(--rhm-font-mono); font-weight: 700;
+  color: var(--rhm-ink-muted); background: var(--rhm-border);
+  border-radius: 999px; padding: 1px 4px; flex: 0 0 auto;
+}
 
 .radar-heat-map .rhm-card.WAITING .rhm-dot { background: var(--rhm-waiting); }
 .radar-heat-map .rhm-card.WAITING .rhm-status-label { color: var(--rhm-waiting-ink); }
@@ -173,7 +172,7 @@
 .radar-heat-map .rhm-card.ARMED .rhm-dot { background: var(--rhm-armed); box-shadow: 0 0 8px var(--rhm-armed); }
 .radar-heat-map .rhm-card.ARMED .rhm-status-label { color: var(--rhm-armed); }
 
-.radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-triggered); box-shadow: 0 0 0 1px var(--rhm-triggered), 0 0 16px var(--rhm-triggered-glow); }
+.radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-cyan); box-shadow: 0 0 0 1px var(--rhm-cyan), 0 0 16px var(--rhm-triggered-glow); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-symbol, .radar-heat-map .rhm-card.TRIGGERED .rhm-price { color: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-dot { background: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-status-label { color: var(--rhm-triggered-ink); }
@@ -187,6 +186,13 @@
 .radar-heat-map .rhm-card.NEGATED .rhm-symbol, .radar-heat-map .rhm-card.NEGATED .rhm-price { color: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-dot { background: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-status-label { color: var(--rhm-negated-ink); }
+
+/* VWAP confirmation badge dot, shown on TRIGGERED cards */
+.radar-heat-map .rhm-vwap-dot { width: 6px; height: 6px; border-radius: 999px; flex: 0 0 auto; }
+.radar-heat-map .rhm-vwap-dot.ACCEPT { background: var(--rhm-vwap-accept); box-shadow: 0 0 6px var(--rhm-vwap-accept); }
+.radar-heat-map .rhm-vwap-dot.LIMITED { background: var(--rhm-vwap-limited); box-shadow: 0 0 6px var(--rhm-vwap-limited); }
+.radar-heat-map .rhm-vwap-dot.REJECT { background: var(--rhm-vwap-reject); box-shadow: 0 0 6px var(--rhm-vwap-reject); }
+.radar-heat-map .rhm-vwap-dot.UNAVAILABLE { background: var(--rhm-vwap-unavailable); }
 
 .radar-heat-map .rhm-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
