@@ -139,6 +139,34 @@ def trading_engine_stop_file() -> Path:
     return runtime_cache_dir() / "trading_engine.stop"
 
 
+def execution_engine_db_path() -> Path:
+    """Rebuilt execution engine store: positions, position_events, commands.
+
+    A separate namespace from the old ledger on purpose — the new engine shares
+    no schema with it, and nothing is migrated across.
+    """
+    override = os.environ.get("EXECUTION_ENGINE_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+    return local_data_dir() / "execution_engine.db"
+
+
+def execution_engine_status_file() -> Path:
+    """Per-tick heartbeat, and the stopping-on-purpose note."""
+    override = os.environ.get("EXECUTION_ENGINE_STATUS_FILE")
+    if override:
+        return Path(override).expanduser()
+    return runtime_cache_dir() / "execution_engine_status.json"
+
+
+def execution_engine_live_mark_file() -> Path:
+    """Unrealised P&L per tick. Its own file, never the heartbeat."""
+    override = os.environ.get("EXECUTION_ENGINE_LIVE_MARK_FILE")
+    if override:
+        return Path(override).expanduser()
+    return runtime_cache_dir() / "execution_engine_live_marks.json"
+
+
 def admin_config_db_path() -> Path:
     """Admin Console V1 runtime configuration database."""
     override = os.environ.get("ADMIN_CONFIG_DB_PATH")

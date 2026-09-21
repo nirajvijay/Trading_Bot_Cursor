@@ -207,10 +207,15 @@ class CommandQueue:
 
     def pending(self) -> List[Command]:
         """Unapplied commands, oldest first."""
-        rows = self._conn.execute(
-            "SELECT * FROM engine_commands WHERE status = ? ORDER BY command_id ASC",
-            (CommandStatus.PENDING.value,),
-        ).fetchall()
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM engine_commands WHERE status = ? ORDER BY command_id ASC",
+                (CommandStatus.PENDING.value,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # A read-only handle on a store the engine has created but never
+            # enqueued into: no table yet is "no commands", not an error.
+            return []
         out: List[Command] = []
         for row in rows:
             try:
@@ -255,9 +260,12 @@ class CommandQueue:
             )
 
     def record(self, command_id: int) -> Optional[Dict[str, Any]]:
-        row = self._conn.execute(
-            "SELECT * FROM engine_commands WHERE command_id = ?", (int(command_id),)
-        ).fetchone()
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM engine_commands WHERE command_id = ?", (int(command_id),)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
         if row is None:
             return None
         data = dict(row)
@@ -272,8 +280,11 @@ class CommandQueue:
         return [PendingCommand(command=c, _queue=self) for c in self.pending()]
 
     def recent(self, limit: int = 50) -> List[Dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT * FROM engine_commands ORDER BY command_id DESC LIMIT ?",
-            (int(limit),),
-        ).fetchall()
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM engine_commands ORDER BY command_id DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
         return [dict(row) for row in rows]
