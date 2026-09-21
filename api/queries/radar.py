@@ -33,6 +33,7 @@ class _SymbolContext:
     trigger_price: Optional[float] = None
     has_arm: bool = False
     setup_count: int = 0
+    vwap_classification: Optional[str] = None
 
 
 def _load_tokens(instruments_db: Path) -> Dict[str, int]:
@@ -238,6 +239,7 @@ def fetch_radar_rows(
         _apply_spikes(conn, contexts, session_date)
         _apply_setups(conn, contexts, session_date)
         _apply_continuation(conn, contexts, session_date)
+        _apply_vwap(conn, contexts, session_date)
     finally:
         conn.close()
 
@@ -433,6 +435,36 @@ def _apply_continuation(
                 ctx.last_event_at = created
 
 
+def _apply_vwap(
+    conn: sqlite3.Connection,
+    contexts: Dict[str, _SymbolContext],
+    session_date: str,
+) -> None:
+    """Latest VWAP v2 classification per symbol for this session (ACCEPT /
+    LIMITED / REJECT / UNAVAILABLE), one row per TRIGGERED continuation."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT tradingsymbol, classification, created_at
+            FROM live_vwap_qualifications
+            WHERE session_date = ?
+            ORDER BY tradingsymbol, created_at
+            """,
+            (session_date,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+
+    for row in rows:
+        symbol = str(row["tradingsymbol"])
+        ctx = contexts.get(symbol)
+        if ctx is None:
+            continue
+        # Rows are ordered by created_at ascending, so the last write per
+        # symbol wins — always the most recent classification.
+        ctx.vwap_classification = str(row["classification"])
+
+
 def _spike_label(has_spike: bool) -> str:
     return "Confirmed" if has_spike else "-"
 
@@ -534,4 +566,5 @@ def _to_row(ctx: _SymbolContext) -> RadarRow:
         last_event=last_event,
         updated_at=ctx.last_event_at,
         setup_count=ctx.setup_count,
+        vwap_classification=ctx.vwap_classification,
     )

@@ -25,6 +25,7 @@ class RadarRow(BaseModel):
     last_event: str = "-"
     updated_at: Optional[str] = None
     setup_count: int = 0
+    vwap_classification: Optional[str] = None
 
 
 class RadarResponse(BaseModel):

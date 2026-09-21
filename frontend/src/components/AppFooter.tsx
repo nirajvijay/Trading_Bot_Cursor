@@ -1,21 +1,32 @@
 import { formatTimeIst } from '../lib/format'
 import { resolveFeedStatus, type RunnerPresence } from '../lib/feedStatus'
-import type { RunnerStatus } from '../api/types'
+import type { RadarRow, RunnerStatus } from '../api/types'
 import type { AppTab } from './TopAppBar'
 
 interface Props {
   activeTab: AppTab
   status?: RunnerStatus | null
   runnerPresence?: RunnerPresence
+  rows?: RadarRow[]
 }
 
 export function AppFooter({
   activeTab,
   status = null,
   runnerPresence = 'stopped',
+  rows = [],
 }: Props) {
   const now = formatTimeIst(new Date().toISOString())
   const feed = resolveFeedStatus(status, runnerPresence)
+
+  const vwapCounts = rows.reduce(
+    (acc, row) => {
+      if (row.vwap_classification) acc[row.vwap_classification] = (acc[row.vwap_classification] ?? 0) + 1
+      return acc
+    },
+    {} as Record<string, number>,
+  )
+  const vwapTotal = Object.values(vwapCounts).reduce((sum, n) => sum + n, 0)
 
   if (activeTab === 'admin') {
     return (
@@ -97,6 +108,12 @@ export function AppFooter({
       </div>
       <span className="label-caps tracking-wider">
         {activeTab === 'radar' ? feed.label : 'Observation mode enabled'}
+        {activeTab === 'radar' && vwapTotal > 0 && (
+          <>
+            {' '}· VWAP {vwapCounts.ACCEPT ?? 0} accept · {vwapCounts.LIMITED ?? 0} limited ·{' '}
+            {vwapCounts.REJECT ?? 0} reject
+          </>
+        )}
       </span>
       <div className="flex items-center gap-1.5 font-data">
         <span className="material-symbols-outlined text-[14px]">schedule</span>

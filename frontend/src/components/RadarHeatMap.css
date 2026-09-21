@@ -166,6 +166,7 @@
 .radar-heat-map .rhm-card.rhm-dim { opacity: 0.4; filter: grayscale(0.9) brightness(0.55); pointer-events: none; }
 
 .radar-heat-map .rhm-card-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
+.radar-heat-map .rhm-card-top-dots { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 .radar-heat-map .rhm-symbol {
   font-family: var(--rhm-font-mono); font-size: 13px; font-weight: 700; color: var(--rhm-ink);
   min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;

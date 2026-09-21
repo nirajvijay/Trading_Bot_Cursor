@@ -248,7 +248,15 @@ export function RadarHeatMap({
                 >
                   <div className="rhm-card-top">
                     <span className="rhm-symbol">{card.row.symbol}</span>
-                    <span className="rhm-dot" />
+                    <span className="rhm-card-top-dots">
+                      {card.row.vwap_classification && (
+                        <span
+                          className={`rhm-vwap-dot ${card.row.vwap_classification}`}
+                          title={`VWAP: ${card.row.vwap_classification.charAt(0)}${card.row.vwap_classification.slice(1).toLowerCase()}`}
+                        />
+                      )}
+                      <span className="rhm-dot" />
+                    </span>
                   </div>
                   <div className="rhm-card-bottom">
                     <span className="rhm-status-group">

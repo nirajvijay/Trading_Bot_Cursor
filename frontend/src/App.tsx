@@ -272,7 +272,7 @@ export default function App() {
         )}
       </main>
       {activeTab !== 'checklist' && (
-        <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} />
+        <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} rows={rows} />
       )}
     </StationConsoleShell>
   )

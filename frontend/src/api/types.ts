@@ -24,6 +24,7 @@ export interface RadarRow {
   last_event: string
   updated_at?: string | null
   setup_count?: number
+  vwap_classification?: 'ACCEPT' | 'LIMITED' | 'REJECT' | 'UNAVAILABLE' | null
 }
 
 export interface TimelineEvent {
