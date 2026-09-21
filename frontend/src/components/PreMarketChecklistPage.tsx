@@ -735,12 +735,12 @@ export function PreMarketChecklistPage({
                 Tick-size {instruments.tick_size_count}/{instruments.expected_count}
               </p>
             </StageMetricCard>
-            <StageMetricCard label="LAST UPDATED">
+            <StageMetricCard label="LAST UPDATED" alignTop>
               <p className="font-mono text-[12px] font-semibold text-[#0b1c30]">
                 {formatDateTimeIst(instruments.last_updated)}
               </p>
             </StageMetricCard>
-            <StageMetricCard label="STATUS">
+            <StageMetricCard label="STATUS" alignTop>
               <p className="text-[13px] font-bold text-[#0b1c30]">
                 {instruments.status === 'ok' ? 'Up to Date' : instruments.message}
               </p>
@@ -772,7 +772,7 @@ export function PreMarketChecklistPage({
             }
           >
             <StageMetricCard
-              label="CANDLE STATUS"
+              label="HISTORY STATUS"
               badge={
                 data.areas.historical_candles.status === 'ok' ? (
                   <ValidBadge />
@@ -785,8 +785,8 @@ export function PreMarketChecklistPage({
             >
               <p className={`font-bold text-[13px] ${data.areas.historical_candles.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
                 {data.areas.historical_candles.status === 'ok'
-                  ? 'Ready for the prior session'
-                  : 'Historical data refresh required'}
+                  ? 'Prior-session history valid'
+                  : '1-minute history required'}
               </p>
               <div className="mt-1.5 grid w-full grid-cols-2 gap-x-3 border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
                 <span className="text-[#76777d]">Required session</span>
@@ -877,17 +877,15 @@ export function PreMarketChecklistPage({
                 </span>
               </div>
             </StageMetricCard>
-            <StageMetricCard label="DATA AS OF" alignTop danger={baselines.status !== 'ok'}>
-              <p className={`font-bold text-[13px] ${baselines.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
-                {baselines.baseline_as_of ?? '—'}
+            <StageMetricCard label="COVERAGE" alignTop>
+              <p className="font-mono text-[18px] font-bold leading-5 text-[#0b1c30]">
+                {baselines.symbols_covered} / {baselines.expected_count}
               </p>
-              <p className="text-[11px] text-[#45464d]">
-                {baselines.status === 'ok' ? 'Baseline is current' : 'Baseline is stale or missing'}
-              </p>
+              <p className="text-[11px] text-[#45464d]">symbols ready</p>
               <div className="mt-1.5 flex w-full items-center justify-between border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
-                <span className="text-[#76777d]">Expected</span>
+                <span className="text-[#76777d]">Missing</span>
                 <span className="font-mono font-semibold text-[#0b1c30]">
-                  {baselines.expected_as_of ?? '—'}
+                  {Math.max(0, baselines.expected_count - baselines.symbols_covered)}
                 </span>
               </div>
             </StageMetricCard>
@@ -932,7 +930,7 @@ export function PreMarketChecklistPage({
             }
           >
             <StageMetricCard
-              label="SEED STATUS"
+              label="CANDLE STATUS"
               badge={
                 data.areas.five_minute_candles.status === 'ok' ? (
                   <ValidBadge />
@@ -945,8 +943,8 @@ export function PreMarketChecklistPage({
             >
               <p className={`font-bold text-[13px] ${data.areas.five_minute_candles.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
                 {data.areas.five_minute_candles.status === 'ok'
-                  ? 'Ready for 5-minute generation'
-                  : 'Historical seed refresh required'}
+                  ? '5-minute candles valid'
+                  : '5-minute candle seed required'}
               </p>
               <div className="mt-1.5 grid w-full grid-cols-2 gap-x-3 border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
                 <span className="text-[#76777d]">Required session</span>
