@@ -1,0 +1,313 @@
+import type {
+  AdminActionResponse,
+  AdminAuditResponse,
+  AdminConfigPatchRequest,
+  AdminConfigResponse,
+  AuthStatusResponse,
+  CheckTokenResponse,
+  KiteStartResponse,
+  LoginUrlResponse,
+  MeResponse,
+  MfaSetupResponse,
+  ObservationReadiness,
+  ObservationStartResponse,
+  TradingEngineSnapshot,
+  TradingEngineStatus,
+  TradingStartResponse,
+  PreMarketChecklistResponse,
+  GenerateResponse,
+  RadarResponse,
+  RunnerStatus,
+  SessionCoverage,
+  SessionResponse,
+  SymbolTimelineResponse,
+} from './types'
+
+const BASE = '/api/v1'
+
+export interface SectorMap {version: string; universe_version: string; valid: boolean; reason: string | null; symbol_count: number; sectors: {name: string; symbols: string[]}[]}
+export function fetchSectorMap() {return getJson<SectorMap>('/observation/sectors')}
+export function fetchSessionClock() {return getJson<{state: string; reason: string | null; as_of: string}>('/observation/session-clock')}
+export interface ControlStrip {execution_mode: string; entry_mode: string; entry_permission: string; engine_state: string; feed_age_seconds: number | null; feed_status: string; sync_age_seconds: number | null; mark_age_seconds: number | null; open_pnl: number | null; unresolved_incident: boolean; as_of: string}
+export interface TradingCommand {command_id: number; kind: string; state: string; result?: Record<string, unknown>; trade_id?: string | null}
+type TradingSettings = Record<string, number | string> & {allocated_capital_inr: number; daily_loss_cap_inr: number; preferred_execution_mode?: 'PAPER' | 'LIVE'}
+export interface TradingControl {strip: ControlStrip; effective: TradingSettings; saved: TradingSettings; effective_version_id: string; saved_version_id: string; live_execution_authorized: boolean; commands: TradingCommand[]; incidents: Record<string,unknown>[]; recovery_events: Record<string,unknown>[]}
+export function fetchTradingControl() {return getJson<TradingControl>('/trading-engine/control')}
+export interface SetupChoice {setup_id: string; continuation_rule_version: string; tradingsymbol: string; direction: string; signal_age_seconds: number | null}
+export interface TradePreview {setup_id: string; continuation_rule_version: string; symbol: string; direction: string; proposed_qty: number; structural_stop: number | null; proposed_stop: number | null; limit_price: number | null; risk_inr: number | null; notional: number; eligible: boolean; blockers: string[]; config_version_id: string; signal_age_seconds: number | null; quote_age_seconds: number | null}
+export function fetchTradingSetups() {return getJson<{setups: SetupChoice[]}>('/trading-engine/setups')}
+export function postTradingPreview(body: {setup_id: string; continuation_rule_version: string; qty_override?: number; stop_tighten?: number}) {return postJson<TradePreview>('/trading-engine/preview', body)}
+export function postTradingCommand(body: Record<string, unknown>) {return postJson<TradingCommand>('/trading-engine/commands', body)}
+export interface TradeAudit {
+  live_mark: {price: number | null; open_pnl: number | null; quote_as_of: string | null; age_seconds: number | null; stale: boolean; basis: string}
+  trade: {trade_id: string; symbol: string; direction: string; intended_qty: number; filled_qty: number; exited_qty: number; remaining_entry_qty: number; remaining_position_qty: number; protected_qty: number; entry_fill: number | null; initial_stop: number | null; current_stop: number | null; realised_pnl: number; pnl_provisional: boolean; entry_value_est: number; exit_value_est: number; updated_at: string}
+  original_setup: Record<string, unknown> | null
+  original_setup_available: boolean
+  events: {event_id: number; at: string; action: string; actor: string; old_stop: number | null; new_stop: number | null; payload: Record<string, unknown>}[]
+  orders: Record<string, unknown>[]
+  as_of: string
+}
+export function fetchTradeAudit(id: string) {return getJson<TradeAudit>(`/trading-engine/trades/${encodeURIComponent(id)}/audit`)}
+
+export class ApiError extends Error {
+  status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
+  const parts = document.cookie.split(';')
+  for (const part of parts) {
+    const [rawKey, ...rest] = part.trim().split('=')
+    if (rawKey === name) {
+      return decodeURIComponent(rest.join('='))
+    }
+  }
+  return null
+}
+
+function csrfHeaders(): Record<string, string> {
+  const token = readCookie('nr_csrf')
+  return token ? { 'X-CSRF-Token': token } : {}
+}
+
+type AuthHandlers = {
+  onUnauthorized?: () => void
+}
+
+let authHandlers: AuthHandlers = {}
+
+export function setAuthHandlers(handlers: AuthHandlers) {
+  authHandlers = handlers
+}
+
+async function handleResponse<T>(res: Response, path: string): Promise<T> {
+  if (res.status === 401) {
+    authHandlers.onUnauthorized?.()
+    const body = await res.json().catch(() => ({}))
+    const detail = typeof body.detail === 'string' ? body.detail : 'Authentication required'
+    throw new ApiError(401, detail)
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const detail = typeof body.detail === 'string' ? body.detail : `API ${res.status}: ${path}`
+    throw new ApiError(res.status, detail)
+  }
+  if (res.status === 204) {
+    return undefined as T
+  }
+  return res.json() as Promise<T>
+}
+
+async function getJson<T>(path: string, timeoutMs = 10000): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  return handleResponse<T>(res, path)
+}
+
+async function postJson<T>(path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...csrfHeaders(),
+      ...extraHeaders,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  return handleResponse<T>(res, path)
+}
+
+export function fetchSessions(): Promise<string[]> {
+  return getJson<string[]>('/sessions')
+}
+
+export function fetchRadar(sessionDate: string): Promise<RadarResponse> {
+  return getJson<RadarResponse>(`/sessions/${sessionDate}/radar`)
+}
+
+export function fetchSymbolTimeline(
+  sessionDate: string,
+  symbol: string,
+): Promise<SymbolTimelineResponse> {
+  return getJson<SymbolTimelineResponse>(
+    `/sessions/${sessionDate}/symbols/${encodeURIComponent(symbol)}/timeline`,
+  )
+}
+
+export function fetchCoverage(sessionDate: string): Promise<SessionCoverage> {
+  return getJson<SessionCoverage>(`/sessions/${sessionDate}/coverage`)
+}
+
+export function fetchStatus(sessionDate: string): Promise<RunnerStatus> {
+  return getJson<RunnerStatus>(`/sessions/${sessionDate}/status`)
+}
+
+export function fetchHealth(): Promise<{ status: string }> {
+  return getJson<{ status: string }>('/health')
+}
+
+export function fetchMe(): Promise<MeResponse> {
+  return getJson<MeResponse>('/account/me')
+}
+
+export function postLogin(username: string, password: string, totp?: string): Promise<MeResponse> {
+  return postJson<MeResponse>('/account/login', {
+    username,
+    password,
+    ...(totp ? { totp } : {}),
+  })
+}
+
+export function postLogout(): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/logout')
+}
+
+export function postStepUp(password: string, totp?: string): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/step-up', {
+    password,
+    ...(totp ? { totp } : {}),
+  })
+}
+
+export function postMfaSetup(): Promise<MfaSetupResponse> {
+  return postJson<MfaSetupResponse>('/account/mfa/setup', {})
+}
+
+export function postMfaConfirm(totp: string): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/mfa/confirm', { totp })
+}
+
+export function fetchAuthStatus(): Promise<AuthStatusResponse> {
+  return getJson<AuthStatusResponse>('/auth/status')
+}
+
+export function fetchLoginUrl(): Promise<LoginUrlResponse> {
+  return getJson<LoginUrlResponse>('/auth/login-url')
+}
+
+export function postKiteStart(password?: string): Promise<KiteStartResponse> {
+  return postJson<KiteStartResponse>('/auth/kite/start', password ? { password } : {})
+}
+
+export function postSession(requestToken: string, password?: string): Promise<SessionResponse> {
+  return postJson<SessionResponse>('/auth/session', {
+    request_token: requestToken,
+    ...(password ? { password } : {}),
+  })
+}
+
+export function postCheckToken(): Promise<CheckTokenResponse> {
+  return postJson<CheckTokenResponse>('/auth/check-token')
+}
+
+export function fetchPreMarketChecklist(sessionDate?: string): Promise<PreMarketChecklistResponse> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson<PreMarketChecklistResponse>(`/premarket-checklist${query}`, 120000)
+}
+
+export function postGenerateLocalData(
+  task: string,
+  sessionDate?: string,
+): Promise<GenerateResponse> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return postJson<GenerateResponse>(
+    `/premarket-checklist/generate/${encodeURIComponent(task)}${query}`,
+  )
+}
+
+export function fetchObservationReadiness(sessionDate?: string): Promise<ObservationReadiness> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson<ObservationReadiness>(`/observation/readiness${query}`)
+}
+
+export function postStartObservation(sessionDate?: string): Promise<ObservationStartResponse> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return postJson<ObservationStartResponse>(`/observation/start${query}`)
+}
+
+export function fetchTradingEngineStatus(sessionDate?: string): Promise<TradingEngineStatus> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson<TradingEngineStatus>(`/trading-engine/status${query}`)
+}
+
+export function fetchTradingEngineSnapshot(sessionDate?: string): Promise<TradingEngineSnapshot> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson<TradingEngineSnapshot>(`/trading-engine/snapshot${query}`)
+}
+
+export function postStartTradingEngine(body: {
+  confirm_live_orders?: boolean
+  session_date?: string
+  total_capital?: number
+}): Promise<TradingStartResponse> {
+  return postJson<TradingStartResponse>('/trading-engine/start', body)
+}
+
+export function postStopTradingEngine(): Promise<{ success: boolean; message: string }> {
+  return postJson('/trading-engine/stop')
+}
+
+export function postTradingCapital(totalCapital: number): Promise<{ success: boolean; total_capital: number }> {
+  return postJson('/trading-engine/capital', { total_capital: totalCapital })
+}
+
+export function postTrailStop(
+  tradeId: string,
+  newStop: number,
+  lastPrice?: number | null,
+): Promise<{ success: boolean; message: string }> {
+  return postJson(`/trading-engine/trades/${encodeURIComponent(tradeId)}/trail-stop`, {
+    new_stop: newStop,
+    last_price: lastPrice ?? null,
+  })
+}
+
+export function postAutoTrail(
+  tradeId: string,
+  enabled: boolean,
+): Promise<{ success: boolean; message: string }> {
+  return postJson(`/trading-engine/trades/${encodeURIComponent(tradeId)}/auto-trail`, {
+    enabled,
+  })
+}
+
+export function fetchAdminConfig(): Promise<AdminConfigResponse> {
+  return getJson('/admin/config')
+}
+
+export async function patchAdminConfig(body: AdminConfigPatchRequest): Promise<AdminConfigResponse> {
+  const res = await fetch(`${BASE}/admin/config`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...csrfHeaders(),
+    },
+    body: JSON.stringify(body),
+  })
+  return handleResponse(res, '/admin/config')
+}
+
+export function postAdminPause(): Promise<AdminActionResponse> {
+  return postJson('/admin/trading/pause')
+}
+
+export function postAdminResume(): Promise<AdminActionResponse> {
+  return postJson('/admin/trading/resume')
+}
+
+export function fetchAdminAudit(limit = 50, offset = 0): Promise<AdminAuditResponse> {
+  return getJson(`/admin/audit?limit=${limit}&offset=${offset}`)
+}
+
+export function postAdminRollback(targetVersionId: string): Promise<AdminConfigResponse> {
+  return postJson('/admin/config/rollback', { target_version_id: targetVersionId })
+}
