@@ -132,6 +132,7 @@ class TriggerCandidate:
     trigger_exchange_ts: Optional[str]
     created_at: str
     last_price: Optional[float] = None
+    vwap_classification: Optional[str] = None
 
 
 @dataclass
