@@ -137,14 +137,15 @@
   height: 100%;
   grid-template-columns: repeat(10, minmax(0, 1fr));
   grid-auto-rows: minmax(0, 1fr);
-  gap: 4px;
+  /* Adjacent sector slots touch so their tint reads as one shared block. */
+  gap: 0;
 }
 
 .radar-heat-map .rhm-sector-slot {
   display: flex;
   min-width: 0; min-height: 0;
-  padding: 3px;
-  border-radius: calc(var(--rhm-radius-sm) + 3px);
+  padding: 4px;
+  border-radius: 0;
   transition: background 0.15s ease;
 }
 

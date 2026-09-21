@@ -127,14 +127,14 @@ export function RadarHeatMap({
     return map
   }, [sectorMap])
 
-  // Stable, evenly-spaced pastel hue per sector, so every card in a sector
-  // shares the same background tint and grouped sectors read as color bands.
+  // Stable, evenly-spaced sector hue, so the gutters form visible background
+  // blocks behind contiguous cards in the same sector.
   const sectorTint = useMemo(() => {
     const names = (sectorMap?.sectors ?? []).map((group) => group.name).sort((a, b) => a.localeCompare(b))
     const map = new Map<string, string>()
     names.forEach((name, i) => {
       const hue = Math.round((360 / Math.max(names.length, 1)) * i)
-      map.set(name, `hsl(${hue}, 55%, 90%)`)
+      map.set(name, `hsl(${hue}, 68%, 82%)`)
     })
     return map
   }, [sectorMap])
