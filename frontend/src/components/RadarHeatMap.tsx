@@ -7,9 +7,9 @@ import { useSymbolTimeline } from '../hooks/useSymbolTimeline'
 import type { RunnerPresence } from '../lib/feedStatus'
 import './RadarHeatMap.css'
 
-type CardStatus = 'WAITING' | 'SPIKE' | 'SETUP_READY' | 'ARMED' | 'TRIGGERED' | 'REJECTED' | 'NEGATED'
+type CardStatus = 'WAITING' | 'SPIKE' | 'SETUP_READY' | 'TRIGGERED' | 'REJECTED' | 'NEGATED'
 
-const STATUSES: CardStatus[] = ['WAITING', 'SPIKE', 'SETUP_READY', 'ARMED', 'TRIGGERED', 'REJECTED', 'NEGATED']
+const STATUSES: CardStatus[] = ['WAITING', 'SPIKE', 'SETUP_READY', 'TRIGGERED', 'REJECTED', 'NEGATED']
 
 // Fixed, high-separation palette for the 17 sector groups. The stronger
 // saturation/value keeps adjacent sector bands distinguishable at a glance.
@@ -23,19 +23,15 @@ const STATUS_LABEL: Record<CardStatus, string> = {
   WAITING: 'Waiting',
   SPIKE: 'Spike',
   SETUP_READY: 'Setup Ready',
-  ARMED: 'Armed',
   TRIGGERED: 'Triggered',
   REJECTED: 'Rejected',
   NEGATED: 'Negated',
 }
 
-// TODO(human): the backend's UiPhase values don't map 1:1 onto the design's
-// card-status vocabulary above. This mapping decides what color/state every
-// card on the grid shows, so it needs your judgment rather than a guess.
-//
-// Confirmed mapping (owner consolidation of the engine's 8 phases into the
-// design's 7 card statuses; SPIKE_DETECTED and PULLBACK_ACTIVE both read as
-// SPIKE since neither has a confirmed setup yet):
+// Owner consolidation of the engine's 8 phases into 6 frontend-facing
+// statuses. CONTINUATION_ARMED folds into SETUP_READY — the frontend no
+// longer distinguishes "confirmed setup" from "armed for continuation";
+// both read as SETUP_READY until the trade actually TRIGGERED.
 function mapPhaseToStatus(phase: UiPhase): CardStatus {
   switch (phase) {
     case 'IDLE':
@@ -44,9 +40,8 @@ function mapPhaseToStatus(phase: UiPhase): CardStatus {
     case 'PULLBACK_ACTIVE':
       return 'SPIKE'
     case 'PULLBACK_READY':
-      return 'SETUP_READY'
     case 'CONTINUATION_ARMED':
-      return 'ARMED'
+      return 'SETUP_READY'
     case 'TRIGGERED':
       return 'TRIGGERED'
     case 'REJECTED':
@@ -156,7 +151,7 @@ export function RadarHeatMap({
   }, [rows, sectorOf])
 
   const counts = useMemo(() => {
-    const c: Record<CardStatus, number> = { WAITING: 0, SPIKE: 0, SETUP_READY: 0, ARMED: 0, TRIGGERED: 0, REJECTED: 0, NEGATED: 0 }
+    const c: Record<CardStatus, number> = { WAITING: 0, SPIKE: 0, SETUP_READY: 0, TRIGGERED: 0, REJECTED: 0, NEGATED: 0 }
     cards.forEach((card) => c[card.status]++)
     return c
   }, [cards])
@@ -217,10 +212,6 @@ export function RadarHeatMap({
           ))}
         </div>
         <div className="rhm-stats">
-          <div className="rhm-stat armed">
-            <div className="rhm-stat-num">{counts.ARMED}</div>
-            <div className="rhm-stat-label">Armed</div>
-          </div>
           <div className="rhm-stat triggered">
             <div className="rhm-stat-num">{counts.TRIGGERED}</div>
             <div className="rhm-stat-label">Triggered</div>

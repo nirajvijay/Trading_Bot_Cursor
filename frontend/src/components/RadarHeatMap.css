@@ -118,7 +118,6 @@
 .radar-heat-map .rhm-chip[data-status="WAITING"].active { background: var(--rhm-waiting); color: var(--rhm-waiting-ink); }
 .radar-heat-map .rhm-chip[data-status="SPIKE"].active { background: var(--rhm-spike); color: var(--rhm-spike-ink); }
 .radar-heat-map .rhm-chip[data-status="SETUP_READY"].active { background: var(--rhm-setup); color: var(--rhm-setup-ink); }
-.radar-heat-map .rhm-chip[data-status="ARMED"].active { background: var(--rhm-armed); color: var(--rhm-armed-ink); }
 .radar-heat-map .rhm-chip[data-status="TRIGGERED"].active { background: var(--rhm-triggered); color: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-chip[data-status="REJECTED"].active { background: var(--rhm-rejected); color: var(--rhm-rejected-ink); }
 .radar-heat-map .rhm-chip[data-status="NEGATED"].active { background: var(--rhm-negated); color: var(--rhm-negated-ink); }
@@ -127,7 +126,6 @@
 .radar-heat-map .rhm-stat { text-align: right; }
 .radar-heat-map .rhm-stat-num { font-family: var(--rhm-font-mono); font-size: 15px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .radar-heat-map .rhm-stat-label { font-size: 8px; color: var(--rhm-ink-muted); text-transform: uppercase; letter-spacing: 0.05em; }
-.radar-heat-map .rhm-stat.armed .rhm-stat-num { color: var(--rhm-armed); }
 .radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-cyan); }
 .radar-heat-map .rhm-stat.rejected .rhm-stat-num { color: var(--rhm-rejected); }
 
@@ -236,10 +234,6 @@
 .radar-heat-map .rhm-card.SETUP_READY { background: color-mix(in srgb, var(--rhm-setup) 26%, var(--rhm-card)); border-color: var(--rhm-setup); }
 .radar-heat-map .rhm-card.SETUP_READY .rhm-dot { background: var(--rhm-setup); }
 .radar-heat-map .rhm-card.SETUP_READY .rhm-status-label { color: var(--rhm-setup); }
-
-.radar-heat-map .rhm-card.ARMED { background: color-mix(in srgb, var(--rhm-armed) 34%, var(--rhm-card)); border-color: var(--rhm-armed); box-shadow: 0 0 0 1px var(--rhm-armed), 0 0 14px var(--rhm-armed-glow); }
-.radar-heat-map .rhm-card.ARMED .rhm-dot { background: var(--rhm-armed); box-shadow: 0 0 8px var(--rhm-armed); }
-.radar-heat-map .rhm-card.ARMED .rhm-status-label { color: var(--rhm-armed); }
 
 .radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-cyan); box-shadow: 0 0 0 1px var(--rhm-cyan), 0 0 16px var(--rhm-triggered-glow); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-symbol { color: var(--rhm-triggered-ink); }
