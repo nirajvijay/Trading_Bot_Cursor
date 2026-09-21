@@ -92,8 +92,8 @@ export function StationConsoleShell({
   const feedConnected =
     feedStatus.code === 'STABLE' ||
     (runnerPresence === 'running' && feedStatus.tone !== 'error')
-  const showRadarTools = activeTab === 'radar'
-  const showSessionSelect = activeTab === 'radar' || activeTab === 'trading' || activeTab === 'checklist'
+  const showRadarTools = false
+  const showSessionSelect = activeTab === 'trading' || activeTab === 'checklist'
   const phaseLabel =
     activeTab === 'checklist'
       ? checklistGateLocked

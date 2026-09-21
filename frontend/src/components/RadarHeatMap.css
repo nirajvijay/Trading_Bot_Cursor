@@ -118,13 +118,13 @@
 .radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-triggered); }
 .radar-heat-map .rhm-stat.rejected .rhm-stat-num { color: var(--rhm-rejected); }
 
-.radar-heat-map .rhm-grid-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; border-radius: var(--rhm-radius-md); }
+.radar-heat-map .rhm-grid-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; border-radius: var(--rhm-radius-md); }
 .radar-heat-map .rhm-grid {
   display: grid;
-  grid-template-columns: repeat(10, minmax(96px, 1fr));
-  grid-auto-rows: minmax(78px, 1fr);
+  height: 100%;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
   gap: 4px;
-  min-width: 980px;
 }
 
 .radar-heat-map .rhm-card {
@@ -212,5 +212,4 @@
   .radar-heat-map .rhm-header { gap: 10px; }
   .radar-heat-map .rhm-filters { order: 4; flex-basis: 100%; }
   .radar-heat-map .rhm-stats { flex-basis: 100%; justify-content: flex-start; order: 3; }
-  .radar-heat-map .rhm-grid { min-width: 760px; }
 }

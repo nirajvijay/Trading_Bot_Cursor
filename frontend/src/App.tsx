@@ -4,7 +4,7 @@ import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
-import { ApiError, fetchMe, postLogin, postLogout, postStartObservation, setAuthHandlers } from './api/client'
+import { ApiError, fetchMe, postLogin, postLogout, setAuthHandlers } from './api/client'
 import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
@@ -12,56 +12,12 @@ import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
 import { TradingEnginePage } from './components/TradingEnginePage'
-import { StatusStrip } from './components/StatusStrip'
 import { StationConsoleShell } from './components/StationConsoleShell'
 import { type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
-import { FeedAlertBanner } from './components/FeedAlertBanner'
 import { resolveFeedStatus, resolveRunnerPresence } from './lib/feedStatus'
 import { mergeKiteAuthStatus, computeEffectiveOverallStatus } from './hooks/usePreMarketChecklist'
-import type { MeResponse, RadarRow } from './api/types'
-
-function exportCsv(rows: RadarRow[]) {
-  const headers = [
-    'Symbol',
-    'Last 1m Close',
-    '% Change',
-    'Phase',
-    'Direction',
-    'Spike',
-    'Pullback',
-    'Continuation',
-    'Volume',
-    'Trigger Price',
-    'Distance %',
-    'Last Event',
-    'Updated',
-  ]
-  const lines = rows.map((r) =>
-    [
-      r.symbol,
-      r.last_1m_close ?? '',
-      r.pct_change ?? '',
-      r.phase,
-      r.direction ?? '',
-      r.spike,
-      r.pullback,
-      r.continuation,
-      r.volume ?? '',
-      r.trigger_price ?? '',
-      r.distance_pct ?? '',
-      r.last_event,
-      r.updated_at ?? '',
-    ].join(','),
-  )
-  const blob = new Blob([[headers.join(','), ...lines].join('\n')], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'nifty100-radar.csv'
-  a.click()
-  URL.revokeObjectURL(url)
-}
+import type { MeResponse } from './api/types'
 
 export default function App() {
   const [me, setMe] = useState<MeResponse | null>(null)
@@ -80,7 +36,6 @@ export default function App() {
     sessions,
     loading,
     error,
-    refresh: refreshRadar,
   } = useRadarDashboard(sessionDate, 5000, radarEnabled)
   const {
     data: checklistData,
@@ -88,10 +43,7 @@ export default function App() {
     error: checklistError,
     refresh: refreshChecklist,
   } = usePreMarketChecklist(sessionDate, authenticated)
-  const {
-    readiness: observationReadiness,
-    refresh: refreshObservationReadiness,
-  } = useObservationReadiness(sessionDate, radarEnabled)
+  const { refresh: refreshObservationReadiness } = useObservationReadiness(sessionDate, radarEnabled)
   const refreshAfterTokenCheck = useCallback(async () => {
     await Promise.all([refreshChecklist(), refreshObservationReadiness()])
   }, [refreshChecklist, refreshObservationReadiness])
@@ -100,9 +52,6 @@ export default function App() {
     checklistData,
     refreshAfterTokenCheck,
   )
-  const [startingObservation, setStartingObservation] = useState(false)
-  const [observationError, setObservationError] = useState<string | null>(null)
-
   const clearSession = useCallback(() => {
     setMe(null)
   }, [])
@@ -156,26 +105,12 @@ export default function App() {
     clearSession()
   }, [clearSession])
 
-  const handleStartObservation = useCallback(async () => {
-    setStartingObservation(true)
-    setObservationError(null)
-    try {
-      await postStartObservation(sessionDate)
-      await Promise.all([refreshRadar(), refreshObservationReadiness()])
-    } catch (err) {
-      setObservationError(err instanceof Error ? err.message : 'Failed to start observation')
-    } finally {
-      setStartingObservation(false)
-    }
-  }, [sessionDate, refreshRadar, refreshObservationReadiness])
-
   const filteredRows = useMemo(() => {
     const q = search.trim().toUpperCase()
     if (!q) return rows
     return rows.filter((r) => r.symbol.includes(q))
   }, [rows, search])
 
-  const observationReadinessForUi = observationReadiness
   const runnerPresence = resolveRunnerPresence(status, statusFetchOk)
   const feedStatus = resolveFeedStatus(status, runnerPresence)
 
@@ -253,17 +188,6 @@ export default function App() {
       <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {activeTab === 'radar' ? (
           <>
-            <StatusStrip
-              coverage={coverage}
-              status={status}
-              runnerPresence={runnerPresence}
-              observationReadiness={observationReadinessForUi}
-              startingObservation={startingObservation}
-              observationError={observationError}
-              onStartObservation={() => void handleStartObservation()}
-              onExport={() => exportCsv(filteredRows)}
-            />
-            <FeedAlertBanner feed={feedStatus} />
             {error && (
               <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm shrink-0">
                 {error}
