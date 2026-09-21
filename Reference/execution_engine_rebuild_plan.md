@@ -1,5 +1,9 @@
 # Execution Engine Rebuild — Implementation Plan
 
+**Status: all 14 phases complete (2026-09-22).** Decisions made during the
+build that are not in the design notes are written up separately in
+`Reference/execution_engine_rebuild_additions.md`.
+
 Turns every decision in `Reference/execution_engine_rebuild_notes.md` into a
 sequenced build. Each phase is independently compilable, independently
 testable, and leaves the tree green. Nothing here re-opens a settled design
