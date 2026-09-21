@@ -23,6 +23,13 @@ def sectors():
     return sector_map_payload()
 
 
+@router.get("/session-clock", dependencies=[Depends(require_web_session)])
+def session_clock():
+    from datetime import datetime
+    from nse_trading_calendar import IST, calendar_session_status
+    return calendar_session_status(datetime.now(IST))
+
+
 @router.get(
     "/readiness",
     response_model=ObservationReadinessResponse,

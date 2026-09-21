@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import unittest
 from unittest.mock import patch
+from fastapi import HTTPException
 import pyotp
 from starlette.responses import Response as StarletteResponse
 
@@ -53,18 +54,6 @@ def _restore_env(prev: dict[str, object]) -> None:
 
 
 class ProductionGuardTests(unittest.TestCase):
-    def test_kite_redirects_return_to_owner_not_public_home(self) -> None:
-        for outcome in ("connected", "error"):
-            self.assertEqual(
-                auth_router._safe_redirect(f"/?kite={outcome}").headers["location"],
-                f"/owner?kite={outcome}",
-            )
-        for unsafe in ("https://example.com", "//example.com"):
-            self.assertEqual(
-                auth_router._safe_redirect(unsafe).headers["location"],
-                "/owner?kite=error",
-            )
-
     def test_production_forbids_disabled_web_auth(self) -> None:
         prev = _set_prod_env(WEB_AUTH_ENABLED="false")
         try:
@@ -404,38 +393,123 @@ class CheckTokenCsrfTests(unittest.TestCase):
             self.assertTrue(ok.json()["valid"])
 
 
-class KiteStartStepUpTests(unittest.TestCase):
+class KiteStartSessionTests(unittest.TestCase):
     @patch("api.routers.auth.build_authorize_url_with_state")
-    def test_kite_start_requires_step_up(self, mock_url) -> None:
+    def test_kite_start_works_with_session_only(self, mock_url) -> None:
         mock_url.side_effect = lambda state: (
             f"https://kite.zerodha.com/connect/login?api_key=x&v=3"
             f"&redirect_params=state%3D{state}"
         )
         with AuthTestHarness() as h:
             h.login()
-            res = h.client.post(
-                "/api/v1/auth/kite/start",
-                headers=h.csrf_headers(),
-            )
-            self.assertEqual(res.status_code, 403)
-            self.assertIn("Step-up", res.json()["detail"])
-
-            h.step_up()
             ok = h.client.post(
                 "/api/v1/auth/kite/start",
                 headers=h.csrf_headers(),
             )
-            self.assertEqual(ok.status_code, 200)
-            url = ok.json()["authorize_url"]
+            self.assertEqual(ok.status_code, 200, ok.text)
+            body = ok.json()
+            self.assertEqual(body["mode"], "oauth")
+            url = body["authorize_url"]
             self.assertIn("redirect_params", url)
             state = AuthTestHarness.extract_state_from_authorize_url(url)
             self.assertTrue(len(state) > 10)
+
+    def test_kite_start_auto_success(self) -> None:
+        from api.services.kite_auto_login import AutoLoginResult
+
+        with AuthTestHarness() as h:
+            h.login()
+            with (
+                patch("api.routers.auth.settings.KITE_AUTO_LOGIN_ENABLED", True),
+                patch(
+                    "api.routers.auth.auto_login_credentials_configured",
+                    return_value=True,
+                ),
+                patch("api.routers.auth.attempt_kite_auto_login") as mock_auto,
+            ):
+                mock_auto.return_value = AutoLoginResult(
+                    success=True,
+                    message="ok",
+                    user_id="AB1234",
+                    masked_access_token="acce...wxyz",
+                )
+                ok = h.client.post(
+                    "/api/v1/auth/kite/start",
+                    headers=h.csrf_headers(),
+                )
+            self.assertEqual(ok.status_code, 200, ok.text)
+            body = ok.json()
+            self.assertEqual(body["mode"], "auto")
+            self.assertTrue(body["success"])
+            self.assertIsNone(body.get("authorize_url"))
+
+    def test_kite_start_auto_failure_falls_back_to_oauth(self) -> None:
+        from api.services.kite_auto_login import AutoLoginResult
+
+        with AuthTestHarness() as h:
+            h.login()
+            with (
+                patch("api.routers.auth.settings.KITE_AUTO_LOGIN_ENABLED", True),
+                patch(
+                    "api.routers.auth.auto_login_credentials_configured",
+                    return_value=True,
+                ),
+                patch("api.routers.auth.attempt_kite_auto_login") as mock_auto,
+                patch("api.routers.auth.build_authorize_url_with_state") as mock_url,
+            ):
+                mock_auto.return_value = AutoLoginResult(
+                    success=False,
+                    failure_reason="totp_rejected",
+                    message="bad totp",
+                )
+                mock_url.side_effect = lambda state: (
+                    f"https://kite.zerodha.com/connect/login?api_key=x&v=3"
+                    f"&redirect_params=state%3D{state}"
+                )
+                ok = h.client.post(
+                    "/api/v1/auth/kite/start",
+                    headers=h.csrf_headers(),
+                )
+            self.assertEqual(ok.status_code, 200, ok.text)
+            body = ok.json()
+            self.assertEqual(body["mode"], "oauth")
+            self.assertEqual(body["auto_failure_reason"], "totp_rejected")
+            self.assertIn("authorize_url", body)
+
+    def test_kite_start_rate_limit_still_falls_back_to_oauth(self) -> None:
+        with AuthTestHarness() as h:
+            h.login()
+            with (
+                patch("api.routers.auth.settings.KITE_AUTO_LOGIN_ENABLED", True),
+                patch(
+                    "api.routers.auth.auto_login_credentials_configured",
+                    return_value=True,
+                ),
+                patch(
+                    "api.routers.auth.check_kite_auto_login_rate_limit",
+                    side_effect=HTTPException(status_code=429, detail="limited"),
+                ),
+                patch("api.routers.auth.attempt_kite_auto_login") as mock_auto,
+                patch("api.routers.auth.build_authorize_url_with_state") as mock_url,
+            ):
+                mock_url.side_effect = lambda state: (
+                    f"https://kite.zerodha.com/connect/login?api_key=x&v=3"
+                    f"&redirect_params=state%3D{state}"
+                )
+                ok = h.client.post(
+                    "/api/v1/auth/kite/start",
+                    headers=h.csrf_headers(),
+                )
+            self.assertEqual(ok.status_code, 200, ok.text)
+            body = ok.json()
+            self.assertEqual(body["mode"], "oauth")
+            self.assertEqual(body["auto_failure_reason"], "rate_limited")
+            mock_auto.assert_not_called()
 
 
 class KiteCallbackTests(unittest.TestCase):
     def _start_oauth(self, h: AuthTestHarness) -> str:
         h.login()
-        h.step_up()
 
         def fake_url(state: str) -> str:
             return (

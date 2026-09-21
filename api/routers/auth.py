@@ -17,7 +17,6 @@ from api.auth import settings
 from api.auth.audit import write_audit
 from api.auth.deps import (
     WebAuthContext,
-    require_step_up,
     require_web_session,
     require_web_session_mutating,
 )
@@ -31,7 +30,17 @@ from api.schemas.auth import (
     SessionResponse,
 )
 from api.services.checklist_cache import invalidate_checklist_cache
+from api.services.kite_auto_login import (
+    attempt_kite_auto_login,
+    auto_login_credentials_configured,
+)
+from api.services.kite_auto_login_rate import (
+    check_kite_auto_login_rate_limit,
+    clear_kite_auto_login_failures,
+    record_kite_auto_login_failure,
+)
 from api.services.token_check_cache import write_token_check
+from api.services.token_generation_cache import write_token_generated
 from login import (
     build_authorize_url_with_state,
     check_access_token_details,
@@ -46,6 +55,14 @@ logger = logging.getLogger(__name__)
 KITE_OAUTH_COOKIE_PATH = "/api/v1/auth/callback"
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _record_token_generation_time() -> None:
+    """Persist checklist metadata without affecting an already valid Kite session."""
+    try:
+        write_token_generated()
+    except OSError:
+        logger.warning("Kite token generation metadata could not be recorded")
 
 
 def _clear_kite_oauth_cookie(response: Response) -> None:
@@ -71,13 +88,33 @@ def _set_kite_oauth_cookie(response: Response, cookie_id: str) -> None:
     )
 
 
+def _start_oauth_flow(
+    response: Response,
+    *,
+    ctx: WebAuthContext,
+    auto_failure_reason: Optional[str] = None,
+) -> KiteStartResponse:
+    store = get_kite_oauth_store()
+    session_id = ctx.session.id if not ctx.auth_disabled else "disabled"
+    opaque, cookie_id = store.create_pending(session_id)
+    try:
+        authorize_url = build_authorize_url_with_state(opaque)
+    except ValueError as exc:
+        store.clear_pending_for_session(session_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    _set_kite_oauth_cookie(response, cookie_id)
+    write_audit("kite_oauth_start", username=ctx.session.username)
+    return KiteStartResponse(
+        mode="oauth",
+        authorize_url=authorize_url,
+        auto_failure_reason=auto_failure_reason,
+    )
+
+
 def _safe_redirect(path: str) -> RedirectResponse:
     # Fixed relative paths only — never bounce to attacker-controlled URLs.
     if not path.startswith("/") or path.startswith("//"):
-        path = "/owner?kite=error"
-    # Preserve existing deployment settings after moving the owner app off '/'.
-    if path in ("/?kite=connected", "/?kite=error"):
-        path = "/owner" + path[1:]
+        path = "/?kite=error"
     return RedirectResponse(url=path, status_code=303)
 
 
@@ -108,20 +145,54 @@ def login_url() -> LoginUrlResponse:
 )
 def kite_start(
     response: Response,
-    ctx: WebAuthContext = Depends(require_step_up),
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> KiteStartResponse:
-    """Start remote Kite OAuth: opaque state + oauth cookie; return authorize_url only."""
-    store = get_kite_oauth_store()
+    """Try headless TOTP login when enabled; otherwise start remote Kite OAuth."""
     session_id = ctx.session.id if not ctx.auth_disabled else "disabled"
-    opaque, cookie_id = store.create_pending(session_id)
-    try:
-        authorize_url = build_authorize_url_with_state(opaque)
-    except ValueError as exc:
-        store.clear_pending_for_session(session_id)
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    _set_kite_oauth_cookie(response, cookie_id)
-    write_audit("kite_oauth_start", username=ctx.session.username)
-    return KiteStartResponse(authorize_url=authorize_url)
+
+    if settings.KITE_AUTO_LOGIN_ENABLED and auto_login_credentials_configured():
+        try:
+            check_kite_auto_login_rate_limit(session_id)
+        except HTTPException:
+            # Rate-limit only the unattended attempt. Preserve the established
+            # browser-login recovery path for the user.
+            return _start_oauth_flow(
+                response,
+                ctx=ctx,
+                auto_failure_reason="rate_limited",
+            )
+
+        auto_result = attempt_kite_auto_login()
+        if auto_result.success:
+            invalidate_checklist_cache()
+            _record_token_generation_time()
+            clear_kite_auto_login_failures(session_id)
+            write_audit("kite_auto_login_ok", username=ctx.session.username)
+            return KiteStartResponse(
+                mode="auto",
+                success=True,
+                message=auto_result.message,
+                user_id=auto_result.user_id,
+                masked_access_token=auto_result.masked_access_token,
+            )
+
+        record_kite_auto_login_failure(session_id)
+        write_audit(
+            "kite_auto_login_failed",
+            username=ctx.session.username,
+            reason=auto_result.failure_reason or "unknown",
+        )
+        logger.info(
+            "Kite auto-login failed (%s); falling back to OAuth",
+            auto_result.failure_reason or "unknown",
+        )
+        return _start_oauth_flow(
+            response,
+            ctx=ctx,
+            auto_failure_reason=auto_result.failure_reason,
+        )
+
+    return _start_oauth_flow(response, ctx=ctx)
 
 
 @router.get("/callback")
@@ -199,6 +270,7 @@ def kite_callback(
         return fail_and_clear("exchange_error")
 
     invalidate_checklist_cache()
+    _record_token_generation_time()
     write_audit("kite_oauth_callback_ok")
     success = _safe_redirect(settings.KITE_SUCCESS_REDIRECT_PATH)
     _clear_kite_oauth_cookie(success)
@@ -211,7 +283,7 @@ def kite_callback(
 )
 def create_session(
     body: SessionRequest,
-    ctx: WebAuthContext = Depends(require_step_up),
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
 ) -> SessionResponse:
     """Legacy paste login. Gated by KITE_PASTE_LOGIN_ENABLED + session + step-up + CSRF."""
     if not settings.KITE_PASTE_LOGIN_ENABLED:
@@ -236,6 +308,7 @@ def create_session(
     refresh = session.get("refresh_token")
     user_id = session.get("user_id")
     invalidate_checklist_cache()
+    _record_token_generation_time()
     write_audit("kite_paste_login_ok", username=ctx.session.username)
     return SessionResponse(
         success=True,

@@ -14,6 +14,15 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class ObservationStage2Tests(unittest.TestCase):
+    def test_calendar_display_holiday_hours_and_unknown_year(self):
+        from nse_trading_calendar import calendar_session_status, entry_calendar_block_reason
+        self.assertEqual(calendar_session_status(datetime(2026,9,14,10,tzinfo=IST))["state"],"CLOSED")
+        self.assertEqual(calendar_session_status(datetime(2026,9,10,10,tzinfo=IST))["state"],"OPEN")
+        self.assertEqual(calendar_session_status(datetime(2026,9,10,9,tzinfo=IST))["state"],"CLOSED")
+        future=datetime(2027,1,4,10,tzinfo=IST)
+        self.assertEqual(calendar_session_status(future)["state"],"UNKNOWN")
+        self.assertEqual(entry_calendar_block_reason("2027-01-04",future),"calendar_year_unconfigured")
+
     def test_0900_start_is_not_market_open(self):
         with patch("api.services.observation_runner.fetch_checklist_summary", return_value={
             "overall_status": "ok", "session_date": "2026-08-03",

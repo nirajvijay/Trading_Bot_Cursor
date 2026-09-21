@@ -7,6 +7,7 @@ evidence. Stop LIMIT gaps remain working rather than fabricating a stop-price fi
 from __future__ import annotations
 
 import fcntl
+import uuid
 import json
 import math
 import sqlite3
@@ -20,14 +21,28 @@ from trading_engine_types import BrokerOrder
 
 
 class PaperBroker(FakeBroker):
-    def __init__(self, path: Path, *, quote_provider, total_capital=300000.0, clock_fn=None):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        quote_provider,
+        total_capital=300000.0,
+        clock_fn=None,
+        allow_create: bool = True,
+        account_id: str | None = None,
+    ):
         super().__init__(auto_fill_entry=False, demo_leverage=1.0, remaining_capital=total_capital)
         self._clock = clock_fn or (lambda: datetime.now(timezone.utc))
         self._quote_provider = quote_provider
         self._quotes = {}
         path = Path(path)
+        self.db_path = path
+        self.lock_path = path.with_suffix(path.suffix + ".lock")
+        expected_id = (account_id or "").strip() or None
+        if not allow_create and not path.exists():
+            raise FileNotFoundError("paper_account_missing")
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._lease = path.with_suffix(path.suffix + ".lock").open("a+")
+        self._lease = self.lock_path.open("a+")
         try:
             fcntl.flock(self._lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -36,18 +51,31 @@ class PaperBroker(FakeBroker):
         self._db = sqlite3.connect(str(path))
         try:
             self._db.execute("PRAGMA synchronous=FULL")
-            self._db.execute("CREATE TABLE IF NOT EXISTS paper_account (id INTEGER PRIMARY KEY CHECK(id=1), snapshot TEXT NOT NULL)")
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS paper_account "
+                "(id INTEGER PRIMARY KEY CHECK(id=1), snapshot TEXT NOT NULL)"
+            )
             row = self._db.execute("SELECT snapshot FROM paper_account WHERE id=1").fetchone()
             if row:
                 state = json.loads(row[0])
                 if state.get("version") != 1:
                     raise ValueError("paper_account_version_unknown")
+                got_id = str(state.get("account_id") or "").strip() or None
+                if expected_id is not None and got_id != expected_id:
+                    raise RuntimeError("paper_account_id_mismatch")
+                if got_id is None:
+                    raise RuntimeError("paper_account_id_missing")
+                self._account_id = got_id
                 self.orders = {o["order_id"]: BrokerOrder(**o) for o in state["orders"]}
                 for key in ("market_place_count", "limit_place_count", "slm_place_count", "modify_count"):
                     setattr(self, key, int(state[key]))
                 self._hidden_tags = set(state.get("hidden_tags", []))
                 self._hidden_order_ids = set(state.get("hidden_ids", []))
             else:
+                if not allow_create:
+                    raise RuntimeError("paper_account_uninitialized")
+                # Bootstrap always passes an explicit id; isolated tests may omit one.
+                self._account_id = expected_id or str(uuid.uuid4())
                 self._persist()
         except Exception:
             self.close()
@@ -61,8 +89,13 @@ class PaperBroker(FakeBroker):
         return self._clock().astimezone(timezone.utc).isoformat()
 
     def _persist(self):
-        state = {"version": 1, "orders": [asdict(o) for o in self.orders.values()],
-                 "hidden_tags": sorted(self._hidden_tags), "hidden_ids": sorted(self._hidden_order_ids)}
+        state = {
+            "version": 1,
+            "account_id": self._account_id,
+            "orders": [asdict(o) for o in self.orders.values()],
+            "hidden_tags": sorted(self._hidden_tags),
+            "hidden_ids": sorted(self._hidden_order_ids),
+        }
         for key in ("market_place_count", "limit_place_count", "slm_place_count", "modify_count"):
             state[key] = getattr(self, key)
         self._db.execute("INSERT INTO paper_account VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot",

@@ -1,0 +1,259 @@
+{
+  "evidence_type": "synthetic authenticated HTTP/PAPER integration; injected quotes/readiness; temporary accounts only; not live-fill evidence",
+  "sessions": {
+    "manual": {
+      "report_version": "radar-v1-session-2",
+      "session_date": "2026-08-17",
+      "scope": "Trades originating in this session, including later reconciliations; not a broker calendar-day statement.",
+      "generated_at": "2026-09-10T07:14:36.736915+00:00",
+      "modes": {
+        "PAPER": {
+          "strategy_outcomes": {
+            "observed_trade_records": 1,
+            "filled_setups": 1,
+            "closed_with_complete_prices": 1,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 1,
+            "complete_closed_recorded_pnl": 0,
+            "pnl_basis": "Stored realised P&L for price-complete closed trades only; not broker-ledger net charges or open MTM.",
+            "excluded_incomplete_trade_ids": [],
+            "outcome_reasons": {
+              "close_all": 1
+            },
+            "trade_execution_metrics": [
+              {
+                "trade_id": "06eda6eec4c54695a3267500121e13d2",
+                "symbol": "AAA",
+                "price_complete_closed": true,
+                "estimated_round_trip_charges": 0.165,
+                "estimated_net_pnl": -0.165,
+                "gross_r_outcome": 0,
+                "estimated_net_r_outcome": -0.003,
+                "entry_slippage_vs_trigger_inr": 0,
+                "first_observed_fill_to_cover_seconds": 0
+              }
+            ],
+            "metrics_basis": "Charges use each trade's stamped round-trip bps on confirmed entry value, not actual broker fees. Slippage is signed entry VWAP minus trigger (positive adverse); it is already embedded in P&L and is not deducted again. R uses frozen per-share R times filled quantity. Null means unavailable."
+          },
+          "engineering_quality": {
+            "current_unprotected_trade_ids": [],
+            "current_reconciliation_trade_ids": [],
+            "unresolved_exposure_trade_ids": [],
+            "provisional_accounting_trade_ids": [],
+            "missing_original_plan_trade_ids": [],
+            "event_counts": {
+              "candidate": 1,
+              "sized": 1,
+              "entry_submitting": 1,
+              "entry_intent": 1,
+              "entry_limit_validated": 1,
+              "entry_placed": 1,
+              "order_attributed": 3,
+              "entry_fill": 1,
+              "sl_submit_attempt": 1,
+              "sl_placed": 1,
+              "sl_submit_cleared": 1,
+              "protected": 1,
+              "sl_modify_requested": 1,
+              "sl_modified": 1,
+              "auto_trail_off": 1,
+              "restart_recovery": 1,
+              "close_all_requested": 1,
+              "exit_intent": 1,
+              "sl_cancelled": 1,
+              "exit_submit_attempt": 1,
+              "closed": 1
+            },
+            "protection_delay_basis": "Local audit time from first observed entry fill to first recorded full remaining-position cover; not exchange latency or a measure of every later exposure interval. Missing evidence is null.",
+            "assessment": "Recorded observations only. No fresh broker query; zero incidents is not proof of safety."
+          }
+        },
+        "LIVE": {
+          "strategy_outcomes": {
+            "observed_trade_records": 0,
+            "filled_setups": 0,
+            "closed_with_complete_prices": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 0,
+            "complete_closed_recorded_pnl": 0,
+            "pnl_basis": "Stored realised P&L for price-complete closed trades only; not broker-ledger net charges or open MTM.",
+            "excluded_incomplete_trade_ids": [],
+            "outcome_reasons": {},
+            "trade_execution_metrics": [],
+            "metrics_basis": "Charges use each trade's stamped round-trip bps on confirmed entry value, not actual broker fees. Slippage is signed entry VWAP minus trigger (positive adverse); it is already embedded in P&L and is not deducted again. R uses frozen per-share R times filled quantity. Null means unavailable."
+          },
+          "engineering_quality": {
+            "current_unprotected_trade_ids": [],
+            "current_reconciliation_trade_ids": [],
+            "unresolved_exposure_trade_ids": [],
+            "provisional_accounting_trade_ids": [],
+            "missing_original_plan_trade_ids": [],
+            "event_counts": {},
+            "protection_delay_basis": "Local audit time from first observed entry fill to first recorded full remaining-position cover; not exchange latency or a measure of every later exposure interval. Missing evidence is null.",
+            "assessment": "Recorded observations only. No fresh broker query; zero incidents is not proof of safety."
+          }
+        },
+        "UNKNOWN": {
+          "strategy_outcomes": {
+            "observed_trade_records": 0,
+            "filled_setups": 0,
+            "closed_with_complete_prices": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 0,
+            "complete_closed_recorded_pnl": 0,
+            "pnl_basis": "Stored realised P&L for price-complete closed trades only; not broker-ledger net charges or open MTM.",
+            "excluded_incomplete_trade_ids": [],
+            "outcome_reasons": {},
+            "trade_execution_metrics": [],
+            "metrics_basis": "Charges use each trade's stamped round-trip bps on confirmed entry value, not actual broker fees. Slippage is signed entry VWAP minus trigger (positive adverse); it is already embedded in P&L and is not deducted again. R uses frozen per-share R times filled quantity. Null means unavailable."
+          },
+          "engineering_quality": {
+            "current_unprotected_trade_ids": [],
+            "current_reconciliation_trade_ids": [],
+            "unresolved_exposure_trade_ids": [],
+            "provisional_accounting_trade_ids": [],
+            "missing_original_plan_trade_ids": [],
+            "event_counts": {},
+            "protection_delay_basis": "Local audit time from first observed entry fill to first recorded full remaining-position cover; not exchange latency or a measure of every later exposure interval. Missing evidence is null.",
+            "assessment": "Recorded observations only. No fresh broker query; zero incidents is not proof of safety."
+          }
+        }
+      },
+      "limitations": [
+        "PAPER fills do not establish live execution quality or profitability.",
+        "Unattributed broker orders and external account activity require the Recovery view.",
+        "Open and incomplete P&L is not included in closed-trade outcome totals."
+      ]
+    },
+    "autopilot": {
+      "report_version": "radar-v1-session-2",
+      "session_date": "2026-08-17",
+      "scope": "Trades originating in this session, including later reconciliations; not a broker calendar-day statement.",
+      "generated_at": "2026-09-10T07:14:36.936546+00:00",
+      "modes": {
+        "PAPER": {
+          "strategy_outcomes": {
+            "observed_trade_records": 1,
+            "filled_setups": 1,
+            "closed_with_complete_prices": 1,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 1,
+            "complete_closed_recorded_pnl": 0,
+            "pnl_basis": "Stored realised P&L for price-complete closed trades only; not broker-ledger net charges or open MTM.",
+            "excluded_incomplete_trade_ids": [],
+            "outcome_reasons": {
+              "close_all": 1
+            },
+            "trade_execution_metrics": [
+              {
+                "trade_id": "de4255b71b794d27bc06c733ae2b3df3",
+                "symbol": "AAA",
+                "price_complete_closed": true,
+                "estimated_round_trip_charges": 2.673,
+                "estimated_net_pnl": -2.673,
+                "gross_r_outcome": 0,
+                "estimated_net_r_outcome": -0.003,
+                "entry_slippage_vs_trigger_inr": 0,
+                "first_observed_fill_to_cover_seconds": 0
+              }
+            ],
+            "metrics_basis": "Charges use each trade's stamped round-trip bps on confirmed entry value, not actual broker fees. Slippage is signed entry VWAP minus trigger (positive adverse); it is already embedded in P&L and is not deducted again. R uses frozen per-share R times filled quantity. Null means unavailable."
+          },
+          "engineering_quality": {
+            "current_unprotected_trade_ids": [],
+            "current_reconciliation_trade_ids": [],
+            "unresolved_exposure_trade_ids": [],
+            "provisional_accounting_trade_ids": [],
+            "missing_original_plan_trade_ids": [],
+            "event_counts": {
+              "candidate": 1,
+              "sized": 1,
+              "entry_submitting": 1,
+              "entry_intent": 1,
+              "entry_limit_validated": 1,
+              "entry_placed": 1,
+              "order_attributed": 3,
+              "entry_fill": 1,
+              "sl_submit_attempt": 1,
+              "sl_placed": 1,
+              "sl_submit_cleared": 1,
+              "protected": 1,
+              "sl_modify_requested": 1,
+              "sl_modified": 1,
+              "auto_trail_off": 1,
+              "restart_recovery": 1,
+              "close_all_requested": 1,
+              "exit_intent": 1,
+              "sl_cancelled": 1,
+              "exit_submit_attempt": 1,
+              "closed": 1
+            },
+            "protection_delay_basis": "Local audit time from first observed entry fill to first recorded full remaining-position cover; not exchange latency or a measure of every later exposure interval. Missing evidence is null.",
+            "assessment": "Recorded observations only. No fresh broker query; zero incidents is not proof of safety."
+          }
+        },
+        "LIVE": {
+          "strategy_outcomes": {
+            "observed_trade_records": 0,
+            "filled_setups": 0,
+            "closed_with_complete_prices": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 0,
+            "complete_closed_recorded_pnl": 0,
+            "pnl_basis": "Stored realised P&L for price-complete closed trades only; not broker-ledger net charges or open MTM.",
+            "excluded_incomplete_trade_ids": [],
+            "outcome_reasons": {},
+            "trade_execution_metrics": [],
+            "metrics_basis": "Charges use each trade's stamped round-trip bps on confirmed entry value, not actual broker fees. Slippage is signed entry VWAP minus trigger (positive adverse); it is already embedded in P&L and is not deducted again. R uses frozen per-share R times filled quantity. Null means unavailable."
+          },
+          "engineering_quality": {
+            "current_unprotected_trade_ids": [],
+            "current_reconciliation_trade_ids": [],
+            "unresolved_exposure_trade_ids": [],
+            "provisional_accounting_trade_ids": [],
+            "missing_original_plan_trade_ids": [],
+            "event_counts": {},
+            "protection_delay_basis": "Local audit time from first observed entry fill to first recorded full remaining-position cover; not exchange latency or a measure of every later exposure interval. Missing evidence is null.",
+            "assessment": "Recorded observations only. No fresh broker query; zero incidents is not proof of safety."
+          }
+        },
+        "UNKNOWN": {
+          "strategy_outcomes": {
+            "observed_trade_records": 0,
+            "filled_setups": 0,
+            "closed_with_complete_prices": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 0,
+            "complete_closed_recorded_pnl": 0,
+            "pnl_basis": "Stored realised P&L for price-complete closed trades only; not broker-ledger net charges or open MTM.",
+            "excluded_incomplete_trade_ids": [],
+            "outcome_reasons": {},
+            "trade_execution_metrics": [],
+            "metrics_basis": "Charges use each trade's stamped round-trip bps on confirmed entry value, not actual broker fees. Slippage is signed entry VWAP minus trigger (positive adverse); it is already embedded in P&L and is not deducted again. R uses frozen per-share R times filled quantity. Null means unavailable."
+          },
+          "engineering_quality": {
+            "current_unprotected_trade_ids": [],
+            "current_reconciliation_trade_ids": [],
+            "unresolved_exposure_trade_ids": [],
+            "provisional_accounting_trade_ids": [],
+            "missing_original_plan_trade_ids": [],
+            "event_counts": {},
+            "protection_delay_basis": "Local audit time from first observed entry fill to first recorded full remaining-position cover; not exchange latency or a measure of every later exposure interval. Missing evidence is null.",
+            "assessment": "Recorded observations only. No fresh broker query; zero incidents is not proof of safety."
+          }
+        }
+      },
+      "limitations": [
+        "PAPER fills do not establish live execution quality or profitability.",
+        "Unattributed broker orders and external account activity require the Recovery view.",
+        "Open and incomplete P&L is not included in closed-trade outcome totals."
+      ]
+    }
+  }
+}

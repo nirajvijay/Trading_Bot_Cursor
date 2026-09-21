@@ -40,6 +40,21 @@ class LossHaltTests(unittest.TestCase):
         short = replace(trade, direction="DOWN")
         self.assertEqual(trade_loss_slice(short,quote,fixture.NOW).unrealised, -50)
 
+    def test_published_trade_mark_uses_same_slice_and_rejects_stale_or_changed_quantity(self):
+        from api.queries.trading import live_trade_mark
+        trade = self.enter()
+        self.broker.touch_quotes["AAA"] = TouchQuote(109,111,fixture.NOW.isoformat())
+        self.cycle.enforce_daily_loss()
+        heartbeat = {"session_date":trade.session_date,"broker_sync_at":fixture.NOW.isoformat(),
+                     "loss_halt":self.cycle.loss_halt_snapshot}
+        mark = live_trade_mark(trade,heartbeat,fixture.NOW,0)
+        self.assertEqual(mark["price"],109)
+        self.assertEqual(mark["open_pnl"],-10)
+        self.assertFalse(mark["stale"])
+        self.assertTrue(live_trade_mark(trade,heartbeat,fixture.NOW+timedelta(seconds=3),0)["stale"])
+        self.assertTrue(live_trade_mark(replace(trade,remaining_position_qty=9),heartbeat,fixture.NOW,0)["stale"])
+        self.assertIsNone(live_trade_mark(trade,heartbeat,fixture.NOW,None)["open_pnl"])
+
     def test_partial_exit_losses_and_charges_count_once(self):
         trade = self.enter()
         trade = replace(trade, exited_qty=4, remaining_position_qty=6,

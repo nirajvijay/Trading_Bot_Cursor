@@ -11,7 +11,13 @@ from zoneinfo import ZoneInfo
 
 from config.nifty100_symbols import NIFTY_100_SYMBOLS
 from nse_trading_calendar import prior_nse_trading_session
-from session_quality import LOOKBACK_COMPLETED_SESSIONS, discover_completed_sessions
+from session_quality import (
+    LOOKBACK_COMPLETED_SESSIONS,
+    MIN_VALID_SESSION_MINUTES,
+    REQUIRED_LAST_MINUTE_MIN,
+    discover_completed_sessions,
+    evaluate_symbol_session,
+)
 from universe_manifest import default_manifest_path, validate_universe_manifest
 
 from api import config
@@ -22,6 +28,7 @@ from api.services.local_data_generation import (
     get_generate_command,
 )
 from api.services.token_check_cache import read_token_check, token_valid_for_today
+from api.services.token_generation_cache import read_token_generated_at
 from login import read_auth_status
 
 EXPECTED_COUNT = len(NIFTY_100_SYMBOLS)
@@ -409,7 +416,7 @@ def _build_kite_auth() -> dict:
         "masked_access_token": auth.get("masked_access_token"),
         "token_validated_today": validated_today is True,
         "token_checked_at": cached.get("checked_at") if cached and validated_today is not None else None,
-        "copy_command": "python3 login.py --check-token",
+        "token_generated_at": read_token_generated_at(),
     }
 
 
@@ -623,11 +630,20 @@ def _build_historical(historical_db: Path, session_date: str) -> dict:
         ).fetchall()
         token_by_symbol = {str(r[1]): int(r[0]) for r in token_rows}
         below_threshold: List[str] = []
+        incomplete_required_session: List[Tuple[str, object]] = []
         for symbol in NIFTY_100_SYMBOLS:
             token = token_by_symbol.get(symbol)
             if token is None:
                 below_threshold.append(symbol)
                 continue
+            required_quality = evaluate_symbol_session(
+                conn,
+                token,
+                required_prior,
+                table="candles",
+            )
+            if not required_quality.is_completed:
+                incomplete_required_session.append((symbol, required_quality))
             completed = len(
                 discover_completed_sessions(
                     conn,
@@ -659,6 +675,29 @@ def _build_historical(historical_db: Path, session_date: str) -> dict:
             f"{LOOKBACK_COMPLETED_SESSIONS} completed sessions "
             f"(incomplete dates excluded): {sample}{more}"
         )
+    elif incomplete_required_session:
+        sample_symbol, sample_quality = incomplete_required_session[0]
+        details: List[str] = []
+        if sample_quality.minute_count < MIN_VALID_SESSION_MINUTES:
+            details.append(
+                f"{sample_quality.minute_count}/{MIN_VALID_SESSION_MINUTES} minutes"
+            )
+        if (
+            sample_quality.last_minute is not None
+            and sample_quality.last_minute < REQUIRED_LAST_MINUTE_MIN
+        ):
+            hour, minute = divmod(sample_quality.last_minute, 60)
+            details.append(f"ends at {hour:02d}:{minute:02d} IST (must reach 15:00 IST)")
+        detail_text = "; ".join(details) or sample_quality.reason
+        more = "" if len(incomplete_required_session) <= 1 else (
+            f" (+{len(incomplete_required_session) - 1} more)"
+        )
+        status = "needs_update"
+        message = (
+            f"Prior session {required_prior} incomplete for "
+            f"{len(incomplete_required_session)}/{EXPECTED_COUNT} symbols: "
+            f"{sample_symbol} ({detail_text}){more}"
+        )
     elif symbols_covered_on_p >= EXPECTED_COUNT:
         status = "ok"
         message = (
@@ -687,12 +726,22 @@ def _build_historical(historical_db: Path, session_date: str) -> dict:
         "symbols_covered": symbols_covered_on_p,
         "expected_count": EXPECTED_COUNT,
         "missing_count": stale_count if stale_count else (
-            len(below_threshold) if below_threshold else missing_count
+            len(below_threshold)
+            if below_threshold
+            else (len(incomplete_required_session) if incomplete_required_session else missing_count)
         ),
         "missing_symbols_sample": (
             stale_sample[:5]
             if stale_count
-            else (below_threshold[:5] if below_threshold else missing_sample)
+            else (
+                below_threshold[:5]
+                if below_threshold
+                else (
+                    [symbol for symbol, _quality in incomplete_required_session[:5]]
+                    if incomplete_required_session
+                    else missing_sample
+                )
+            )
         ),
         "copy_command": copy_command,
         "db_path": db_path,
@@ -1077,10 +1126,6 @@ def fetch_premarket_checklist(
 
     kite_auth = _build_kite_auth()
     instruments = _build_instruments(instruments_db)
-    from config.nifty100_sector_map import sector_map_payload
-    sector_map = sector_map_payload()
-    if not sector_map["valid"]:
-        instruments = {**instruments, "status": "failed", "message": sector_map["reason"]}
     historical = _build_historical(historical_db, session_date)
     baselines = _build_baselines(baselines_db, session_date)
     five_minute = _build_five_minute(historical_db, instruments_db, session_date)

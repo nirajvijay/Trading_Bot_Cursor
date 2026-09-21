@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,9 @@ class AuthStatusResponse(BaseModel):
     masked_api_key: Optional[str] = None
     masked_access_token: Optional[str] = None
     masked_refresh_token: Optional[str] = None
+    token_valid: Optional[bool] = None
+    token_checked_at: Optional[str] = None
+    token_user_id: Optional[str] = None
 
 
 class LoginUrlResponse(BaseModel):
@@ -22,11 +25,22 @@ class LoginUrlResponse(BaseModel):
 
 
 class KiteStartResponse(BaseModel):
-    authorize_url: str
+    mode: Literal["auto", "oauth"] = "oauth"
+    authorize_url: Optional[str] = None
+    success: Optional[bool] = None
+    message: Optional[str] = None
+    user_id: Optional[str] = None
+    masked_access_token: Optional[str] = None
+    auto_failure_reason: Optional[str] = None
+
+
+class KitePasswordRequest(BaseModel):
+    password: str = Field(default="", repr=False)
 
 
 class SessionRequest(BaseModel):
     request_token: str = Field(..., min_length=1, description="Raw request_token or full redirect URL")
+    password: str = Field(default="", repr=False)
 
 
 class SessionResponse(BaseModel):
