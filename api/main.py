@@ -29,7 +29,6 @@ from api.routers.checklist import router as checklist_router
 from api.routers.execution import router as execution_router
 from api.routers.observation import router as observation_router
 from api.routers.sessions import router
-from api.routers.trading import router as trading_router
 
 ALLOWED_HOSTS = [
     "njtrading.website",
@@ -63,6 +62,5 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(account_router, prefix="/api/v1")
 app.include_router(checklist_router, prefix="/api/v1")
 app.include_router(observation_router, prefix="/api/v1")
-app.include_router(trading_router, prefix="/api/v1")
 app.include_router(execution_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")

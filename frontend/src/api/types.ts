@@ -331,71 +331,6 @@ export interface ObservationStopResponse {
   pid?: number | null
 }
 
-export type TradingEngineState = 'stopped' | 'starting' | 'running' | 'error' | 'critical'
-
-export interface TradingTradeRow {
-  trade_id: string
-  setup_id: string
-  symbol: string
-  direction: string
-  qty: number
-  entry_estimate: number
-  entry_fill?: number | null
-  initial_stop?: number | null
-  current_stop?: number | null
-  exit_fill?: number | null
-  margin_blocked: number
-  status: string
-  skip_reason?: string | null
-  reject_reason?: string | null
-  close_reason?: string | null
-  trigger_time?: string | null
-  entry_time?: string | null
-  close_time?: string | null
-  realised_pnl: number
-  open_pnl: number
-  remaining_downside_risk: number
-  stop_revised: boolean
-  tick_size?: number
-  auto_trail_enabled?: boolean
-  auto_trail_ticks?: number | null
-}
-
-export interface TradingEngineSnapshot {
-  state: TradingEngineState | string
-  session_date: string
-  live_orders_enabled: boolean
-  unprotected_count: number
-  limits_protected: boolean
-  closed_loss_today: number
-  committed_risk: number
-  remaining_daily: number
-  live_pnl: number
-  total_capital: number
-  leverage_factor: number
-  margin_used: number
-  remaining_capital: number
-  buying_power: number
-  last_error?: string | null
-  accepting_triggers?: boolean
-  require_vwap_accept?: boolean
-  active: TradingTradeRow[]
-  closed: TradingTradeRow[]
-  skipped: TradingTradeRow[]
-}
-
-export interface TradingEngineStatus extends Omit<TradingEngineSnapshot, 'active' | 'closed' | 'skipped'> {
-  live_orders_env_enabled: boolean
-  engine_running: boolean
-  can_confirm_live: boolean
-}
-
-export interface TradingStartResponse {
-  success: boolean
-  message: string
-  pid?: number | null
-}
-
 export interface AdminConfigValues {
   per_trade_risk_cap_inr: number
   limited_per_trade_risk_cap_inr: number
@@ -448,8 +383,7 @@ export interface AdminActionResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Rebuilt execution engine (/execution). Additive: the Trading* types above
-// belong to the old engine and are untouched.
+// Execution engine (/execution).
 // ---------------------------------------------------------------------------
 
 export interface ExecutionSessionCaps {

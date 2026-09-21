@@ -21,7 +21,9 @@ function fixture(p) {
   if(p.endsWith('/coverage')) return {session_date:date,subscribed:100,tokens_with_1m:100,tokens_with_5m:100,spikes:0,setups:0,continuation_arms:0,continuation_decisions:0,continuation_successful:0,continuation_failed:0}
   if(p.includes('/observation/readiness')) return {session_date:date,checklist_ok:false,checklist_status:'failed',market_open:false,runner_running:false,can_start:false,reason:area.message}
   if(p.includes('/observation/sectors')) return {valid:true,version:'fixture',universe_version:'fixture',symbol_count:1,sectors:[{name:'Industrials',symbols:['ABB']}]}
-  if(p.includes('/trading-engine/')) return {state:'stopped',session_date:date,live_orders_enabled:false,live_orders_env_enabled:false,engine_running:false,can_confirm_live:false,unprotected_count:0,limits_protected:true,closed_loss_today:0,committed_risk:0,remaining_daily:3000,live_pnl:0,total_capital:100000,leverage_factor:1,margin_used:0,remaining_capital:100000,buying_power:100000,active:[],closed:[],skipped:[]}
+  if(p.endsWith('/execution/status')) return {engine_state:'absent',engine_reason:'no_heartbeat',heartbeat_age_seconds:null,stopped_on_purpose:false,stop_reason:null,run_id:null,session_date:date,is_live:false,tick_count:0,entries_allowed:false,entries_stopped:false,entries_paused:false,pause_reason:null,open_positions:0,unprotected:0,realised_loss_today:0,daily_loss_cap:3000,remaining_daily:3000,caps:{per_trade_cap_rupees:900,per_trade_cap_vwap_limited_rupees:450,daily_loss_cap_rupees:3000,total_capital_rupees:300000,leverage_factor:5},capital:null,total_live_pnl:null,live_pnl_as_of:null,live_pnl_complete:false,last_error:null,escalations:{}}
+  if(p.endsWith('/execution/preflight')) return {can_start:false,checks:[{key:'market_hours',ok:false,detail:'outside NSE cash session'},{key:'before_entry_cutoff',ok:true,detail:'before 14:00 IST'},{key:'observation_runner',ok:false,detail:'observation_runner_not_running'},{key:'no_engine_running',ok:true,detail:'no live engine'}],engine_state:'absent',engine_reason:'no_heartbeat',refusals:['market_hours','observation_runner']}
+  if(p.includes('/execution/positions')) return {session_date:date,open:[],closed:[],rejected:[],total_live_pnl:null,live_pnl_as_of:null,live_pnl_complete:false}
   if(p.endsWith('/status') && !p.includes('/auth/')) return {runner_state:'stopped',feed_status:'OFFLINE',session_date:date,subscribed_tokens:100,updated_at:at}
   if(p.endsWith('/auth/status')) return {api_key_configured:true,api_secret_configured:true,access_token_present:true,masked_access_token:'ab...xy'}
   if(p.endsWith('/auth/check-token')) return {valid:true,message:'Token valid',user_id:'NJ'}
@@ -30,7 +32,6 @@ function fixture(p) {
   if(p.includes('/admin/audit')) return {entries:[],limit:30,offset:0}
   if(p.endsWith('/health')) return {status:'ok'}
   if(p.endsWith('/account/logout')) return {success:true}
-  if(p.endsWith('/trading/control')) return {strip:{execution_mode:'PAPER',entry_mode:'PAUSED',entry_permission:'BLOCKED',engine_state:'stopped',unresolved_incident:false,as_of:at},effective:values,saved:values}
   throw Error('Unhandled fixture: '+p)
 }
 async function serve(root) {

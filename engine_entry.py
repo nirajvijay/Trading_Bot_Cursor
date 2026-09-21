@@ -33,7 +33,7 @@ from trading_engine_broker import (
     EntryAcceptedVisibilityUnknown,
     LIVE_ORDERS_DISABLED_REASON,
 )
-from trading_engine_risk import structural_stop_price
+from engine_stop import structural_stop_price
 from trading_engine_types import BrokerOrder, broker_order_filled_qty
 
 # Real risk above this multiple of the intended cap is abnormal: skip the stop

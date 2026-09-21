@@ -11,7 +11,6 @@ from api.admin_config.store import AdminConfigStore, VersionConflictError
 from api.auth.audit import write_audit
 from api.auth.deps import WebAuthContext, require_web_session, require_web_session_mutating
 from api.auth.rate_limit import ACTION_ADMIN_CONFIG, check_rate_limit
-from api.queries.trading import load_snapshot
 from api.schemas.admin import (
     AdminActionResponse,
     AdminAuditEntry,
@@ -21,8 +20,8 @@ from api.schemas.admin import (
     AdminConfigValues,
     AdminRollbackRequest,
 )
-from api.services.trading_engine_runner import is_engine_running
-from trading_engine_store import TradingEngineStore
+from api.services.execution_engine_runner import engine_is_running, heartbeat
+from engine_commands import CommandKind, CommandQueue
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -37,23 +36,29 @@ def _username(ctx: WebAuthContext) -> str:
     return str(ctx.session.username or "owner")
 
 
-def _enqueue_engine_command(kind: str) -> None:
-    db = config.trading_engine_db_path()
+def _enqueue_engine_command(kind: CommandKind) -> None:
+    """Queue a command for the execution engine, if there is a store to queue in.
+
+    Diagnostics' pause/resume are the same STOP/START entries toggle the
+    Execution Desk exposes, so they go through the one command queue rather
+    than a second control path.
+    """
+    db = config.execution_engine_db_path()
     if not db.exists():
         return
-    store = TradingEngineStore(db)
+    queue = CommandQueue(db)
     try:
-        store.enqueue_command(kind)
+        queue.enqueue(kind)
     finally:
-        store.close()
+        queue.close()
 
 
 def _config_response() -> AdminConfigResponse:
     store = _store()
     try:
         raw = store.get_config_response()
-        running = is_engine_running()
-        snap = load_snapshot(config.trading_engine_db_path(), _today_ist(), running=running)
+        running = engine_is_running()
+        beat = heartbeat() or {}
         values = AdminConfigValues(**raw["values"])
         effective = store.load_effective_payload()
         return AdminConfigResponse(
@@ -63,7 +68,7 @@ def _config_response() -> AdminConfigResponse:
             vwap_accept_gap_percent=float(raw["vwap_accept_gap_percent"]),
             vwap_limited_gap_percent=float(raw["vwap_limited_gap_percent"]),
             warnings=list(raw.get("warnings") or []),
-            accepting_triggers=bool(snap.get("accepting_triggers")),
+            accepting_triggers=bool(beat.get("entries_allowed")) and running,
             engine_running=running,
             effective_values=effective,
             effective_version_id=store.effective_version_id(),
@@ -81,17 +86,20 @@ def _today_ist() -> str:
 
 
 def _resume_preconditions() -> Optional[str]:
-    if not is_engine_running():
+    """Refuse a resume the engine could not honour anyway.
+
+    Read from the heartbeat: the API never talks to the running process.
+    """
+    if not engine_is_running():
         return "engine_not_running"
-    snap = load_snapshot(
-        config.trading_engine_db_path(),
-        _today_ist(),
-        running=True,
-    )
-    state = str(snap.get("state") or "")
-    if state in {"critical", "error"}:
-        return f"engine_{state}"
-    if not bool(snap.get("limits_protected", True)):
+    beat = heartbeat() or {}
+    if str(beat.get("state") or "") == "error":
+        return "engine_error"
+    if beat.get("escalations"):
+        return "step_escalated"
+    if int(beat.get("unprotected") or 0) > 0:
+        # A filled position with no confirmed stop: do not add new exposure on
+        # top of exposure that is not yet protected.
         return "unprotected_lockout"
     return None
 
@@ -159,7 +167,7 @@ def pause_trading(
         write_audit("admin_entries_paused", already=already)
     finally:
         store.close()
-    _enqueue_engine_command("pause_entries")
+    _enqueue_engine_command(CommandKind.STOP)
     return AdminActionResponse(
         success=True,
         message="already_paused" if already else "Entries paused",
@@ -187,24 +195,26 @@ def resume_trading(
         finally:
             store.close()
         raise HTTPException(status_code=409, detail=blocked)
+    # There is no separate "arm" concept in the new engine: resuming entries is
+    # simply the START command, the same one the Execution Desk sends.
+    db = config.execution_engine_db_path()
+    if not db.exists():
+        raise HTTPException(status_code=409, detail="engine_not_running")
     store = _store()
-    engine = TradingEngineStore(config.trading_engine_db_path())
+    queue = CommandQueue(db)
     try:
-        run = engine.latest_run()
-        if run is None:
-            raise HTTPException(status_code=409, detail="engine_not_running")
-        arm = engine.session_arm(_today_ist())
-        payload = {"run_id":str(run["run_id"]),"config_version_id":store.active_version_id(),
-            "execution_mode":"LIVE" if run["live_orders_enabled"] else "PAPER",
-            "entry_mode":arm["entry_mode"] if arm else "MANUAL", "live_confirmation":False}
-        command_id = engine.enqueue_command("arm_session", payload=payload, actor=_username(ctx))
+        command_id = queue.enqueue(CommandKind.START, actor=_username(ctx))
+        store.set_entries_paused(False)
         paused = store.read_entries_paused()
     finally:
-        engine.close()
+        queue.close()
         store.close()
     return AdminActionResponse(
-        success=True, message="Re-arm queued; entries remain blocked until engine validation",
-        entries_paused=paused, command_id=command_id, state="queued",
+        success=True,
+        message="Entries resume queued; the engine applies it on its next tick",
+        entries_paused=paused,
+        command_id=command_id,
+        state="queued",
     )
 
 
