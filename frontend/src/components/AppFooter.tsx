@@ -68,13 +68,15 @@ export function AppFooter({
     return (
       <footer className="h-8 px-4 flex items-center justify-between border-t border-outline-variant bg-white text-[10px] text-on-surface-variant shrink-0">
         <div className="flex items-center gap-4 font-data">
-          <span>LOCALHOST ONLY</span>
-          <span className="text-outline-variant">|</span>
-          <span>ENV: backend/.env</span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+            VWAP HEALTH
+          </span>
         </div>
-        <div className="flex items-center gap-1.5 label-caps">
-          <span className="material-symbols-outlined text-[14px]">verified_user</span>
-          <span>Secure environment</span>
+        <span className="label-caps tracking-wider">Read-only pipeline check · runs independently of the trading engine</span>
+        <div className="flex items-center gap-1.5 font-data">
+          <span className="material-symbols-outlined text-[14px]">schedule</span>
+          <span>{now} IST</span>
         </div>
       </footer>
     )

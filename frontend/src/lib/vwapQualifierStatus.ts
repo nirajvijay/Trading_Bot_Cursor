@@ -19,6 +19,7 @@ export interface VwapQualifierView {
   limited: number
   reject: number
   unavailable: number
+  callbackFailures: number
 }
 
 const DISCLAIMER = 'Observation qualifier only. Not a trading permission.'
@@ -34,6 +35,7 @@ function countsFrom(snapshot: VwapQualifierStatus | null | undefined) {
     limited: snapshot?.limited ?? 0,
     reject: snapshot?.reject ?? 0,
     unavailable: snapshot?.unavailable ?? 0,
+    callbackFailures: snapshot?.callback_failures ?? 0,
   }
 }
 
@@ -52,6 +54,7 @@ export function resolveVwapQualifierView(
       limited: 0,
       reject: 0,
       unavailable: 0,
+      callbackFailures: 0,
     }
   }
 
@@ -66,6 +69,7 @@ export function resolveVwapQualifierView(
       limited: 0,
       reject: 0,
       unavailable: 0,
+      callbackFailures: 0,
     }
   }
 
@@ -84,6 +88,7 @@ export function resolveVwapQualifierView(
       limited: 0,
       reject: 0,
       unavailable: 0,
+      callbackFailures: 0,
     }
   }
 
@@ -153,5 +158,6 @@ export function resolveVwapQualifierView(
     limited: 0,
     reject: 0,
     unavailable: 0,
+    callbackFailures: 0,
   }
 }

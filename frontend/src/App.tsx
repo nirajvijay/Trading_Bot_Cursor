@@ -5,12 +5,12 @@ import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
 import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postStartObservation, postStopObservation, setAuthHandlers } from './api/client'
-import { KiteAuthPage } from './components/KiteAuthPage'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
+import { VwapHealthPage } from './components/VwapHealthPage'
 import { ExecutionDeskPage } from './components/execution/ExecutionDeskPage'
 import { StationConsoleShell } from './components/StationConsoleShell'
 import { type AppTab } from './components/TopAppBar'
@@ -265,7 +265,7 @@ export default function App() {
         ) : activeTab === 'admin' ? (
           <AdminConsolePage />
         ) : (
-          <KiteAuthPage />
+          <VwapHealthPage />
         )}
       </main>
       {activeTab !== 'checklist' && (

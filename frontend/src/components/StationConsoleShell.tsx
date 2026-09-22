@@ -8,7 +8,7 @@ const TABS: { id: AppTab; label: string }[] = [
   { id: 'radar', label: 'Observation' },
   { id: 'trading', label: 'Execution Desk' },
   { id: 'admin', label: 'Diagnostics & Logs' },
-  { id: 'auth', label: 'Settings' },
+  { id: 'auth', label: 'VWAP Health' },
 ]
 
 interface Props {

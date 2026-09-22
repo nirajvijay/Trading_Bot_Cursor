@@ -1,0 +1,27 @@
+[Unit]
+Description=NIFTY RADAR VWAP pipeline health check (read-only, decoupled from trading)
+After=network.target
+
+[Service]
+Type=oneshot
+User=nifty-radar
+Group=nifty-radar
+WorkingDirectory=/opt/nifty-radar/current
+EnvironmentFile=/opt/nifty-radar/secrets/api.env
+ExecStart=/opt/nifty-radar/venv/bin/python3 vwap_health_check.py
+
+# Mirrors nifty-radar-api.service. The check only reads the live DB and writes
+# vwap_health.json under the runtime cache, so it needs no more than this.
+# ReadWritePaths must keep covering whatever data_root() resolves to, or the
+# health file write fails silently and the page stays on "NOT CHECKED YET".
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nifty-radar/data /opt/nifty-radar/logs /opt/nifty-radar/run
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+
+# ExecStart returns 1 on ALARM; that is a real signal, not a crash.
+SuccessExitStatus=0 1

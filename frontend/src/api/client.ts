@@ -19,6 +19,7 @@ import type {
   SessionCoverage,
   SessionResponse,
   SymbolTimelineResponse,
+  VwapHealthStatus,
   ExecutionCommand,
   ExecutionCommandKind,
   ExecutionEvents,
@@ -136,6 +137,10 @@ export function fetchStatus(sessionDate: string): Promise<RunnerStatus> {
 
 export function fetchHealth(): Promise<{ status: string }> {
   return getJson<{ status: string }>('/health')
+}
+
+export function fetchVwapHealth(): Promise<VwapHealthStatus> {
+  return getJson<VwapHealthStatus>('/vwap/health')
 }
 
 export function fetchMe(): Promise<MeResponse> {

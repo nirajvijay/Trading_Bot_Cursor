@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
-from api.schemas.radar import RunnerStatus, VwapQualifierStatus
+from api.schemas.radar import RunnerStatus, VwapHealthStatus, VwapQualifierStatus
 
 IST = ZoneInfo("Asia/Kolkata")
 RUNNER_STALE_SECONDS = 30
@@ -79,3 +79,30 @@ def read_runner_status(
         observation_phase=data.get("observation_phase", "unknown") if state == "running" else "stopped",
         vwap_qualifier=vwap,
     )
+
+
+def read_vwap_health(status_file: Optional[str]) -> VwapHealthStatus:
+    """Read the standalone vwap_health_check.py output, if it has ever run."""
+    if not status_file:
+        return VwapHealthStatus()
+    path = Path(status_file)
+    if not path.exists():
+        return VwapHealthStatus()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return VwapHealthStatus()
+    try:
+        return VwapHealthStatus(
+            status="ok" if data.get("ok") else "alarm",
+            session_date=data.get("session_date"),
+            triggered_count=int(data.get("triggered_count", 0) or 0),
+            qualified_count=int(data.get("qualified_count", 0) or 0),
+            stuck_count=int(data.get("stuck_count", 0) or 0),
+            callback_failures=int(data.get("callback_failures", 0) or 0),
+            persist_failures=int(data.get("persist_failures", 0) or 0),
+            reason=data.get("reason"),
+            checked_at=data.get("checked_at"),
+        )
+    except (TypeError, ValueError, ValidationError):
+        return VwapHealthStatus()
