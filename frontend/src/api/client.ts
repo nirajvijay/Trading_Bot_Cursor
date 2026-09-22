@@ -246,6 +246,10 @@ export function fetchPreMarketChecklist(sessionDate?: string): Promise<PreMarket
   return getJson<PreMarketChecklistResponse>(`/premarket-checklist${query}`)
 }
 
+export function fetchChecklistActivity(sessionDate: string): Promise<Pick<PreMarketChecklistResponse, 'activity' | 'session_date'>> {
+  return getJson(`/premarket-checklist?session_date=${encodeURIComponent(sessionDate)}&activity_only=true`)
+}
+
 export function postGenerateLocalData(
   task: string,
   sessionDate?: string,

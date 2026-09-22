@@ -27,7 +27,13 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authChecked, setAuthChecked] = useState(false)
   const [activeTab, setActiveTab] = useState<AppTab>('radar')
-  const [sessionDate] = useState(todayIst())
+  const [sessionDate, setSessionDate] = useState(todayIst())
+  useEffect(() => {
+    const updateDate = () => setSessionDate(todayIst())
+    const timer = window.setInterval(updateDate, 60_000)
+    window.addEventListener('focus', updateDate)
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', updateDate) }
+  }, [])
   const [search, setSearch] = useState('')
   const [showPasskeySetup, setShowPasskeySetup] = useState(false)
   const [showSecurity, setShowSecurity] = useState(false)
@@ -47,12 +53,15 @@ export default function App() {
     loading: checklistLoading,
     error: checklistError,
     refresh: refreshChecklist,
-  } = usePreMarketChecklist(sessionDate, authenticated)
+  } = usePreMarketChecklist(sessionDate, authenticated, activeTab === 'checklist')
   const { readiness: observationReadiness, refresh: refreshObservationReadiness } = useObservationReadiness(
     sessionDate,
     radarEnabled,
   )
   const [startingObservation, setStartingObservation] = useState(false)
+  useEffect(() => {
+    if (authenticated) void refreshObservationReadiness()
+  }, [authenticated, checklistData?.activity?.revision, refreshObservationReadiness])
   const [stoppingObservation, setStoppingObservation] = useState(false)
   const [observationError, setObservationError] = useState<string | null>(null)
   const refreshAfterTokenCheck = useCallback(async () => {

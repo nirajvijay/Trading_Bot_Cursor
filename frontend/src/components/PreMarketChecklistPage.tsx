@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { postGenerateLocalData } from '../api/client'
 import type { CheckTokenResponse, ChecklistStatus, PreMarketChecklistResponse, KiteStartResponse } from '../api/types'
-import { formatDateTimeIst } from '../lib/format'
+import { formatDateTimeIst, todayIst } from '../lib/format'
 import {
   mergeKiteAuthStatus,
   computeEffectiveOverallStatus,
@@ -108,15 +108,19 @@ export function PreMarketChecklistPage({
   onCheckToken,
   onNavigateToObservation,
 }: Props) {
-  const [generatingTask, setGeneratingTask] = useState<string | null>(null)
+  const [localGeneratingTask, setGeneratingTask] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
-  const [kiteLoginStarting, setKiteLoginStarting] = useState(false)
+  const [localKiteLoginStarting, setKiteLoginStarting] = useState(false)
+  const backendBusy = data?.activity?.session_date === todayIst() && data?.activity?.status === 'running'
+  const backendStage = backendBusy ? data?.activity?.stage : null
+  const generatingTask = backendStage && backendStage !== 'kite' ? backendStage : localGeneratingTask
+  const kiteLoginStarting = backendStage === 'kite' || localKiteLoginStarting
   const [checkingStage, setCheckingStage] = useState<StageId | null>(null)
   const [runningAll, setRunningAll] = useState(false)
   const [expanded, setExpanded] = useState<Record<StageId, boolean> | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(false)
   const [cliLines, setCliLines] = useState<string[]>([])
-  const generationBusy = Boolean(generatingTask) || kiteLoginStarting
+  const generationBusy = backendBusy || Boolean(generatingTask) || kiteLoginStarting
   const handleGenerate = useCallback(
     async (task: string) => {
       setGeneratingTask(task)
@@ -284,7 +288,8 @@ export function PreMarketChecklistPage({
     if (!data) return null
     const kiteBase = data.areas.kite_auth
     const tokenValidatedFromApi = kiteBase.token_validated_today === true
-    const kiteStatus = mergeKiteAuthStatus(
+    const kiteStatus = data.activity?.stage === 'kite' && ['running', 'blocked'].includes(data.activity.status)
+      ? kiteBase.status : mergeKiteAuthStatus(
       kiteBase.status,
       tokenCheck !== null || tokenValidatedFromApi,
       tokenCheck?.valid ?? (tokenValidatedFromApi ? true : null),
@@ -420,9 +425,9 @@ export function PreMarketChecklistPage({
           {error}
         </div>
       )}
-      {generateError && (
+      {(generateError || error) && (
         <div className="px-3 py-2 bg-[#ffdad6]/40 border border-[#ffdad6] text-[#ba1a1a] text-sm whitespace-pre-wrap">
-          {generateError}
+          {generateError || error}
         </div>
       )}
 
@@ -450,7 +455,7 @@ export function PreMarketChecklistPage({
             <button
               type="button"
               onClick={() => void handleRunAllPending()}
-              disabled={runningAll || loading}
+              disabled={runningAll || loading || generationBusy}
               className="bg-black inline-flex gap-1 items-center px-3 py-1 rounded-[2px] text-white text-[15px] font-semibold leading-5 cursor-pointer transition duration-100 hover:brightness-90 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <img src="/figma/icon-2.svg" alt="" className="h-[9px] w-[7px]" />
