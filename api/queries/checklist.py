@@ -35,7 +35,9 @@ EXPECTED_COUNT = len(NIFTY_100_SYMBOLS)
 EMA_PERIOD = 20
 INSTRUMENTS_STALE_DAYS = 7
 FIVE_MINUTE_START = 9 * 60 + 15
-FIVE_MINUTE_END = 15 * 60 + 25
+# Stage 5 only needs the historical 5-minute session through 15:00 IST.
+# This requires 1-minute source data through 15:04 IST and yields 70 bars.
+FIVE_MINUTE_END = 15 * 60
 
 _STATUS_RANK = {
     "not_checked": 0,
@@ -292,7 +294,9 @@ def _evaluate_five_minute_session(
             continue
     expected = set(range(FIVE_MINUTE_START, FIVE_MINUTE_END + 1, 5))
     last_bar = max(minutes) if minutes else None
-    return minutes == expected, len(minutes), last_bar
+    # The database may contain later bars than the validation cutoff. They do
+    # not invalidate an otherwise complete safe-window session.
+    return expected.issubset(minutes), len(minutes), last_bar
 
 
 def _latest_generation_run(conn: sqlite3.Connection) -> Optional[str]:

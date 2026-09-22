@@ -174,7 +174,7 @@ def _write_manifest(local_dir: Path) -> None:
     write_universe_manifest_atomic(local_dir / "universe_manifest.json")
 
 
-_FAKE_COMPLETED = [f"2026-07-{d:02d}" for d in range(1, 22)]
+_FAKE_COMPLETED = [f"2026-07-{d:02d}" for d in range(1, 22)] + ["2026-07-31"]
 
 class ChecklistQueryTests(unittest.TestCase):
     def setUp(self) -> None:
