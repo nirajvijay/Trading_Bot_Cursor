@@ -36,7 +36,6 @@ EMA_PERIOD = 20
 INSTRUMENTS_STALE_DAYS = 7
 FIVE_MINUTE_START = 9 * 60 + 15
 FIVE_MINUTE_END = 15 * 60 + 25
-EXPECTED_FIVE_MINUTE_BARS = ((FIVE_MINUTE_END - FIVE_MINUTE_START) // 5) + 1
 
 _STATUS_RANK = {
     "not_checked": 0,
@@ -993,7 +992,6 @@ def _build_five_minute(
         stale_count, stale_sample, aggregate_latest, newest_stale = (
             _symbols_stale_vs_prior_session(per_symbol_latest, required_prior)
         )
-        symbols_covered_on_p = _count_symbols_on_date(conn, "candles_5m", required_prior)
         missing_count, missing_sample = _symbols_missing_on_date(
             conn, "candles_5m", required_prior
         )
@@ -1014,6 +1012,7 @@ def _build_five_minute(
     finally:
         conn.close()
 
+    complete_symbols_on_p = EXPECTED_COUNT - len(incomplete_required_session)
     display_missing_count = (
         len(incomplete_required_session)
         if incomplete_required_session
@@ -1028,28 +1027,11 @@ def _build_five_minute(
             newest_stale_latest=newest_stale,
             stale_count=stale_count,
         )
-    elif symbols_covered_on_p < EXPECTED_COUNT:
-        status = "needs_update"
-        message = (
-            f"5m prior session {required_prior}: {symbols_covered_on_p}/{EXPECTED_COUNT} "
-            f"symbols ({missing_count} missing)"
-        )
     elif incomplete_required_session:
-        sample_symbol, bar_count, last_bar = incomplete_required_session[0]
-        last_text = (
-            f", ends at {last_bar // 60:02d}:{last_bar % 60:02d} IST"
-            if last_bar is not None
-            else ""
-        )
-        more = "" if len(incomplete_required_session) <= 1 else (
-            f" (+{len(incomplete_required_session) - 1} more)"
-        )
         status = "needs_update"
         message = (
-            f"Prior session {required_prior} incomplete for "
-            f"{len(incomplete_required_session)}/{EXPECTED_COUNT} symbols: "
-            f"{sample_symbol} ({bar_count}/{EXPECTED_FIVE_MINUTE_BARS} bars"
-            f"{last_text}){more}"
+            f"5m prior session {required_prior}: {complete_symbols_on_p}/{EXPECTED_COUNT} "
+            f"symbols ({len(incomplete_required_session)} incomplete)"
         )
     elif ema_missing > 0:
         status = "warning" if ema_missing <= 2 else "needs_update"
@@ -1061,7 +1043,7 @@ def _build_five_minute(
         status = "ok"
         message = (
             f"5m candles current through prior session {required_prior}: "
-            f"{symbols_covered_on_p}/{EXPECTED_COUNT}, EMA seed {ema_ready}/{len(tokens)}"
+            f"{complete_symbols_on_p}/{EXPECTED_COUNT}, EMA seed {ema_ready}/{len(tokens)}"
         )
 
     return {
@@ -1069,7 +1051,7 @@ def _build_five_minute(
         "message": message,
         "latest_date": latest_date,
         "expected_prior_session": required_prior,
-        "symbols_covered": symbols_covered_on_p,
+        "symbols_covered": complete_symbols_on_p,
         "expected_count": EXPECTED_COUNT,
         "missing_count": display_missing_count,
         "ema_seed_ready": ema_ready,

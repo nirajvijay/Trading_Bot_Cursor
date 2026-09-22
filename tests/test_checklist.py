@@ -343,7 +343,7 @@ class ChecklistQueryTests(unittest.TestCase):
         result = _build_five_minute(historical, instruments, "2026-08-03")
         self.assertEqual(result["status"], "needs_update")
         self.assertIn("incomplete", result["message"])
-        self.assertIn("54/75 bars", result["message"])
+        self.assertEqual(result["symbols_covered"], 0)
         self.assertEqual(result["missing_count"], 100)
 
     def test_full_checklist_aggregate(self) -> None:
