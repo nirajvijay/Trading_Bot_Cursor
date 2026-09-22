@@ -74,12 +74,18 @@ def _make_live_db(path: Path, *, triggered_old: int, triggered_fresh: int, quali
         conn.close()
 
 
-def _make_status_file(path: Path, *, callback_failures: int, persist_failures: int) -> None:
+def _make_status_file(
+    path: Path,
+    *,
+    callback_failures: int,
+    persist_failures: int,
+    session_date: str = SESSION_DATE,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
-                "session_date": SESSION_DATE,
+                "session_date": session_date,
                 "vwap_qualifier": {
                     "callback_failures": callback_failures,
                     "persist_failures": persist_failures,
@@ -101,7 +107,7 @@ class VwapHealthCheckTests(unittest.TestCase):
 
             result = check(live_db=db_path, status_file=status_path, session_date=SESSION_DATE)
 
-            self.assertTrue(result.ok)
+            self.assertEqual(result.status, "ok")
             self.assertEqual(result.stuck_count, 0)
             # The fresh trigger is inside the grace window and must not count.
             self.assertEqual(result.triggered_count, 3)
@@ -116,7 +122,7 @@ class VwapHealthCheckTests(unittest.TestCase):
 
             result = check(live_db=db_path, status_file=status_path, session_date=SESSION_DATE)
 
-            self.assertFalse(result.ok)
+            self.assertEqual(result.status, "alarm")
             self.assertEqual(result.stuck_count, 4)
             self.assertIn("no VWAP verdict", result.reason or "")
 
@@ -130,7 +136,7 @@ class VwapHealthCheckTests(unittest.TestCase):
 
             result = check(live_db=db_path, status_file=status_path, session_date=SESSION_DATE)
 
-            self.assertFalse(result.ok)
+            self.assertEqual(result.status, "alarm")
             self.assertEqual(result.callback_failures, 5)
 
     def test_missing_db_reports_zero_counts_without_raising(self) -> None:
@@ -143,7 +149,79 @@ class VwapHealthCheckTests(unittest.TestCase):
 
             self.assertEqual(result.triggered_count, 0)
             self.assertEqual(result.qualified_count, 0)
-            self.assertTrue(result.ok)
+            # No DB and no status file => no session to judge, not "healthy".
+            self.assertEqual(result.status, "idle")
+
+    def test_yesterdays_failure_counters_do_not_alarm_today(self) -> None:
+        """runner_status.json survives a runner stop, so the morning after a bad
+        session it still holds yesterday's counts. Those must not be re-dated to
+        today and raised as an alarm before the runner has even started."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "live.db"
+            status_path = root / "runner_status.json"
+            _make_live_db(db_path, triggered_old=0, triggered_fresh=0, qualified=0)
+            _make_status_file(
+                status_path,
+                callback_failures=5,
+                persist_failures=2,
+                session_date="2026-09-22",  # yesterday
+            )
+
+            result = check(live_db=db_path, status_file=status_path, session_date=SESSION_DATE)
+
+            self.assertNotEqual(result.status, "alarm")
+            self.assertFalse(result.session_live)
+            self.assertEqual(result.callback_failures, 0)
+            self.assertEqual(result.persist_failures, 0)
+
+    def test_stuck_triggers_alarm_even_without_a_live_session(self) -> None:
+        """A runner that started and died leaves real triggers behind but no
+        matching status file. That must alarm, not read as idle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "live.db"
+            status_path = root / "runner_status.json"
+            _make_live_db(db_path, triggered_old=3, triggered_fresh=0, qualified=0)
+            _make_status_file(
+                status_path,
+                callback_failures=0,
+                persist_failures=0,
+                session_date="2026-09-22",  # stale: no live session today
+            )
+
+            result = check(live_db=db_path, status_file=status_path, session_date=SESSION_DATE)
+
+            self.assertEqual(result.status, "alarm")
+            self.assertFalse(result.session_live)
+            self.assertEqual(result.stuck_count, 3)
+
+    def test_crash_reason_wins_over_stuck_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "live.db"
+            status_path = root / "runner_status.json"
+            _make_live_db(db_path, triggered_old=4, triggered_fresh=0, qualified=1)
+            _make_status_file(status_path, callback_failures=2, persist_failures=0)
+
+            result = check(live_db=db_path, status_file=status_path, session_date=SESSION_DATE)
+
+            self.assertEqual(result.status, "alarm")
+            self.assertIn("crashed", result.reason or "")
+
+    def test_todays_counters_are_still_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "live.db"
+            status_path = root / "runner_status.json"
+            _make_live_db(db_path, triggered_old=0, triggered_fresh=0, qualified=0)
+            _make_status_file(status_path, callback_failures=4, persist_failures=1)
+
+            result = check(live_db=db_path, status_file=status_path, session_date=SESSION_DATE)
+
+            self.assertTrue(result.session_live)
+            self.assertEqual(result.callback_failures, 4)
+            self.assertEqual(result.status, "alarm")
 
     def test_write_health_persists_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,7 +236,7 @@ class VwapHealthCheckTests(unittest.TestCase):
             write_health(result, out_path=out_path)
 
             written = json.loads(out_path.read_text(encoding="utf-8"))
-            self.assertTrue(written["ok"])
+            self.assertEqual(written["status"], "ok")
             self.assertEqual(written["session_date"], SESSION_DATE)
 
 

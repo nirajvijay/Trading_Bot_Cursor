@@ -107,7 +107,8 @@ export interface VwapQualifierStatus {
 }
 
 export interface VwapHealthStatus {
-  status: 'ok' | 'alarm' | 'unknown'
+  status: 'ok' | 'alarm' | 'idle' | 'unknown'
+  session_live?: boolean
   session_date?: string | null
   triggered_count: number
   qualified_count: number

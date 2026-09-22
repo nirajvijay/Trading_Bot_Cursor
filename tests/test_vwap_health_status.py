@@ -45,6 +45,37 @@ class VwapHealthStatusTests(unittest.TestCase):
             self.assertEqual(status.triggered_count, 3)
             self.assertEqual(status.qualified_count, 3)
 
+    def test_idle_maps_through(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vwap_health.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "idle",
+                        "session_live": False,
+                        "session_date": "2026-09-23",
+                        "triggered_count": 0,
+                        "qualified_count": 0,
+                        "stuck_count": 0,
+                        "callback_failures": 0,
+                        "persist_failures": 0,
+                        "reason": None,
+                        "checked_at": "2026-09-23T09:00:00+05:30",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            status = read_vwap_health(str(path))
+            self.assertEqual(status.status, "idle")
+            self.assertFalse(status.session_live)
+
+    def test_legacy_ok_file_without_status_still_reads(self) -> None:
+        """A file written before the status field existed must not read as alarm."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vwap_health.json"
+            path.write_text(json.dumps({"ok": True, "session_date": "2026-09-23"}), encoding="utf-8")
+            self.assertEqual(read_vwap_health(str(path)).status, "ok")
+
     def test_alarm_maps_through_with_reason(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "vwap_health.json"

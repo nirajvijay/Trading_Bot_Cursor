@@ -7,6 +7,7 @@ const POLL_MS = 30_000
 const STATUS_COPY: Record<VwapHealthStatus['status'], { label: string; className: string }> = {
   ok: { label: 'HEALTHY', className: 'bg-emerald-50 text-positive border-emerald-200' },
   alarm: { label: 'ALARM', className: 'bg-red-50 text-negative border-red-300' },
+  idle: { label: 'IDLE', className: 'bg-surface-container text-on-surface-variant border-outline-variant' },
   unknown: { label: 'NOT CHECKED YET', className: 'bg-surface-container text-on-surface-variant border-outline-variant' },
 }
 
@@ -78,6 +79,14 @@ export function VwapHealthPage() {
       <div className="p-4 flex flex-col gap-3">
         {error && (
           <div className="px-3 py-2 bg-red-50 border border-red-200 text-red-800 text-sm">{error}</div>
+        )}
+
+        {health?.status === 'idle' && !error && (
+          <div className="px-3 py-2 bg-surface-container border border-outline-variant text-on-surface-variant text-sm">
+            No observation session running for today yet, so there is nothing to
+            check. This is not a problem &mdash; it turns green only once real
+            triggers are being classified, so green always means something.
+          </div>
         )}
 
         {health?.status === 'unknown' && !error && (

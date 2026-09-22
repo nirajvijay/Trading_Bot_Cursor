@@ -86,10 +86,15 @@ class HealthResponse(BaseModel):
 
 
 class VwapHealthStatus(BaseModel):
-    """Result of the standalone vwap_health_check.py job. 'unknown' means the
-    check hasn't run yet (no file on disk), not that the pipeline is healthy."""
+    """Result of the standalone vwap_health_check.py job.
 
-    status: Literal["ok", "alarm", "unknown"] = "unknown"
+    'unknown' means the check hasn't run yet (no file on disk) and 'idle' means
+    it ran but there is no observation session for today. Neither is a claim
+    that the pipeline is healthy -- only 'ok' is.
+    """
+
+    status: Literal["ok", "alarm", "idle", "unknown"] = "unknown"
+    session_live: bool = False
     session_date: Optional[str] = None
     triggered_count: int = 0
     qualified_count: int = 0
