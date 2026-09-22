@@ -28,7 +28,7 @@ from api.services.observation_start_lock import (
 
 IST = ZoneInfo("Asia/Kolkata")
 ROOT = config.ROOT
-DEFAULT_STATUS_FILE = Path("/tmp/runner_status.json")
+DEFAULT_STATUS_FILE = config.runtime_cache_dir() / "runner_status.json"
 RUNNER_STALE_SECONDS = 30
 SESSION_OPEN_MINUTE = 9 * 60 + 15
 SESSION_CLOSE_MINUTE = 15 * 60 + 30

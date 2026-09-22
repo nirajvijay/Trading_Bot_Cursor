@@ -1165,9 +1165,10 @@ def _build_dashboard(
         trial_ready = True
         reason = "All critical checks passed"
 
+    status_file = str(config.RUNNER_STATUS_FILE)
     startup_cmd = (
-        "RUNNER_STATUS_FILE=/tmp/runner_status.json "
-        "python3 live_observation_runner.py --status-file /tmp/runner_status.json"
+        f"RUNNER_STATUS_FILE={status_file} "
+        f"python3 live_observation_runner.py --status-file {status_file}"
     )
 
     return {
@@ -1287,9 +1288,7 @@ def fetch_premarket_checklist(
         "next_step": next_step,
         "local_data_dir": str(config.LOCAL_DATA_DIR),
         "suggested_commands": {
-            "runner": (
-                "python3 live_observation_runner.py --status-file /tmp/runner_status.json"
-            ),
+            "runner": f"python3 live_observation_runner.py --status-file {config.RUNNER_STATUS_FILE}",
             "instrument_collector": get_generate_command("instruments"),
             "historical_collector": get_generate_command("historical"),
             "baseline_generator": get_generate_command("baselines", session_date),
@@ -1298,9 +1297,9 @@ def fetch_premarket_checklist(
             "startup": [
                 "uvicorn api.main:app --host 127.0.0.1 --port 8000",
                 (
-                    "RUNNER_STATUS_FILE=/tmp/runner_status.json "
+                    f"RUNNER_STATUS_FILE={config.RUNNER_STATUS_FILE} "
                     "python3 live_observation_runner.py "
-                    "--status-file /tmp/runner_status.json"
+                    f"--status-file {config.RUNNER_STATUS_FILE}"
                 ),
             ],
         },

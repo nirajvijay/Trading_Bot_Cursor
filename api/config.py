@@ -76,7 +76,10 @@ HISTORICAL_DB_PATH = Path(
     os.environ.get("HISTORICAL_DB_PATH", str(LOCAL_DATA_DIR / "nifty50_historical.db"))
 )
 RUNNER_STATUS_FILE = Path(
-    os.environ.get("RUNNER_STATUS_FILE", "/tmp/runner_status.json")
+    os.environ.get(
+        "RUNNER_STATUS_FILE",
+        str(runtime_cache_dir() / "runner_status.json"),
+    )
 )
 
 def execution_engine_db_path() -> Path:
