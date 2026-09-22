@@ -43,7 +43,13 @@ def _today_ist() -> str:
 
 @dataclass(frozen=True)
 class VwapHealth:
-    ok: bool
+    # "ok"   - triggers are being classified and persisted
+    # "alarm"- something is being dropped on the floor
+    # "idle" - no observation session for today yet; nothing to judge. This is
+    #          deliberately NOT "ok": green before the runner starts would mean
+    #          "nothing happened", which trains you to ignore green.
+    status: str
+    session_live: bool
     session_date: str
     triggered_count: int
     qualified_count: int
@@ -52,6 +58,13 @@ class VwapHealth:
     persist_failures: int
     reason: Optional[str]
     checked_at: str
+
+
+@dataclass(frozen=True)
+class StatusCounters:
+    session_live: bool
+    callback_failures: int
+    persist_failures: int
 
 
 def _count_triggered_past_grace(conn: sqlite3.Connection, session_date: str) -> int:
@@ -79,20 +92,75 @@ def _count_qualified(conn: sqlite3.Connection, session_date: str) -> int:
     return int(row[0]) if row else 0
 
 
-def _read_status_counters(status_file: Path) -> tuple[int, int]:
+def _read_status_counters(status_file: Path, session_date: str) -> StatusCounters:
+    """Read failure counters, but ONLY from a status file describing today.
+
+    runner_status.json is never deleted when the observation runner stops, so
+    yesterday's file -- and yesterday's failure counts -- sits on disk until the
+    next start. Reading it blind would re-date an old failure to today and raise
+    an alarm before the runner has even been started. The file carries its own
+    session_date; anything that isn't today's is treated as "no live session"
+    rather than as a run with zero failures.
+    """
     if not status_file.exists():
-        return 0, 0
+        return StatusCounters(False, 0, 0)
     try:
         data = json.loads(status_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return 0, 0
+        return StatusCounters(False, 0, 0)
+    if not isinstance(data, dict) or data.get("session_date") != session_date:
+        return StatusCounters(False, 0, 0)
     vwap = data.get("vwap_qualifier")
     if not isinstance(vwap, dict):
-        return 0, 0
-    return (
+        return StatusCounters(True, 0, 0)
+    return StatusCounters(
+        True,
         int(vwap.get("callback_failures", 0) or 0),
         int(vwap.get("persist_failures", 0) or 0),
     )
+
+
+def _classify(
+    *,
+    session_live: bool,
+    triggered: int,
+    stuck: int,
+    callback_failures: int,
+) -> tuple[str, Optional[str]]:
+    """Turn the raw counts into a verdict and a human-readable reason.
+
+    Returns (status, reason) where status is one of:
+      "idle"  - no observation session for today; nothing to judge yet
+      "alarm" - triggers are being dropped, or classify crashed
+      "ok"    - triggers are being classified and persisted
+
+    Useful phrasings for `reason` (return None when there is nothing wrong):
+      f"{callback_failures} VWAP classify call(s) crashed before persisting a verdict"
+      f"{stuck} trigger(s) older than {GRACE_SECONDS}s have no VWAP verdict on file"
+    """
+    # Idle requires BOTH no live session and no triggers on record. Checking
+    # session_live alone would let a runner that ran and died this morning look
+    # idle while its stuck triggers went unreported.
+    if not session_live and triggered == 0:
+        return "idle", None
+
+    # A crash is the more specific, more actionable cause; stuck triggers are
+    # usually just its symptom, so report the crash when both are present.
+    if callback_failures > 0:
+        return (
+            "alarm",
+            f"{callback_failures} VWAP classify call(s) crashed before persisting a verdict",
+        )
+
+    # Stuck triggers come from the database, so this stands on its own evidence
+    # and alarms even when no live status file backs it up.
+    if stuck > 0:
+        return (
+            "alarm",
+            f"{stuck} trigger(s) older than {GRACE_SECONDS}s have no VWAP verdict on file",
+        )
+
+    return "ok", None
 
 
 def check(
@@ -117,18 +185,21 @@ def check(
         finally:
             conn.close()
 
-    callback_failures, persist_failures = _read_status_counters(status_path)
+    counters = _read_status_counters(status_path, date)
 
     stuck = max(0, triggered - qualified)
-    ok = stuck == 0 and callback_failures == 0
-    reason = None
-    if callback_failures > 0:
-        reason = f"{callback_failures} VWAP classify call(s) crashed before persisting a verdict"
-    elif stuck > 0:
-        reason = f"{stuck} trigger(s) older than {GRACE_SECONDS}s have no VWAP verdict on file"
+    status, reason = _classify(
+        session_live=counters.session_live,
+        triggered=triggered,
+        stuck=stuck,
+        callback_failures=counters.callback_failures,
+    )
+    callback_failures = counters.callback_failures
+    persist_failures = counters.persist_failures
 
     return VwapHealth(
-        ok=ok,
+        status=status,
+        session_live=counters.session_live,
         session_date=date,
         triggered_count=triggered,
         qualified_count=qualified,
@@ -152,7 +223,7 @@ def write_health(result: VwapHealth, *, out_path: Optional[Path] = None) -> Path
 def main() -> int:
     result = check()
     path = write_health(result)
-    status = "OK" if result.ok else "ALARM"
+    status = result.status.upper()
     print(
         "VWAP_HEALTH %s session=%s triggered=%d qualified=%d stuck=%d "
         "callback_failures=%d persist_failures=%d reason=%s -> %s"
@@ -168,7 +239,9 @@ def main() -> int:
             path,
         )
     )
-    return 0 if result.ok else 1
+    # "idle" is not a failure: exit 0 so systemd does not flag every pre-open
+    # run as an alarm. Only a real "alarm" exits 1.
+    return 1 if result.status == "alarm" else 0
 
 
 if __name__ == "__main__":

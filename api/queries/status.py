@@ -92,9 +92,17 @@ def read_vwap_health(status_file: Optional[str]) -> VwapHealthStatus:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return VwapHealthStatus()
+    # Newer files carry an explicit status; older ones only had a bool "ok".
+    # Tolerate both so a stale file left over a deploy degrades gracefully
+    # instead of showing a spurious alarm until the next timer run.
+    raw_status = data.get("status")
+    if raw_status not in ("ok", "alarm", "idle"):
+        raw_status = "ok" if data.get("ok") else "alarm"
+
     try:
         return VwapHealthStatus(
-            status="ok" if data.get("ok") else "alarm",
+            status=raw_status,
+            session_live=bool(data.get("session_live", False)),
             session_date=data.get("session_date"),
             triggered_count=int(data.get("triggered_count", 0) or 0),
             qualified_count=int(data.get("qualified_count", 0) or 0),
