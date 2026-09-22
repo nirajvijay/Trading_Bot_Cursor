@@ -148,7 +148,13 @@ class ChecklistAreas(BaseModel):
     dashboard_readiness: DashboardReadinessCheck
 
 
+class ChecklistActivityResponse(BaseModel):
+    session_date: str
+    activity: Optional[dict] = None
+
+
 class PreMarketChecklistResponse(BaseModel):
+    activity: Optional[dict] = None
     session_date: str
     checked_at: str
     overall_status: ChecklistStatus

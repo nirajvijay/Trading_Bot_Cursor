@@ -85,7 +85,9 @@ function actionBtn(action: Action, generationBusy: boolean) {
       key={action.label}
       type="button"
       onClick={action.onClick}
-      disabled={action.loading || action.disabled || (generationBusy && action.variant === 'primary')}
+      disabled={action.loading || action.disabled || generationBusy}
+      aria-busy={Boolean(action.loading)}
+      aria-label={action.label}
       className={`${base} ${variant}`}
     >
       {action.iconSrc && (

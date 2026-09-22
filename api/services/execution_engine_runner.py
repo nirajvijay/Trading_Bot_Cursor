@@ -196,6 +196,19 @@ def start_engine(
     run_id: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> Tuple[bool, str, Optional[int]]:
+    from api.services.checklist_activity import ChecklistBusy, workflow_lock
+    try:
+        with workflow_lock(shared=True):
+            return _start_engine(session_config=session_config, session_date=session_date,
+                                 live_orders=live_orders, run_id=run_id, now=now)
+    except ChecklistBusy:
+        return False, "Checklist preparation is running", None
+
+
+def _start_engine(
+    *, session_config: SessionRiskConfig, session_date: Optional[str] = None,
+    live_orders: bool = False, run_id: Optional[str] = None, now: Optional[datetime] = None,
+) -> Tuple[bool, str, Optional[int]]:
     """Spawn the engine, or refuse with the specific reason."""
     from uuid import uuid4
 

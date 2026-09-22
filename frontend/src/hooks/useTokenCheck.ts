@@ -31,19 +31,13 @@ export function useTokenCheck(
 
   useEffect(() => {
     const kite = checklistData?.areas.kite_auth
-    if (!kite?.token_validated_today) return
-    setTokenCheck((prev) =>
-      prev?.valid
-        ? prev
-        : {
-            valid: true,
+    if (!kite) return
+    setTokenCheck({
+            valid: kite.token_validated_today === true,
             message: kite.message,
             user_id: undefined,
-          },
-    )
-    if (kite.token_checked_at) {
-      setTokenCheckedAt(kite.token_checked_at)
-    }
+          })
+    setTokenCheckedAt(kite.token_checked_at ?? null)
   }, [checklistData])
 
   const checkToken = useCallback(async () => {

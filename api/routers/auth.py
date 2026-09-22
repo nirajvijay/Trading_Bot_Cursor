@@ -30,6 +30,7 @@ from api.schemas.auth import (
     SessionResponse,
 )
 from api.services.checklist_cache import invalidate_checklist_cache
+from api.services.checklist_activity import kite_activity, manual_operation
 from api.services.kite_auto_login import (
     attempt_kite_auto_login,
     auto_login_credentials_configured,
@@ -38,6 +39,8 @@ from api.services.kite_auto_login_rate import (
     check_kite_auto_login_rate_limit,
     clear_kite_auto_login_failures,
     record_kite_auto_login_failure,
+    check_account_budget,
+    record_account_attempt,
 )
 from api.services.token_check_cache import write_token_check
 from api.services.token_generation_cache import write_token_generated
@@ -146,6 +149,7 @@ def login_url() -> LoginUrlResponse:
 def kite_start(
     response: Response,
     ctx: WebAuthContext = Depends(require_web_session_mutating),
+    _activity: None = Depends(kite_activity),
 ) -> KiteStartResponse:
     """Try headless TOTP login when enabled; otherwise start remote Kite OAuth."""
     session_id = ctx.session.id if not ctx.auth_disabled else "disabled"
@@ -162,6 +166,11 @@ def kite_start(
                 auto_failure_reason="rate_limited",
             )
 
+        try:
+            check_account_budget()
+            record_account_attempt()
+        except ValueError:
+            return _start_oauth_flow(response, ctx=ctx, auto_failure_reason="rate_limited")
         auto_result = attempt_kite_auto_login()
         if auto_result.success:
             invalidate_checklist_cache()
@@ -254,11 +263,14 @@ def kite_callback(
         return fail_and_clear("state_mismatch_or_replay")
 
     try:
-        generate_session(
-            request_token,
-            expected_user_id=settings.KITE_EXPECTED_USER_ID,
-            persist=True,
-        )
+        with manual_operation("kite"):
+            generate_session(
+                request_token,
+                expected_user_id=settings.KITE_EXPECTED_USER_ID,
+                persist=True,
+            )
+            invalidate_checklist_cache()
+            _record_token_generation_time()
     except ValueError as exc:
         logger.error("Kite callback exchange rejected: %s", type(exc).__name__)
         return fail_and_clear("user_mismatch_or_exchange")
@@ -269,8 +281,6 @@ def kite_callback(
         logger.error("Kite callback failed: %s", type(exc).__name__)
         return fail_and_clear("exchange_error")
 
-    invalidate_checklist_cache()
-    _record_token_generation_time()
     write_audit("kite_oauth_callback_ok")
     success = _safe_redirect(settings.KITE_SUCCESS_REDIRECT_PATH)
     _clear_kite_oauth_cookie(success)
@@ -284,6 +294,7 @@ def kite_callback(
 def create_session(
     body: SessionRequest,
     ctx: WebAuthContext = Depends(require_web_session_mutating),
+    _activity: None = Depends(kite_activity),
 ) -> SessionResponse:
     """Legacy paste login. Gated by KITE_PASTE_LOGIN_ENABLED + session + step-up + CSRF."""
     if not settings.KITE_PASTE_LOGIN_ENABLED:
@@ -324,7 +335,7 @@ def create_session(
     response_model=CheckTokenResponse,
     dependencies=[Depends(require_web_session_mutating)],
 )
-def check_token() -> CheckTokenResponse:
+def check_token(_activity: None = Depends(kite_activity)) -> CheckTokenResponse:
     valid, message, user_id = check_access_token_details()
     write_token_check(valid=valid, user_id=user_id)
     invalidate_checklist_cache()

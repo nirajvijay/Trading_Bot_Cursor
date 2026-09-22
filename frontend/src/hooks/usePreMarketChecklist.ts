@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { fetchPreMarketChecklist } from '../api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { fetchChecklistActivity, fetchPreMarketChecklist } from '../api/client'
 import type { ChecklistStatus, PreMarketChecklistResponse } from '../api/types'
 
 const STATUS_RANK: Record<ChecklistStatus, number> = {
@@ -16,21 +16,27 @@ function worstStatus(...statuses: ChecklistStatus[]): ChecklistStatus {
   )
 }
 
-export function usePreMarketChecklist(sessionDate: string, enabled: boolean) {
+export function usePreMarketChecklist(sessionDate: string, enabled: boolean, visible = true) {
   const [data, setData] = useState<PreMarketChecklistResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const revision = useRef<string | undefined>(undefined)
+  const requestId = useRef(0)
 
   const refresh = useCallback(async () => {
+    const id = ++requestId.current
     setLoading(true)
     try {
       const result = await fetchPreMarketChecklist(sessionDate)
+      if (id !== requestId.current) return
+      revision.current = result.activity?.revision
       setData(result)
       setError(null)
     } catch (err) {
+      if (id !== requestId.current) return
       setError(err instanceof Error ? err.message : 'Failed to load checklist')
     } finally {
-      setLoading(false)
+      if (id === requestId.current) setLoading(false)
     }
   }, [sessionDate])
 
@@ -38,6 +44,35 @@ export function usePreMarketChecklist(sessionDate: string, enabled: boolean) {
     if (!enabled) return
     void refresh()
   }, [enabled, refresh])
+
+  useEffect(() => {
+    if (!enabled || !visible) return
+    let cancelled = false
+    let polling = false
+    const poll = async () => {
+      if (document.hidden || polling) return
+      polling = true
+      try {
+        const result = await fetchChecklistActivity(sessionDate)
+        if (!cancelled && result.activity?.revision !== revision.current) await refresh()
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to refresh checklist')
+      } finally {
+        polling = false
+      }
+    }
+    const onVisible = () => { if (!document.hidden) void refresh() }
+    onVisible()
+    const timer = window.setInterval(() => void poll(), 5000)
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [enabled, visible, sessionDate, refresh])
 
   return { data, loading, error, refresh }
 }
@@ -61,6 +96,8 @@ export function computeEffectiveOverallStatus(
   data: PreMarketChecklistResponse,
   kiteStatus: ChecklistStatus,
 ): ChecklistStatus {
+  if (data.activity?.status === 'running') return 'warning'
+  if (data.activity?.status === 'blocked' || data.activity?.dirty?.length) return 'failed'
   const areas = data.areas
   return worstStatus(
     kiteStatus,

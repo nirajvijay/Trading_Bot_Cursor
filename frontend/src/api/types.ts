@@ -331,7 +331,18 @@ export interface ChecklistAreas {
   dashboard_readiness: DashboardReadinessCheck
 }
 
+export interface ChecklistActivity {
+  session_date: string
+  revision: string
+  source: 'automatic' | 'manual'
+  status: 'running' | 'completed' | 'blocked' | 'skipped'
+  stage: 'kite' | 'instruments' | 'historical' | 'baselines' | 'five-minute' | 'validation'
+  message: string
+  dirty?: string[]
+}
+
 export interface PreMarketChecklistResponse {
+  activity?: ChecklistActivity | null
   session_date: string
   checked_at: string
   overall_status: ChecklistStatus
