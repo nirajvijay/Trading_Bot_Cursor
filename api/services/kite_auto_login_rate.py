@@ -4,10 +4,45 @@ from __future__ import annotations
 
 import threading
 import time
+import json
+import os
 
 from fastapi import HTTPException
 
 from api.auth.audit import write_audit
+
+
+def _account_attempts() -> list[float]:
+    from api import config
+    path = config.runtime_cache_dir() / "kite-login-attempts.json"
+    try:
+        values = json.loads(path.read_text())
+        if not isinstance(values, list):
+            raise ValueError("invalid attempts")
+        return [float(x) for x in values if float(x) > time.time() - WINDOW_SECONDS]
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, TypeError):
+        raise ValueError("Kite attempt history unavailable; inspect server state.") from None
+
+
+def check_account_budget() -> None:
+    # Callers hold the cross-process checklist workflow lock.
+    if len(_account_attempts()) >= MAX_FAILURES:
+        raise ValueError("Kite login attempt limit reached; wait ten minutes before retrying.")
+
+
+def record_account_attempt() -> None:
+    from api import config
+    path = config.runtime_cache_dir() / "kite-login-attempts.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump([*_account_attempts(), time.time()], handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
 
 WINDOW_SECONDS = 10 * 60
 MAX_FAILURES = 3

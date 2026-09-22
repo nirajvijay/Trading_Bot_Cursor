@@ -332,6 +332,15 @@ def compute_readiness(session_date: Optional[str] = None, *, now: Optional[datet
 
 
 def start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, str, Optional[int]]:
+    from api.services.checklist_activity import ChecklistBusy, workflow_lock
+    try:
+        with workflow_lock(shared=True):
+            return _start_observation_runner(session_date)
+    except ChecklistBusy:
+        return False, "Checklist preparation is running", None
+
+
+def _start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, str, Optional[int]]:
     """
     Start the observation runner under an atomic start lease.
 

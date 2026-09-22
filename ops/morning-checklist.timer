@@ -1,0 +1,11 @@
+[Unit]
+Description=Prepare the checklist at 09:00 IST; calendar gate skips closed days
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Kolkata
+Persistent=true
+AccuracySec=1s
+Unit=morning-checklist.service
+
+[Install]
+WantedBy=timers.target

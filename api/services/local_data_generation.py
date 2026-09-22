@@ -197,7 +197,7 @@ def _build_command(task: str, session_date: Optional[str] = None) -> List[str]:
     return command
 
 
-def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple[bool, str]:
+def run_local_generation(task: str, session_date: Optional[str] = None, *, workflow_fd: int | None = None) -> Tuple[bool, str]:
     """Run a collector/generator writing only to the configured local data dir."""
     if task not in TASK_NAMES:
         return False, f"Unknown generation task: {task}"
@@ -232,6 +232,7 @@ def run_local_generation(task: str, session_date: Optional[str] = None) -> Tuple
                 capture_output=True,
                 text=True,
                 timeout=GENERATION_TIMEOUT_SECONDS,
+                pass_fds=() if workflow_fd is None else (workflow_fd,),
             )
         except subprocess.TimeoutExpired:
             return False, f"Generation timed out after {GENERATION_TIMEOUT_SECONDS}s"

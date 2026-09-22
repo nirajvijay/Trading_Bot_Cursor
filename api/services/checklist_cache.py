@@ -143,6 +143,9 @@ def read_checklist_cache(
 
     Corrupt / partial / mismatched identity → None (treat as not ready).
     """
+    from api.services.checklist_activity import activity_blocks_readiness, read_activity, workflow_busy
+    if workflow_busy() or activity_blocks_readiness(read_activity(session_date)):
+        return None
     path = _cache_path(local_data_dir=local_data_dir, create=False)
     try:
         if not path.exists():
