@@ -30,6 +30,7 @@ export default function App() {
   const radarEnabled = authenticated && activeTab === 'radar'
   const {
     rows,
+    coverage,
     status,
     statusFetchOk,
     loading,
@@ -233,6 +234,7 @@ export default function App() {
             )}
             <RadarHeatMap
               rows={filteredRows}
+              sessionTriggered={coverage?.continuation_successful}
               loading={loading}
               sessionDate={sessionDate}
               search=""
