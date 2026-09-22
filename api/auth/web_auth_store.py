@@ -48,6 +48,24 @@ class SessionRecord:
     mfa_enabled: bool
 
 
+@dataclass
+class PasskeyRecord:
+    credential_id: bytes
+    public_key: bytes
+    sign_count: int
+    name: str
+    created_at: str = ""
+    last_used_at: Optional[str] = None
+
+
+@dataclass
+class PasskeyChallenge:
+    id: str
+    user_id: int
+    ceremony: str
+    challenge: bytes
+
+
 class WebAuthStore:
     def __init__(self, db_path: Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path else settings.WEB_AUTH_DB_PATH
@@ -85,6 +103,29 @@ class WebAuthStore:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+
+                CREATE TABLE IF NOT EXISTS passkeys (
+                    credential_id BLOB PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    public_key BLOB NOT NULL,
+                    sign_count INTEGER NOT NULL DEFAULT 0,
+                    name TEXT NOT NULL DEFAULT 'Mac Touch ID',
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys(user_id);
+
+                CREATE TABLE IF NOT EXISTS passkey_challenges (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    ceremony TEXT NOT NULL,
+                    challenge BLOB NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_passkey_challenges_user_id
+                    ON passkey_challenges(user_id, ceremony);
                 """
             )
             conn.commit()
@@ -204,6 +245,146 @@ class WebAuthStore:
         record = self.get_session(session_id)
         assert record is not None
         return record
+
+    def list_passkeys(self, user_id: int = 1) -> list[PasskeyRecord]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT credential_id, public_key, sign_count, name,
+                       created_at, last_used_at
+                FROM passkeys WHERE user_id = ? ORDER BY created_at
+                """,
+                (user_id,),
+            ).fetchall()
+        return [
+            PasskeyRecord(
+                credential_id=bytes(row["credential_id"]),
+                public_key=bytes(row["public_key"]),
+                sign_count=int(row["sign_count"]),
+                name=str(row["name"]),
+                created_at=str(row["created_at"]),
+                last_used_at=(
+                    str(row["last_used_at"])
+                    if row["last_used_at"] is not None
+                    else None
+                ),
+            )
+            for row in rows
+        ]
+
+    def delete_passkey(self, credential_id: bytes, user_id: int = 1) -> bool:
+        """Remove one enrolled passkey. Returns True if a row was deleted.
+
+        Needed because a passkey can die outside this system entirely -- a new
+        Mac, a macOS reinstall, a wiped Secure Enclave. The row here survives
+        that, and while it survives it both blocks re-enrolment (the browser
+        sees it in excludeCredentials) and keeps passkey_count above zero.
+        """
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM passkeys WHERE credential_id = ? AND user_id = ?",
+                (credential_id, user_id),
+            )
+            conn.commit()
+        return cur.rowcount > 0
+
+    def get_passkey(
+        self, credential_id: bytes, user_id: int = 1
+    ) -> Optional[PasskeyRecord]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT credential_id, public_key, sign_count, name,
+                       created_at, last_used_at
+                FROM passkeys WHERE credential_id = ? AND user_id = ?
+                """,
+                (credential_id, user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return PasskeyRecord(
+            credential_id=bytes(row["credential_id"]),
+            public_key=bytes(row["public_key"]),
+            sign_count=int(row["sign_count"]),
+            name=str(row["name"]),
+            created_at=str(row["created_at"]),
+            last_used_at=(
+                str(row["last_used_at"]) if row["last_used_at"] is not None else None
+            ),
+        )
+
+    def save_passkey(
+        self,
+        user_id: int,
+        credential_id: bytes,
+        public_key: bytes,
+        sign_count: int,
+        name: str = "Mac Touch ID",
+    ) -> None:
+        now = _iso(_utc_now())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO passkeys (
+                    credential_id, user_id, public_key, sign_count, name, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(credential_id) DO UPDATE SET
+                    public_key = excluded.public_key,
+                    sign_count = excluded.sign_count,
+                    name = excluded.name,
+                    last_used_at = NULL
+                """,
+                (credential_id, user_id, public_key, sign_count, name, now),
+            )
+            conn.commit()
+
+    def update_passkey_sign_count(self, credential_id: bytes, sign_count: int) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE passkeys SET sign_count = ?, last_used_at = ?
+                WHERE credential_id = ?
+                """,
+                (sign_count, _iso(_utc_now()), credential_id),
+            )
+            conn.commit()
+
+    def create_passkey_challenge(
+        self, user_id: int, ceremony: str, challenge: bytes, ttl_seconds: int = 300
+    ) -> PasskeyChallenge:
+        challenge_id = secrets.token_urlsafe(24)
+        expires = _utc_now() + timedelta(seconds=ttl_seconds)
+        with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM passkey_challenges WHERE user_id = ? AND ceremony = ?",
+                (user_id, ceremony),
+            )
+            conn.execute(
+                """
+                INSERT INTO passkey_challenges (id, user_id, ceremony, challenge, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (challenge_id, user_id, ceremony, challenge, _iso(expires)),
+            )
+            conn.commit()
+        return PasskeyChallenge(challenge_id, user_id, ceremony, challenge)
+
+    def consume_passkey_challenge(
+        self, challenge_id: str, user_id: int, ceremony: str
+    ) -> Optional[bytes]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT challenge, expires_at FROM passkey_challenges
+                WHERE id = ? AND user_id = ? AND ceremony = ?
+                """,
+                (challenge_id, user_id, ceremony),
+            ).fetchone()
+            conn.execute("DELETE FROM passkey_challenges WHERE id = ?", (challenge_id,))
+            conn.commit()
+        if row is None or _parse(str(row["expires_at"])) <= _utc_now():
+            return None
+        return bytes(row["challenge"])
 
     def get_session(self, session_id: str) -> Optional[SessionRecord]:
         with self.connect() as conn:

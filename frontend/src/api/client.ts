@@ -9,6 +9,8 @@ import type {
   LoginUrlResponse,
   MeResponse,
   MfaSetupResponse,
+  PasskeyOptionsResponse,
+  PasskeyListResponse,
   ObservationReadiness,
   ObservationStartResponse,
   ObservationStopResponse,
@@ -153,6 +155,50 @@ export function postLogin(username: string, password: string, totp?: string): Pr
     password,
     ...(totp ? { totp } : {}),
   })
+}
+
+export function postPasskeyLoginOptions(
+  username: string,
+  password: string,
+): Promise<PasskeyOptionsResponse> {
+  return postJson<PasskeyOptionsResponse>('/account/passkey/login/options', { username, password })
+}
+
+export function postPasskeyLoginVerify(
+  username: string,
+  challengeId: string,
+  credential: unknown,
+): Promise<MeResponse> {
+  return postJson<MeResponse>('/account/passkey/login/verify', {
+    username,
+    challenge_id: challengeId,
+    credential,
+  })
+}
+
+export function postPasskeyRegisterOptions(): Promise<PasskeyOptionsResponse> {
+  return postJson<PasskeyOptionsResponse>('/account/passkey/register/options', {})
+}
+
+export function postPasskeyRegisterVerify(
+  challengeId: string,
+  credential: unknown,
+): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/passkey/register/verify', {
+    challenge_id: challengeId,
+    credential,
+  })
+}
+
+export function fetchPasskeys(): Promise<PasskeyListResponse> {
+  return getJson<PasskeyListResponse>('/account/passkeys')
+}
+
+export function postDeletePasskey(
+  credentialId: string,
+  password: string,
+): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/passkeys/delete', { credential_id: credentialId, password })
 }
 
 export function postLogout(): Promise<{ success: boolean; message: string }> {

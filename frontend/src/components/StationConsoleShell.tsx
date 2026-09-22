@@ -19,6 +19,7 @@ interface Props {
   onSearchChange: (value: string) => void
   username?: string
   onLogout?: () => void
+  onOpenSecurity?: () => void
   runnerPresence: RunnerPresence
   feedStatus: FeedStatusView
   brokerAuthOk?: boolean
@@ -64,6 +65,7 @@ export function StationConsoleShell({
   onSearchChange,
   username,
   onLogout,
+  onOpenSecurity,
   runnerPresence,
   feedStatus,
   brokerAuthOk = false,
@@ -131,9 +133,16 @@ export function StationConsoleShell({
             </span>
             <span className="font-mono text-[11px] text-[#0b1c30] tabular-nums">{clock} IST</span>
             {username && (
-              <span className="hidden xl:inline-flex size-7 rounded-full bg-[#e5eeff] text-[#0b1c30] font-bold text-[10px] items-center justify-center uppercase">
+              <button
+                type="button"
+                onClick={onOpenSecurity}
+                disabled={!onOpenSecurity}
+                title={onOpenSecurity ? 'Sign-in security' : username}
+                aria-label={onOpenSecurity ? 'Sign-in security' : username}
+                className="hidden xl:inline-flex size-7 rounded-full bg-[#e5eeff] text-[#0b1c30] font-bold text-[10px] items-center justify-center uppercase enabled:hover:bg-[#d6e4ff] disabled:cursor-default"
+              >
                 {username.slice(0, 2)}
-              </span>
+              </button>
             )}
             {onLogout && (
               <button
