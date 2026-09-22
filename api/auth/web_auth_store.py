@@ -54,6 +54,8 @@ class PasskeyRecord:
     public_key: bytes
     sign_count: int
     name: str
+    created_at: str = ""
+    last_used_at: Optional[str] = None
 
 
 @dataclass
@@ -248,7 +250,8 @@ class WebAuthStore:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT credential_id, public_key, sign_count, name
+                SELECT credential_id, public_key, sign_count, name,
+                       created_at, last_used_at
                 FROM passkeys WHERE user_id = ? ORDER BY created_at
                 """,
                 (user_id,),
@@ -259,9 +262,31 @@ class WebAuthStore:
                 public_key=bytes(row["public_key"]),
                 sign_count=int(row["sign_count"]),
                 name=str(row["name"]),
+                created_at=str(row["created_at"]),
+                last_used_at=(
+                    str(row["last_used_at"])
+                    if row["last_used_at"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]
+
+    def delete_passkey(self, credential_id: bytes, user_id: int = 1) -> bool:
+        """Remove one enrolled passkey. Returns True if a row was deleted.
+
+        Needed because a passkey can die outside this system entirely -- a new
+        Mac, a macOS reinstall, a wiped Secure Enclave. The row here survives
+        that, and while it survives it both blocks re-enrolment (the browser
+        sees it in excludeCredentials) and keeps passkey_count above zero.
+        """
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM passkeys WHERE credential_id = ? AND user_id = ?",
+                (credential_id, user_id),
+            )
+            conn.commit()
+        return cur.rowcount > 0
 
     def get_passkey(
         self, credential_id: bytes, user_id: int = 1
@@ -269,7 +294,8 @@ class WebAuthStore:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT credential_id, public_key, sign_count, name
+                SELECT credential_id, public_key, sign_count, name,
+                       created_at, last_used_at
                 FROM passkeys WHERE credential_id = ? AND user_id = ?
                 """,
                 (credential_id, user_id),
@@ -281,6 +307,10 @@ class WebAuthStore:
             public_key=bytes(row["public_key"]),
             sign_count=int(row["sign_count"]),
             name=str(row["name"]),
+            created_at=str(row["created_at"]),
+            last_used_at=(
+                str(row["last_used_at"]) if row["last_used_at"] is not None else None
+            ),
         )
 
     def save_passkey(

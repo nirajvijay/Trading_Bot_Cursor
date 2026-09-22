@@ -168,6 +168,17 @@ export interface PasskeyOptionsResponse {
   options: Record<string, unknown>
 }
 
+export interface PasskeyInfo {
+  credential_id: string
+  name: string
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface PasskeyListResponse {
+  passkeys: PasskeyInfo[]
+}
+
 export interface MfaSetupResponse {
   otpauth_uri: string
   secret: string

@@ -10,6 +10,7 @@ import type {
   MeResponse,
   MfaSetupResponse,
   PasskeyOptionsResponse,
+  PasskeyListResponse,
   ObservationReadiness,
   ObservationStartResponse,
   ObservationStopResponse,
@@ -187,6 +188,17 @@ export function postPasskeyRegisterVerify(
     challenge_id: challengeId,
     credential,
   })
+}
+
+export function fetchPasskeys(): Promise<PasskeyListResponse> {
+  return getJson<PasskeyListResponse>('/account/passkeys')
+}
+
+export function postDeletePasskey(
+  credentialId: string,
+  password: string,
+): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/passkeys/delete', { credential_id: credentialId, password })
 }
 
 export function postLogout(): Promise<{ success: boolean; message: string }> {

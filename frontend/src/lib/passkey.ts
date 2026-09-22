@@ -19,6 +19,35 @@ function isSupported(): boolean {
   return typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined'
 }
 
+/** True when this machine has a built-in verifying authenticator (Mac Touch ID).
+ *
+ * Checked before showing the Touch ID button so a machine that cannot satisfy
+ * the ceremony never offers it -- otherwise the button is present and always
+ * fails, which reads as a broken site rather than an unsupported device. */
+export async function isPlatformAuthenticatorAvailable(): Promise<boolean> {
+  if (!isSupported()) return false
+  try {
+    return await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+  } catch {
+    return false
+  }
+}
+
+/** Turn a WebAuthn DOMException into something worth reading.
+ *
+ * The browser reports a deliberate cancel, a timeout and a genuine failure
+ * through the same NotAllowedError, so the default message ("Touch ID sign-in
+ * failed") makes a routine cancel look like a broken login. */
+export function describePasskeyError(err: unknown, fallback: string): string {
+  if (err instanceof DOMException) {
+    if (err.name === 'NotAllowedError') return 'Touch ID was cancelled or timed out.'
+    if (err.name === 'InvalidStateError') return 'This Mac is already registered as a passkey.'
+    if (err.name === 'SecurityError') return 'Touch ID is not allowed on this address.'
+  }
+  if (err instanceof Error && err.message) return err.message
+  return fallback
+}
+
 function credentialToJson(credential: PublicKeyCredential): JsonObject {
   const response = credential.response as AuthenticatorAssertionResponse | AuthenticatorAttestationResponse
   const result: JsonObject = {

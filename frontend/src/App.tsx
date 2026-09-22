@@ -8,6 +8,7 @@ import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postPasskeyLog
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
 import { PasskeySetupPrompt } from './components/PasskeySetupPrompt'
+import { SecurityPanel } from './components/SecurityPanel'
 import { getPasskey } from './lib/passkey'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
@@ -29,6 +30,7 @@ export default function App() {
   const [sessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
   const [showPasskeySetup, setShowPasskeySetup] = useState(false)
+  const [showSecurity, setShowSecurity] = useState(false)
   const authenticated = Boolean(me)
   const radarEnabled = authenticated && activeTab === 'radar'
   const {
@@ -237,6 +239,7 @@ export default function App() {
         feedStatus={feedStatus}
         brokerAuthOk={brokerAuthOk}
         checklistGateLocked={checklistGateLocked}
+        onOpenSecurity={() => setShowSecurity(true)}
       >
       <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {activeTab === 'radar' ? (
@@ -287,6 +290,17 @@ export default function App() {
       )}
       </StationConsoleShell>
       {showPasskeySetup && <PasskeySetupPrompt onDone={() => setShowPasskeySetup(false)} />}
+      {showSecurity && (
+        <SecurityPanel
+          onClose={() => setShowSecurity(false)}
+          onPasskeyCountChange={(count) => {
+            // Keep the first-run prompt in step with what the panel just did,
+            // so removing the last passkey re-offers setup at the next login
+            // instead of leaving it unreachable.
+            setMe((current) => (current ? { ...current, passkey_count: count } : current))
+          }}
+        />
+      )}
     </>
   )
 }
