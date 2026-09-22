@@ -28,6 +28,12 @@ IST = ZoneInfo("Asia/Kolkata")
 # Real triggers younger than this may not have a verdict yet purely due to
 # normal classify latency; only count a gap once a candidate has had time
 # to be classified and persisted.
+#
+# NOTE: the age filter compares via julianday(), not string comparison.
+# created_at is written as ISO-8601 with a 'T' and a '+00:00' offset
+# (intraday_continuation_writer._utc_now_iso), which sorts ABOVE SQLite's own
+# space-separated datetime('now') output for the same day -- a plain string
+# compare silently matches nothing and the check never alarms.
 GRACE_SECONDS = 120
 
 
@@ -58,7 +64,7 @@ def _count_triggered_past_grace(conn: sqlite3.Connection, session_date: str) -> 
          AND a.continuation_rule_version = d.continuation_rule_version
         WHERE d.decision_type = 'TRIGGERED'
           AND a.session_date = ?
-          AND d.created_at <= datetime('now', ?)
+          AND julianday(d.created_at) <= julianday('now', ?)
         """,
         (session_date, f"-{GRACE_SECONDS} seconds"),
     ).fetchone()

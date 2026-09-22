@@ -6,11 +6,25 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from vwap_health_check import check, write_health
 
 SESSION_DATE = "2026-09-23"
+
+
+def _prod_created_at(age_seconds: int) -> str:
+    """Timestamp in the exact format intraday_continuation_writer writes.
+
+    Production stores ISO-8601 with a 'T' separator and a '+00:00' offset
+    (e.g. 2026-08-07T08:43:14+00:00), which does NOT sort against SQLite's own
+    space-separated datetime() output. Fixtures must use this format or they
+    silently stop guarding the grace-window filter.
+    """
+    return (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat(
+        timespec="seconds"
+    )
 
 
 def _make_live_db(path: Path, *, triggered_old: int, triggered_fresh: int, qualified: int) -> None:
@@ -37,8 +51,8 @@ def _make_live_db(path: Path, *, triggered_old: int, triggered_fresh: int, quali
                 (setup_id, SESSION_DATE),
             )
             conn.execute(
-                "INSERT INTO live_continuation_decisions VALUES (?, 'v1', 'TRIGGERED', datetime('now', '-10 minutes'))",
-                (setup_id,),
+                "INSERT INTO live_continuation_decisions VALUES (?, 'v1', 'TRIGGERED', ?)",
+                (setup_id, _prod_created_at(600)),
             )
         for i in range(triggered_fresh):
             setup_id = f"fresh-{i}"
@@ -47,8 +61,8 @@ def _make_live_db(path: Path, *, triggered_old: int, triggered_fresh: int, quali
                 (setup_id, SESSION_DATE),
             )
             conn.execute(
-                "INSERT INTO live_continuation_decisions VALUES (?, 'v1', 'TRIGGERED', datetime('now'))",
-                (setup_id,),
+                "INSERT INTO live_continuation_decisions VALUES (?, 'v1', 'TRIGGERED', ?)",
+                (setup_id, _prod_created_at(0)),
             )
         for i in range(qualified):
             conn.execute(

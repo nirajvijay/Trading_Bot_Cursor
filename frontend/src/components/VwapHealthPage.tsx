@@ -94,7 +94,7 @@ export function VwapHealthPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
           <Stat label="Triggered" value={health?.triggered_count ?? '-'} />
           <Stat label="Qualified" value={health?.qualified_count ?? '-'} />
           <Stat label="Stuck (no verdict)" value={health?.stuck_count ?? '-'} warn={(health?.stuck_count ?? 0) > 0} />

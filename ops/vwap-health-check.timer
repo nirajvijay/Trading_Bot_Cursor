@@ -2,9 +2,12 @@
 Description=Run the VWAP pipeline health check every 10 minutes during market hours
 
 [Timer]
-# 09:15-15:30 IST is 03:45-10:00 UTC. A few minutes of slack on either side
-# is harmless since the check itself is a no-op outside real trading data.
-OnCalendar=Mon..Fri 03:40..10:05 UTC/10
+# Market hours are 09:15-15:30 IST; this fires every 10 min from 09:00 to
+# 15:50 IST, so there is slack on both sides. The extra runs are harmless --
+# outside real trading data the check finds no triggers and reports OK.
+# Timezone is stated explicitly rather than relying on the host's local time.
+# Verify any change with: systemd-analyze calendar --iterations=5 '<expr>'
+OnCalendar=Mon..Fri *-*-* 09..15:00/10 Asia/Kolkata
 Persistent=false
 
 [Install]
