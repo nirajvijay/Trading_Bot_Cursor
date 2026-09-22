@@ -1,8 +1,8 @@
 [Unit]
-Description=Prepare the checklist at 09:00 IST; calendar gate skips closed days
+Description=Prepare the checklist at 08:40 IST; calendar gate skips closed days
 
 [Timer]
-OnCalendar=*-*-* 09:00:00 Asia/Kolkata
+OnCalendar=*-*-* 08:40:00 Asia/Kolkata
 Persistent=true
 AccuracySec=1s
 Unit=morning-checklist.service

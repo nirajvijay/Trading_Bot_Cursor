@@ -1,4 +1,4 @@
-"""09:00–09:30 IST checklist supervisor. No observation or trading starts."""
+"""08:40–09:15 IST checklist supervisor. No observation or trading starts."""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +16,15 @@ from api.services.checklist_activity import (ChecklistBusy, STAGES, read_activit
                                              workflow_lock, workflow_busy)
 from nse_trading_calendar import IST, NSE_CALENDAR_VERSION, entry_calendar_block_reason, prior_nse_trading_session
 
+# Kite access tokens expire at 06:00 IST and Kite recommends fetching the daily
+# instrument dump around 08:30, so start at 08:40 and finish by the 09:15 open.
+WINDOW_START_MINUTE = 8 * 60 + 40
+DEADLINE_MINUTE = 9 * 60 + 15
+OUTSIDE_WINDOW = "outside_0840_0915_window"
+DEADLINE_MESSAGE = "09:15 preparation deadline reached; retry the incomplete stage manually."
+# Outlasts brief shared locks from page reads; a manual stage still wins.
+LOCK_WAIT_SECONDS = 60
+
 
 def eligibility(now: datetime) -> str | None:
     now = now.astimezone(IST)
@@ -25,8 +34,8 @@ def eligibility(now: datetime) -> str | None:
         return reason
     if prior_nse_trading_session(day) is None:
         return "calendar_prior_session_unconfigured"
-    if not 540 <= now.hour * 60 + now.minute < 570:
-        return "outside_0900_0930_window"
+    if not WINDOW_START_MINUTE <= now.hour * 60 + now.minute < DEADLINE_MINUTE:
+        return OUTSIDE_WINDOW
     return None
 
 
@@ -122,7 +131,7 @@ def stop_child(proc: subprocess.Popen) -> None:
 def run_child(stage: str, day: str, fd: int, deadline: datetime) -> dict:
     remaining = (deadline - datetime.now(IST)).total_seconds()
     if remaining <= 0:
-        raise TimeoutError("09:30 preparation deadline reached; retry the incomplete stage manually.")
+        raise TimeoutError(DEADLINE_MESSAGE)
     proc = subprocess.Popen([sys.executable, str(config.ROOT / "morning_checklist.py"),
                              "--stage", stage, "--session-date", day, "--lock-fd", str(fd)],
                             cwd=config.ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -133,7 +142,7 @@ def run_child(stage: str, day: str, fd: int, deadline: datetime) -> dict:
             raise ValueError(f"{stage} process failed; inspect server configuration.")
         return json.loads(output)
     except subprocess.TimeoutExpired:
-        raise TimeoutError("09:30 preparation deadline reached; retry the incomplete stage manually.") from None
+        raise TimeoutError(DEADLINE_MESSAGE) from None
     finally:
         stop_child(proc)
 
@@ -146,16 +155,17 @@ def ensure_idle() -> None:
 def run() -> int:
     if os.environ.get("MORNING_CHECKLIST_ENABLED", "false").lower() not in ("true", "1", "yes"):
         return 0
-    now = datetime.now(IST)
-    day = now.date().isoformat()
-    reason = eligibility(now)
     try:
-        with workflow_lock() as fd:
+        with workflow_lock(wait_seconds=LOCK_WAIT_SECONDS) as fd:
+            # Evaluate the clock after any lock wait.
+            now = datetime.now(IST)
+            day = now.date().isoformat()
+            reason = eligibility(now)
             previous = read_activity(day) or {}
             if previous.get("source") == "automatic" and previous.get("status") == "completed" and not previous.get("dirty"):
                 return 0
             if reason:
-                if reason == "outside_0900_0930_window" and previous:
+                if reason == OUTSIDE_WINDOW and previous:
                     return 0
                 save_activity({"session_date": day, "source": "automatic", "stage": "kite",
                                "status": "skipped" if reason == "nse_holiday_or_weekend" else "blocked",
@@ -169,7 +179,7 @@ def run() -> int:
                      "attempts": previous.get("attempts", {}), "stages": previous.get("stages", {})}
             state = save_activity(state)
             invalidate_checklist_cache()
-            deadline = now.replace(hour=9, minute=30, second=0, microsecond=0)
+            deadline = now.replace(hour=DEADLINE_MINUTE // 60, minute=DEADLINE_MINUTE % 60, second=0, microsecond=0)
             try:
                 ensure_idle()
                 result = run_child("inspect", day, fd, deadline)
@@ -203,7 +213,7 @@ def run() -> int:
                             raise ValueError(result.get("message", "Preparation failed"))
                         remaining = (deadline - datetime.now(IST)).total_seconds()
                         if remaining <= 0:
-                            raise TimeoutError("09:30 preparation deadline reached")
+                            raise TimeoutError(DEADLINE_MESSAGE)
                         time.sleep(min(2 ** attempt, remaining))
                     dirty.discard(stage)
                     state["stages"][stage].update(status="valid", finished_at=datetime.now(IST).isoformat())
@@ -226,6 +236,10 @@ def run() -> int:
                 save_activity({**state, "status": "blocked", "message": message, "finished_at": datetime.now(IST).isoformat()})
                 return 1
     except ChecklistBusy:
+        # A manual operation owns the workflow, so someone is at the controls.
+        # Skip without touching its activity record; the journal keeps the reason.
+        print("Morning checklist skipped: another checklist operation held the workflow lock.",
+              file=sys.stderr)
         return 0
 
 

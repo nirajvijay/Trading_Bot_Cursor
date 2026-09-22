@@ -1,6 +1,6 @@
 # Automated morning checklist
 
-The server prepares the existing five checklist stages from 09:00 to 09:30 IST on
+The server prepares the existing five checklist stages from 08:40 to 09:15 IST on
 configured regular NSE sessions. The existing buttons reflect server activity;
 no additional page, panel, notifications, observation start, or trading actions
 are introduced. A hidden or closed browser has no effect on the job.
@@ -22,7 +22,7 @@ are introduced. A hidden or closed browser has no effect on the job.
    and matching environment. This reads current readiness without writes or
    broker login. Confirm configured paths point outside immutable releases.
 5. Install `ops/morning-checklist.service` and `.timer` in systemd. Validate using
-   `systemd-analyze verify` and `systemd-analyze calendar '*-*-* 09:00:00 Asia/Kolkata'`.
+   `systemd-analyze verify` and `systemd-analyze calendar '*-*-* 08:40:00 Asia/Kolkata'`.
    Units are supplied only; installation/activation is not performed by the app.
 6. Configure `/opt/nifty-radar/secrets/morning-checklist.env` with
    `MORNING_CHECKLIST_ENABLED=true`. The flag defaults to false. Existing
@@ -30,13 +30,16 @@ are introduced. A hidden or closed browser has no effect on the job.
    when the daily token is not already valid. Match `KITE_EXPECTED_USER_ID`.
 7. Reload systemd, enable/start the timer, and supervise one regular morning.
    Verify each existing button, saved checklist readiness, normal completion,
-   and the 09:30 stop behavior before relying on it unattended. Benchmark the
-   real database: completion before 09:15 is a target, not a guaranteed SLA.
+   and the 09:15 stop behavior before relying on it unattended. Benchmark the
+   real database so preparation reliably completes before 09:15.
 
 Systemd uses the current release and existing venv. Write access includes the
 secrets directory because token persistence uses atomic rename and a lock file.
 Keep its existing restrictive ownership. The timer runs daily; holidays only
 record a skip. Persistent scheduling recovers a missed timer within the window.
+Kite access tokens expire at 06:00 IST and Kite recommends fetching the daily
+instrument dump around 08:30, so the run starts at 08:40 and stops at the 09:15
+open. It runs once per day; after a block, recovery is manual from the page.
 An abnormal process death is restarted by systemd; stage attempts survive it.
 
 ## State and concurrency
@@ -46,6 +49,14 @@ including source, stage, revisions, attempts, timestamps and dirty dependencies.
 The stable `checklist-workflow.lock` inode is never removed. Subprocesses inherit
 ownership, so an orphaned collector still blocks another writer. Existing
 generation locks remain in force. Manual website operations share this state.
+At start the job waits up to 60 seconds for brief page reads to release the
+lock. If a manual operation still holds it, the job logs the skip to the journal
+and leaves that operation's record untouched.
+
+Each stage is checked before and after work. Kite is checked first; an invalid
+token is regenerated and checked again, and a later stage starts only after the
+previous one validates. A manual Kite login or token generation is not complete
+until a token check passes.
 
 The existing authenticated checklist endpoint includes optional `activity`.
 `?activity_only=true` returns only session date and activity without scanning
@@ -64,7 +75,7 @@ Actual validation, not the process exit code, controls stage readiness.
   use the existing Kite login/recovery controls, then retry affected stages.
 - Network failures: at most three attempts per stage/day and three automatic
   login attempts per ten-minute account window, shared with browser login.
-- At 09:30 the child process group is terminated, with five seconds of graceful
+- At 09:15 the child process group is terminated, with five seconds of graceful
   cleanup before forced termination. Final state records the blocked stage.
 - A crashed run becomes interrupted when its lock is released. Revalidate before
   restarting inside the permitted window; outside it use existing manual controls.
@@ -81,8 +92,10 @@ Actual validation, not the process exit code, controls stage readiness.
 for 2026. Review official Capital Market trading circulars (not settlement
 holidays), including mid-year changes, and update supported years and tests
 through a reviewed PR. Review next year's publication each December.
-Unknown years and prior-session lookbacks crossing unsupported/special sessions
-block preparation. Special sessions require a separate reviewed schedule change.
+Unknown years and prior-session lookbacks crossing unsupported years block
+preparation. Special sessions (for example muhurat) are skipped when
+resolving prior sessions; preparation on a special-session day itself requires a
+separate reviewed schedule change.
 
 ## Rollback
 

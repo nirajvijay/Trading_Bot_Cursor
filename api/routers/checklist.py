@@ -7,7 +7,7 @@ Generate requires website session + CSRF/Origin (remote domain allowed).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 from zoneinfo import ZoneInfo
 
@@ -32,7 +32,7 @@ def _today_ist() -> str:
 
 @router.get(
     "/premarket-checklist",
-    response_model=PreMarketChecklistResponse | ChecklistActivityResponse,
+    response_model=Union[PreMarketChecklistResponse, ChecklistActivityResponse],
     dependencies=[Depends(require_web_session)],
 )
 def premarket_checklist(

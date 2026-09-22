@@ -99,8 +99,10 @@ def prior_nse_trading_session(session_date: str) -> Optional[str]:
         if current.year not in SUPPORTED_CALENDAR_YEARS:
             return None
         if is_special_session_day(current):
-            # An unconfigured special session must not silently select older data.
-            return None
+            # Special sessions (e.g. muhurat) are not regular sessions; skip them
+            # like weekends so lookbacks resolve to the prior regular session.
+            current -= timedelta(days=1)
+            continue
         if is_nse_trading_day(current):
             return current.isoformat()
         current -= timedelta(days=1)

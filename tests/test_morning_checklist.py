@@ -38,9 +38,9 @@ class MorningTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_calendar_and_window(self):
-        for stamp, reason in [("2026-09-23T09:00:00", None), ("2026-09-23T09:29:59", None),
-                              ("2026-09-23T09:30:00", "outside_0900_0930_window"),
-                              ("2026-09-23T08:59:59", "outside_0900_0930_window"),
+        for stamp, reason in [("2026-09-23T08:40:00", None), ("2026-09-23T09:14:59", None),
+                              ("2026-09-23T09:15:00", "outside_0840_0915_window"),
+                              ("2026-09-23T08:39:59", "outside_0840_0915_window"),
                               ("2026-09-26T09:00:00", "nse_holiday_or_weekend"),
                               ("2026-10-02T09:00:00", "nse_holiday_or_weekend"),
                               ("2026-11-08T09:00:00", "special_session_unconfigured"),
@@ -48,6 +48,16 @@ class MorningTests(unittest.TestCase):
             self.assertEqual(morning.eligibility(datetime.fromisoformat(stamp).replace(tzinfo=IST)), reason)
         self.assertFalse(is_nse_trading_day(date(2027, 1, 4)))
         self.assertIsNone(prior_nse_trading_session("2027-01-04"))
+
+    def test_special_session_is_skipped_in_lookbacks(self):
+        from api.services.morning_data import required_sessions
+        # Muhurat on Sunday 2026-11-08 must not hide the prior regular session.
+        self.assertEqual(prior_nse_trading_session("2026-11-09"), "2026-11-06")
+        self.assertIsNone(morning.eligibility(datetime(2026, 11, 9, 8, 40, tzinfo=IST)))
+        sessions = required_sessions("2026-11-20")
+        self.assertIn("2026-11-09", sessions)
+        self.assertIn("2026-11-06", sessions)
+        self.assertNotIn("2026-11-08", sessions)
 
     def test_activity_recovers_interrupted_and_previous_day(self):
         with activity.workflow_lock():
@@ -115,19 +125,70 @@ class MorningTests(unittest.TestCase):
     def test_deadline_failure_never_publishes_ready(self):
         now = datetime(2026, 9, 23, 9, 0, tzinfo=IST)
         with patch.object(morning, "datetime") as clock, patch.object(morning, "ensure_idle"), \
-             patch.object(morning, "run_child", side_effect=TimeoutError("09:30 deadline")):
+             patch.object(morning, "run_child", side_effect=TimeoutError(morning.DEADLINE_MESSAGE)):
             clock.now.return_value = now
             self.assertEqual(morning.run(), 1)
         state = activity.read_activity(now.date().isoformat())
         self.assertEqual(state["status"], "blocked")
-        self.assertIn("09:30", state["message"])
+        self.assertIn("09:15", state["message"])
         self.assertIsNone(read_checklist_cache(now.date().isoformat()))
 
     def test_busy_runner_does_not_overwrite_existing_state(self):
-        with activity.workflow_lock():
+        with activity.workflow_lock(), patch.object(morning, "LOCK_WAIT_SECONDS", 0):
             saved = activity.save_activity({"session_date": activity.today(), "status": "running", "stage": "historical"})
             self.assertEqual(morning.run(), 0)
             self.assertEqual(activity.read_activity()["revision"], saved["revision"])
+
+    def test_writer_waits_out_a_brief_reader_lock(self):
+        import threading
+        held, release = threading.Event(), threading.Event()
+        def reader():
+            with activity.workflow_lock(shared=True):
+                held.set()
+                release.wait(5)
+        thread = threading.Thread(target=reader)
+        thread.start()
+        held.wait(5)
+        threading.Timer(0.6, release.set).start()
+        try:
+            with activity.workflow_lock(wait_seconds=5):
+                self.assertTrue(release.is_set())
+        finally:
+            release.set()
+            thread.join(5)
+        held.clear(); release.clear()
+        thread = threading.Thread(target=reader)
+        thread.start()
+        held.wait(5)
+        try:
+            with self.assertRaises(activity.ChecklistBusy):
+                with activity.workflow_lock(wait_seconds=0.2):
+                    pass
+        finally:
+            release.set()
+            thread.join(5)
+
+    def test_manual_kite_completes_only_after_passing_check(self):
+        from api.services.token_check_cache import write_token_check
+        with patch("api.services.token_check_cache.token_identity", return_value="token"):
+            # Login/redirect without a check is not completion.
+            with activity.manual_operation("kite"):
+                pass
+            state = activity.read_activity()
+            self.assertEqual(state["status"], "blocked")
+            self.assertIn("not validated", state["message"])
+            # An earlier passing check does not count for a new operation.
+            write_token_check(valid=True, user_id="OWNER")
+            with activity.manual_operation("kite"):
+                pass
+            self.assertEqual(activity.read_activity()["status"], "blocked")
+            # A failed check during the operation stays blocked.
+            with activity.manual_operation("kite"):
+                write_token_check(valid=False, user_id="OWNER")
+            self.assertEqual(activity.read_activity()["status"], "blocked")
+            with activity.manual_operation("kite"):
+                write_token_check(valid=True, user_id="OWNER")
+            self.assertEqual(activity.read_activity()["status"], "completed")
 
     def test_stopping_child_reaps_process(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)

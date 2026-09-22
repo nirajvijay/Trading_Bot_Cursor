@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import sqlite3
+import time
 import uuid
 from contextlib import closing, contextmanager
 from datetime import datetime
@@ -43,15 +44,21 @@ def today() -> str:
 
 
 @contextmanager
-def workflow_lock(*, shared=False):
+def workflow_lock(*, shared=False, wait_seconds: float = 0):
     root = config.runtime_cache_dir()
     root.mkdir(parents=True, exist_ok=True)
     fd = os.open(root / "checklist-workflow.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        try:
-            fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ChecklistBusy("Checklist preparation is already running") from None
+        # Readers hold brief shared locks; a waiting writer outlasts them.
+        give_up = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= give_up:
+                    raise ChecklistBusy("Checklist preparation is already running") from None
+                time.sleep(0.5)
         yield fd
     finally:
         # close, not LOCK_UN: inherited child descriptors must retain ownership.
@@ -128,6 +135,16 @@ def overlay_activity(data: dict, activity: dict | None) -> dict:
     return data
 
 
+def _kite_validated_since(started_at: str) -> bool:
+    from api.services.token_check_cache import current_token_check
+    check = current_token_check()
+    try:
+        return bool(check and check["valid"] is True and
+                    datetime.fromisoformat(check["checked_at"]) >= datetime.fromisoformat(started_at))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 @contextmanager
 def manual_operation(stage: str):
     try:
@@ -151,8 +168,14 @@ def manual_operation(stage: str):
                 save_activity({**state, "status": "blocked", "message": "Stage failed; retry this stage or check its configuration."})
                 raise
             else:
-                dirty.discard(stage)
-                save_activity({**state, "status": "completed", "dirty": sorted(dirty), "message": ""})
+                if stage == "kite" and not _kite_validated_since(state["started_at"]):
+                    # Generating or redirecting to login is not completion; only a
+                    # passing token check during this operation completes the stage.
+                    save_activity({**state, "status": "blocked",
+                                   "message": "Kite token not validated yet; check the token before continuing."})
+                else:
+                    dirty.discard(stage)
+                    save_activity({**state, "status": "completed", "dirty": sorted(dirty), "message": ""})
     except ChecklistBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
