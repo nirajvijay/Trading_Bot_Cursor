@@ -26,6 +26,26 @@ DEADLINE_MESSAGE = "09:15 preparation deadline reached; retry the incomplete sta
 LOCK_WAIT_SECONDS = 60
 
 
+def run_log(line: str) -> None:
+    """Append one line to today's automation log. Never raises; never logs secrets.
+
+    Production: <data_root>/logs/morning-checklist-YYYY-MM-DD.log (owned by the
+    service user). Only the automatic run writes here; the website never reads it.
+    """
+    now = datetime.now(IST)
+    try:
+        root = config.runtime_cache_dir().parent / "logs"
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = root / f"morning-checklist-{now.date().isoformat()}.log"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, f"{now.isoformat(timespec='seconds')} {line}\n".encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def eligibility(now: datetime) -> str | None:
     now = now.astimezone(IST)
     day = now.date().isoformat()
@@ -162,11 +182,15 @@ def run() -> int:
             day = now.date().isoformat()
             reason = eligibility(now)
             previous = read_activity(day) or {}
+            run_log(f"triggered: session={day} eligibility={reason or 'ok'}")
             if previous.get("source") == "automatic" and previous.get("status") == "completed" and not previous.get("dirty"):
+                run_log("skipped: automatic preparation already completed today")
                 return 0
             if reason:
                 if reason == OUTSIDE_WINDOW and previous:
+                    run_log("skipped: outside 08:40-09:15 window")
                     return 0
+                run_log(f"{'skipped' if reason == 'nse_holiday_or_weekend' else 'blocked'}: {reason}")
                 save_activity({"session_date": day, "source": "automatic", "stage": "kite",
                                "status": "skipped" if reason == "nse_holiday_or_weekend" else "blocked",
                                "message": reason})
@@ -180,8 +204,10 @@ def run() -> int:
             state = save_activity(state)
             invalidate_checklist_cache()
             deadline = now.replace(hour=DEADLINE_MINUTE // 60, minute=DEADLINE_MINUTE % 60, second=0, microsecond=0)
+            run_log(f"started: release={state['release']} calendar={NSE_CALENDAR_VERSION}")
             try:
                 ensure_idle()
+                run_log("inspect: checking current checklist state")
                 result = run_child("inspect", day, fd, deadline)
                 if not result.get("ok"):
                     raise ValueError(result.get("message", "Checklist inspection failed"))
@@ -192,6 +218,7 @@ def run() -> int:
                               result["checklist"]["areas"][area]["status"] != "ok" or
                               (stage == "historical" and result["history_needed"]))
                     if not needed:
+                        run_log(f"{stage}: already valid, not regenerated")
                         state["stages"][stage] = {"status": "valid", "checked_at": datetime.now(IST).isoformat()}
                         state = save_activity(state)
                         continue
@@ -206,9 +233,12 @@ def run() -> int:
                     for attempt in range(start_attempt, 3):
                         state["attempts"][stage] = attempt + 1
                         state = save_activity(state)
+                        run_log(f"{stage}: attempt {attempt + 1}/3 started")
                         result = run_child(stage, day, fd, deadline)
                         if result.get("ok"):
                             break
+                        run_log(f"{stage}: attempt {attempt + 1} failed "
+                                f"(retryable={bool(result.get('retryable'))}): {result.get('message', '')}")
                         if not result.get("retryable") or attempt == 2:
                             raise ValueError(result.get("message", "Preparation failed"))
                         remaining = (deadline - datetime.now(IST)).total_seconds()
@@ -216,10 +246,12 @@ def run() -> int:
                             raise TimeoutError(DEADLINE_MESSAGE)
                         time.sleep(min(2 ** attempt, remaining))
                     dirty.discard(stage)
+                    run_log(f"{stage}: generated and validated")
                     state["stages"][stage].update(status="valid", finished_at=datetime.now(IST).isoformat())
                     state = save_activity({**state, "dirty": sorted(dirty), "message": f"{stage} validated"})
                 state["stages"]["validation"] = {"status": "running", "started_at": datetime.now(IST).isoformat()}
                 state = save_activity({**state, "stage": "validation", "message": "Validating checklist readiness"})
+                run_log("validation: final checklist check")
                 result = run_child("inspect", day, fd, deadline)
                 data = result.get("checklist", {})
                 if not result.get("ok") or data.get("overall_status") != "ok" or dirty:
@@ -228,18 +260,21 @@ def run() -> int:
                 write_checklist_cache(data)
                 state["stages"]["validation"].update(status="valid", finished_at=datetime.now(IST).isoformat())
                 save_activity({**state, "status": "completed", "message": "", "finished_at": datetime.now(IST).isoformat()})
+                run_log("completed: all stages valid; process exiting")
                 return 0
             except (Exception, KeyboardInterrupt) as exc:
                 invalidate_checklist_cache()
                 message = str(exc) if isinstance(exc, (ValueError, TimeoutError)) else "Preparation interrupted; inspect server logs and retry."
                 state["stages"].setdefault(state["stage"], {}).update(status="blocked", message=message)
                 save_activity({**state, "status": "blocked", "message": message, "finished_at": datetime.now(IST).isoformat()})
+                run_log(f"blocked at {state['stage']}: {message}; process exiting")
                 return 1
     except ChecklistBusy:
         # A manual operation owns the workflow, so someone is at the controls.
         # Skip without touching its activity record; the journal keeps the reason.
         print("Morning checklist skipped: another checklist operation held the workflow lock.",
               file=sys.stderr)
+        run_log("skipped: a manual checklist operation held the workflow lock")
         return 0
 
 

@@ -82,6 +82,10 @@ Actual validation, not the process exit code, controls stage readiness.
 - Source repair keeps successful transactions, rolls back incomplete replacements,
   invalidates affected five-minute rows, and keeps derived stages dirty until
   regenerated. Do not delete state or locks to make a checklist appear ready.
+- Each automatic run appends one line per step to
+  `/opt/nifty-radar/data/logs/morning-checklist-YYYY-MM-DD.log` (trigger, skips,
+  each stage's attempt/result, final outcome). Only the automatic run writes it;
+  the website never reads it, and write failures never affect the run.
 - Inspect persisted stage state and `journalctl -u morning-checklist.service`.
   The job does not send failure alerts. Open the existing Checklist page to see
   its current result.

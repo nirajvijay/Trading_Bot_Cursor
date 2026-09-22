@@ -120,6 +120,10 @@ class MorningTests(unittest.TestCase):
             self.assertEqual(morning.run(), 0)
         self.assertEqual(stages, list(activity.STAGES))
         self.assertEqual(activity.read_activity(data["session_date"])["status"], "completed")
+        log = (config.runtime_cache_dir().parent / "logs" / f"morning-checklist-{data['session_date']}.log").read_text()
+        for line in ("triggered:", "started:", "kite: generated and validated",
+                     "five-minute: generated and validated", "completed:"):
+            self.assertIn(line, log)
         self.assertIsNotNone(read_checklist_cache(data["session_date"]))
 
     def test_deadline_failure_never_publishes_ready(self):
@@ -131,6 +135,8 @@ class MorningTests(unittest.TestCase):
         state = activity.read_activity(now.date().isoformat())
         self.assertEqual(state["status"], "blocked")
         self.assertIn("09:15", state["message"])
+        log = (config.runtime_cache_dir().parent / "logs" / f"morning-checklist-{now.date().isoformat()}.log").read_text()
+        self.assertIn("blocked at kite: 09:15", log)
         self.assertIsNone(read_checklist_cache(now.date().isoformat()))
 
     def test_busy_runner_does_not_overwrite_existing_state(self):
@@ -189,6 +195,10 @@ class MorningTests(unittest.TestCase):
             with activity.manual_operation("kite"):
                 write_token_check(valid=True, user_id="OWNER")
             self.assertEqual(activity.read_activity()["status"], "completed")
+
+    def test_log_failure_never_breaks_run(self):
+        with patch.object(morning.os, "open", side_effect=OSError("disk full")):
+            morning.run_log("anything")
 
     def test_stopping_child_reaps_process(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
