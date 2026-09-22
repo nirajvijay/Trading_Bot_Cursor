@@ -25,7 +25,9 @@ SELECT
     a.trigger_price,
     a.tick_size,
     a.buffer_ticks,
-    a.session_date
+    a.session_date,
+    d.breakout_candle_volume,
+    d.avg_prior_3_1m_volume
 FROM live_continuation_decisions d
 JOIN live_continuation_arms a
   ON a.setup_id = d.setup_id
@@ -44,9 +46,79 @@ WHERE session_date = ?
   AND vwap_rule_version = ?
 """
 
+TRIGGER_WITH_VWAP_SQL = """
+SELECT
+    d.setup_id,
+    d.continuation_rule_version,
+    d.trigger_exchange_ts,
+    d.last_price,
+    d.created_at,
+    a.instrument_token,
+    a.tradingsymbol,
+    a.direction,
+    a.pullback_swing_high,
+    a.pullback_swing_low,
+    a.trigger_price,
+    a.tick_size,
+    a.buffer_ticks,
+    a.session_date,
+    d.breakout_candle_volume,
+    d.avg_prior_3_1m_volume,
+    v.classification
+FROM live_continuation_decisions d
+JOIN live_continuation_arms a
+  ON a.setup_id = d.setup_id
+ AND a.continuation_rule_version = d.continuation_rule_version
+LEFT JOIN live_vwap_qualifications v
+  ON v.session_date = a.session_date
+ AND v.setup_id = d.setup_id
+ AND v.continuation_rule_version = d.continuation_rule_version
+ AND v.vwap_rule_version = ?
+WHERE d.decision_type = 'TRIGGERED'
+  AND d.created_at >= ?
+ORDER BY d.created_at ASC
+"""
+
 
 class VwapLookupError(Exception):
     """Hard SQLite failure reading live_vwap_qualifications."""
+
+
+def _candidate_from_row(row, *, classification: Optional[str] = None) -> TriggerCandidate:
+    """Build a candidate from a joined trigger row.
+
+    Shared by both fetchers so a column added to one query cannot silently go
+    unread by the other.
+    """
+    return TriggerCandidate(
+        setup_id=str(row["setup_id"]),
+        continuation_rule_version=str(row["continuation_rule_version"]),
+        session_date=str(row["session_date"]),
+        tradingsymbol=str(row["tradingsymbol"]),
+        instrument_token=int(row["instrument_token"]),
+        direction=str(row["direction"]),
+        trigger_price=float(row["trigger_price"]),
+        pullback_swing_high=(
+            None if row["pullback_swing_high"] is None else float(row["pullback_swing_high"])
+        ),
+        pullback_swing_low=(
+            None if row["pullback_swing_low"] is None else float(row["pullback_swing_low"])
+        ),
+        tick_size=float(row["tick_size"]),
+        buffer_ticks=int(row["buffer_ticks"]),
+        trigger_exchange_ts=(
+            None if row["trigger_exchange_ts"] is None else str(row["trigger_exchange_ts"])
+        ),
+        created_at=str(row["created_at"]),
+        last_price=(None if row["last_price"] is None else float(row["last_price"])),
+        vwap_classification=(None if classification is None else str(classification)),
+        breakout_candle_volume=(
+            None if row["breakout_candle_volume"] is None else int(row["breakout_candle_volume"])
+        ),
+        avg_prior_3_1m_volume=(
+            None if row["avg_prior_3_1m_volume"] is None else float(row["avg_prior_3_1m_volume"])
+        ),
+    )
 
 
 def fetch_triggered_since(
@@ -65,41 +137,7 @@ def fetch_triggered_since(
     finally:
         conn.close()
 
-    out: List[TriggerCandidate] = []
-    for row in rows:
-        out.append(
-            TriggerCandidate(
-                setup_id=str(row["setup_id"]),
-                continuation_rule_version=str(row["continuation_rule_version"]),
-                session_date=str(row["session_date"]),
-                tradingsymbol=str(row["tradingsymbol"]),
-                instrument_token=int(row["instrument_token"]),
-                direction=str(row["direction"]),
-                trigger_price=float(row["trigger_price"]),
-                pullback_swing_high=(
-                    None
-                    if row["pullback_swing_high"] is None
-                    else float(row["pullback_swing_high"])
-                ),
-                pullback_swing_low=(
-                    None
-                    if row["pullback_swing_low"] is None
-                    else float(row["pullback_swing_low"])
-                ),
-                tick_size=float(row["tick_size"]),
-                buffer_ticks=int(row["buffer_ticks"]),
-                trigger_exchange_ts=(
-                    None
-                    if row["trigger_exchange_ts"] is None
-                    else str(row["trigger_exchange_ts"])
-                ),
-                created_at=str(row["created_at"]),
-                last_price=(
-                    None if row["last_price"] is None else float(row["last_price"])
-                ),
-            )
-        )
-    return out
+    return [_candidate_from_row(row) for row in rows]
 
 
 def fetch_vwap_classification(
@@ -132,3 +170,43 @@ def fetch_vwap_classification(
     if value is None:
         return None
     return str(value)
+
+
+def fetch_triggered_with_vwap_since(
+    live_db: Path,
+    *,
+    created_at_gte: str,
+    vwap_rule_version: str = VWAP_RULE_VERSION,
+) -> List[TriggerCandidate]:
+    """Like fetch_triggered_since, but each candidate already carries its
+    VWAP verdict (or None, if the qualifier hasn't written one yet).
+
+    No polling: a candidate with vwap_classification=None simply reappears,
+    unchanged, on the next call with the same created_at_gte floor — the
+    caller's own poll cadence does the waiting, so there's no separate
+    retry/timeout state to maintain here.
+    """
+    if not live_db.exists():
+        return []
+    conn = sqlite3.connect(f"file:{live_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            rows = conn.execute(
+                TRIGGER_WITH_VWAP_SQL, (vwap_rule_version, created_at_gte)
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # live_vwap_qualifications may not exist yet (its writer creates
+            # it lazily in a separate process) — fall back to trigger-only
+            # rows rather than dropping everything.
+            try:
+                rows = conn.execute(TRIGGER_SQL, (created_at_gte,)).fetchall()
+            except sqlite3.OperationalError:
+                return []
+            rows = [dict(row, classification=None) for row in rows]
+    finally:
+        conn.close()
+
+    return [
+        _candidate_from_row(row, classification=row["classification"]) for row in rows
+    ]

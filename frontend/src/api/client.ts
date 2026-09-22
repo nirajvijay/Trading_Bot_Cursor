@@ -12,9 +12,6 @@ import type {
   ObservationReadiness,
   ObservationStartResponse,
   ObservationStopResponse,
-  TradingEngineSnapshot,
-  TradingEngineStatus,
-  TradingStartResponse,
   PreMarketChecklistResponse,
   GenerateResponse,
   RadarResponse,
@@ -22,15 +19,20 @@ import type {
   SessionCoverage,
   SessionResponse,
   SymbolTimelineResponse,
+  ExecutionCommand,
+  ExecutionCommandKind,
+  ExecutionEvents,
+  ExecutionPositions,
+  ExecutionPreflight,
+  ExecutionSessionCaps,
+  ExecutionStartResponse,
+  ExecutionStatus,
 } from './types'
 
 const BASE = '/api/v1'
 
 export interface SectorMap {version: string; universe_version: string; valid: boolean; reason: string | null; symbol_count: number; sectors: {name: string; symbols: string[]}[]}
 export function fetchSectorMap() {return getJson<SectorMap>('/observation/sectors')}
-export interface ControlStrip {execution_mode: string; entry_mode: string; entry_permission: string; engine_state: string; feed_age_seconds: number | null; feed_status: string; sync_age_seconds: number | null; mark_age_seconds: number | null; open_pnl: number | null; unresolved_incident: boolean; as_of: string}
-export interface TradingControl {strip: ControlStrip; effective: Record<string, number>; saved: Record<string, number>; effective_version_id: string; saved_version_id: string; live_execution_authorized: boolean}
-export function fetchTradingControl() {return getJson<TradingControl>('/trading/control')}
 
 export class ApiError extends Error {
   status: number
@@ -217,51 +219,6 @@ export function postStopObservation(sessionDate?: string): Promise<ObservationSt
   return postJson<ObservationStopResponse>(`/observation/stop${query}`)
 }
 
-export function fetchTradingEngineStatus(sessionDate?: string): Promise<TradingEngineStatus> {
-  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
-  return getJson<TradingEngineStatus>(`/trading-engine/status${query}`)
-}
-
-export function fetchTradingEngineSnapshot(sessionDate?: string): Promise<TradingEngineSnapshot> {
-  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
-  return getJson<TradingEngineSnapshot>(`/trading-engine/snapshot${query}`)
-}
-
-export function postStartTradingEngine(body: {
-  confirm_live_orders?: boolean
-  session_date?: string
-  total_capital?: number
-}): Promise<TradingStartResponse> {
-  return postJson<TradingStartResponse>('/trading-engine/start', body)
-}
-
-export function postStopTradingEngine(): Promise<{ success: boolean; message: string }> {
-  return postJson('/trading-engine/stop')
-}
-
-export function postTradingCapital(totalCapital: number): Promise<{ success: boolean; total_capital: number }> {
-  return postJson('/trading-engine/capital', { total_capital: totalCapital })
-}
-
-export function postTrailStop(
-  tradeId: string,
-  newStop: number,
-  lastPrice?: number | null,
-): Promise<{ success: boolean; message: string }> {
-  return postJson(`/trading-engine/trades/${encodeURIComponent(tradeId)}/trail-stop`, {
-    new_stop: newStop,
-    last_price: lastPrice ?? null,
-  })
-}
-
-export function postAutoTrail(
-  tradeId: string,
-  enabled: boolean,
-): Promise<{ success: boolean; message: string }> {
-  return postJson(`/trading-engine/trades/${encodeURIComponent(tradeId)}/auto-trail`, {
-    enabled,
-  })
-}
 
 export function fetchAdminConfig(): Promise<AdminConfigResponse> {
   return getJson('/admin/config')
@@ -294,4 +251,42 @@ export function fetchAdminAudit(limit = 50, offset = 0): Promise<AdminAuditRespo
 
 export function postAdminRollback(targetVersionId: string): Promise<AdminConfigResponse> {
   return postJson('/admin/config/rollback', { target_version_id: targetVersionId })
+}
+
+// --- Rebuilt execution engine (/execution) ---------------------------------
+
+export function fetchExecutionStatus(): Promise<ExecutionStatus> {
+  return getJson('/execution/status')
+}
+
+export function fetchExecutionPreflight(): Promise<ExecutionPreflight> {
+  return getJson('/execution/preflight')
+}
+
+export function fetchExecutionPositions(sessionDate?: string): Promise<ExecutionPositions> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson(`/execution/positions${query}`)
+}
+
+export function fetchExecutionEvents(tradeId: string): Promise<ExecutionEvents> {
+  return getJson(`/execution/positions/${encodeURIComponent(tradeId)}/events`)
+}
+
+export function postExecutionStart(body: {
+  caps: ExecutionSessionCaps
+  session_date?: string
+  live_orders?: boolean
+}): Promise<ExecutionStartResponse> {
+  return postJson('/execution/start', body)
+}
+
+export function postExecutionCommand(
+  kind: ExecutionCommandKind,
+  tradeId?: string,
+): Promise<ExecutionCommand> {
+  return postJson('/execution/commands', { kind, trade_id: tradeId ?? null })
+}
+
+export function fetchExecutionCommand(commandId: number): Promise<ExecutionCommand> {
+  return getJson(`/execution/commands/${commandId}`)
 }

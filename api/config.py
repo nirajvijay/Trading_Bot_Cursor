@@ -79,64 +79,32 @@ RUNNER_STATUS_FILE = Path(
     os.environ.get("RUNNER_STATUS_FILE", "/tmp/runner_status.json")
 )
 
-def trading_engine_status_file() -> Path:
-    return Path(
-        os.environ.get("TRADING_ENGINE_STATUS_FILE", "/tmp/trading_engine_status.json")
-    )
+def execution_engine_db_path() -> Path:
+    """Rebuilt execution engine store: positions, position_events, commands.
 
-
-def trading_engine_legacy_db_path() -> Path:
-    """Pre-clean-start ledger. Archive source only — never the active PAPER path."""
-    override = os.environ.get("TRADING_ENGINE_LEGACY_DB_PATH")
-    if override:
-        return Path(override).expanduser()
-    return local_data_dir() / "trading_engine.db"
-
-
-def trading_engine_v1_paper_db_path() -> Path:
-    """Dedicated V1 PAPER ledger namespace (not shared with LIVE)."""
-    override = os.environ.get("TRADING_ENGINE_V1_PAPER_DB_PATH")
-    if override:
-        return Path(override).expanduser()
-    return local_data_dir() / "trading_engine_v1_paper.db"
-
-
-def trading_engine_db_path() -> Path:
-    """Active API/PAPER trading ledger.
-
-    Defaults to the V1 PAPER-only namespace. Tests may override via
-    TRADING_ENGINE_DB_PATH. LIVE execution must refuse paper-only paths.
+    A separate namespace from the old ledger on purpose — the new engine shares
+    no schema with it, and nothing is migrated across.
     """
-    override = os.environ.get("TRADING_ENGINE_DB_PATH")
+    override = os.environ.get("EXECUTION_ENGINE_DB_PATH")
     if override:
         return Path(override).expanduser()
-    return trading_engine_v1_paper_db_path()
+    return local_data_dir() / "execution_engine.db"
 
 
-def trading_engine_paper_account_db_path(ledger: Path | None = None) -> Path:
-    """Durable PaperBroker SQLite beside the active PAPER ledger."""
-    base = Path(ledger) if ledger is not None else trading_engine_db_path()
-    # Prefer trading_engine_v1_paper_account.db over ..._v1_paper_paper_account.db.
-    if base.name == "trading_engine_v1_paper.db" or base.stem.endswith("_v1_paper"):
-        return base.with_name("trading_engine_v1_paper_account.db")
-    return base.with_name(base.stem + "_paper_account.db")
-
-
-def is_paper_only_ledger_path(path: Path) -> bool:
-    """True when path is the V1 PAPER-only namespace (by resolved path or name)."""
-    resolved = Path(path).expanduser().resolve()
-    paper = trading_engine_v1_paper_db_path().expanduser().resolve()
-    if resolved == paper:
-        return True
-    name = resolved.name
-    return name == "trading_engine_v1_paper.db" or name.endswith("_v1_paper.db")
-
-
-def trading_engine_stop_file() -> Path:
-    override = os.environ.get("TRADING_ENGINE_STOP_FILE")
+def execution_engine_status_file() -> Path:
+    """Per-tick heartbeat, and the stopping-on-purpose note."""
+    override = os.environ.get("EXECUTION_ENGINE_STATUS_FILE")
     if override:
         return Path(override).expanduser()
-    return runtime_cache_dir() / "trading_engine.stop"
+    return runtime_cache_dir() / "execution_engine_status.json"
+
+
+def execution_engine_live_mark_file() -> Path:
+    """Unrealised P&L per tick. Its own file, never the heartbeat."""
+    override = os.environ.get("EXECUTION_ENGINE_LIVE_MARK_FILE")
+    if override:
+        return Path(override).expanduser()
+    return runtime_cache_dir() / "execution_engine_live_marks.json"
 
 
 def admin_config_db_path() -> Path:
@@ -145,11 +113,6 @@ def admin_config_db_path() -> Path:
     if override:
         return Path(override).expanduser()
     return data_root() / "config" / "admin_config.db"
-
-
-def trading_engine_live_orders_enabled() -> bool:
-    raw = os.environ.get("TRADING_ENGINE_LIVE_ORDERS", "false").strip().lower()
-    return raw in {"1", "true", "yes"}
 
 
 # Backward-compatible aliases (same paths as above).

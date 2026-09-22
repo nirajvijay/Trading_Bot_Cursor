@@ -132,6 +132,14 @@ class TriggerCandidate:
     trigger_exchange_ts: Optional[str]
     created_at: str
     last_price: Optional[float] = None
+    vwap_classification: Optional[str] = None
+    # Breakout strength, as signal detection already computed it when the
+    # pattern qualified. Carried through only so the execution engine can rank
+    # same-window trigger collisions within a VWAP tier
+    # (engine_priority.rank_candidates). Defaulted, so every existing
+    # construction site stays valid.
+    breakout_candle_volume: Optional[int] = None
+    avg_prior_3_1m_volume: Optional[float] = None
 
 
 @dataclass

@@ -13,9 +13,7 @@ from trading_engine_handoff import (
     fetch_triggered_since,
     fetch_vwap_classification,
 )
-from trading_engine_risk import size_new_trade
-from trading_engine_store import TradingEngineStore
-from trading_engine_types import DEFAULT_TOTAL_CAPITAL, TriggerCandidate
+from trading_engine_types import TriggerCandidate
 
 SCHEMA = """
 CREATE TABLE live_continuation_arms (
@@ -113,53 +111,6 @@ class HandoffTests(unittest.TestCase):
         )
         ids = [r.setup_id for r in rows]
         self.assertEqual(ids, ["fresh"])
-
-    def test_duplicate_setup_not_inserted_twice(self) -> None:
-        store = TradingEngineStore(Path(self.tmp.name) / "te.db")
-        first = store.insert_candidate(
-            setup_id="fresh",
-            continuation_rule_version="v1",
-            session_date="2026-08-17",
-            symbol="AAA",
-            instrument_token=1,
-            direction="UP",
-            entry_estimate=110,
-            tick_size=1,
-            trigger_time="t",
-        )
-        second = store.insert_candidate(
-            setup_id="fresh",
-            continuation_rule_version="v1",
-            session_date="2026-08-17",
-            symbol="AAA",
-            instrument_token=1,
-            direction="UP",
-            entry_estimate=110,
-            tick_size=1,
-            trigger_time="t",
-        )
-        self.assertIsNotNone(first)
-        self.assertIsNone(second)
-        store.close()
-
-    def test_missing_swing_sizes_as_skipped(self) -> None:
-        cand = TriggerCandidate(
-            setup_id="x",
-            continuation_rule_version="v1",
-            session_date="2026-08-17",
-            tradingsymbol="AAA",
-            instrument_token=1,
-            direction="UP",
-            trigger_price=110,
-            pullback_swing_high=109,
-            pullback_swing_low=None,
-            tick_size=1,
-            buffer_ticks=1,
-            trigger_exchange_ts="t",
-            created_at="c",
-        )
-        decision = size_new_trade(cand, [], total_capital=DEFAULT_TOTAL_CAPITAL)
-        self.assertEqual(decision.reason, "missing_stop")
 
     def test_vwap_classification_four_field_identity(self) -> None:
         conn = sqlite3.connect(self.live)

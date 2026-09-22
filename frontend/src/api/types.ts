@@ -331,71 +331,6 @@ export interface ObservationStopResponse {
   pid?: number | null
 }
 
-export type TradingEngineState = 'stopped' | 'starting' | 'running' | 'error' | 'critical'
-
-export interface TradingTradeRow {
-  trade_id: string
-  setup_id: string
-  symbol: string
-  direction: string
-  qty: number
-  entry_estimate: number
-  entry_fill?: number | null
-  initial_stop?: number | null
-  current_stop?: number | null
-  exit_fill?: number | null
-  margin_blocked: number
-  status: string
-  skip_reason?: string | null
-  reject_reason?: string | null
-  close_reason?: string | null
-  trigger_time?: string | null
-  entry_time?: string | null
-  close_time?: string | null
-  realised_pnl: number
-  open_pnl: number
-  remaining_downside_risk: number
-  stop_revised: boolean
-  tick_size?: number
-  auto_trail_enabled?: boolean
-  auto_trail_ticks?: number | null
-}
-
-export interface TradingEngineSnapshot {
-  state: TradingEngineState | string
-  session_date: string
-  live_orders_enabled: boolean
-  unprotected_count: number
-  limits_protected: boolean
-  closed_loss_today: number
-  committed_risk: number
-  remaining_daily: number
-  live_pnl: number
-  total_capital: number
-  leverage_factor: number
-  margin_used: number
-  remaining_capital: number
-  buying_power: number
-  last_error?: string | null
-  accepting_triggers?: boolean
-  require_vwap_accept?: boolean
-  active: TradingTradeRow[]
-  closed: TradingTradeRow[]
-  skipped: TradingTradeRow[]
-}
-
-export interface TradingEngineStatus extends Omit<TradingEngineSnapshot, 'active' | 'closed' | 'skipped'> {
-  live_orders_env_enabled: boolean
-  engine_running: boolean
-  can_confirm_live: boolean
-}
-
-export interface TradingStartResponse {
-  success: boolean
-  message: string
-  pid?: number | null
-}
-
 export interface AdminConfigValues {
   per_trade_risk_cap_inr: number
   limited_per_trade_risk_cap_inr: number
@@ -445,4 +380,138 @@ export interface AdminActionResponse {
   message: string
   entries_paused?: boolean | null
   detail?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Execution engine (/execution).
+// ---------------------------------------------------------------------------
+
+export interface ExecutionSessionCaps {
+  per_trade_cap_rupees: number
+  per_trade_cap_vwap_limited_rupees: number
+  daily_loss_cap_rupees: number
+  total_capital_rupees: number
+  leverage_factor: number
+}
+
+export interface ExecutionPrecondition {
+  key: string
+  ok: boolean
+  detail: string
+}
+
+export interface ExecutionPreflight {
+  can_start: boolean
+  checks: ExecutionPrecondition[]
+  engine_state: string
+  engine_reason: string | null
+  refusals: string[]
+}
+
+export interface ExecutionCapital {
+  total_capital_rupees: number
+  leverage_factor: number
+  buying_power_rupees: number
+  margin_used_rupees: number
+  remaining_capital_rupees: number
+  remaining_buying_power_rupees: number
+}
+
+/** "running" | "stopped" | "crashed" | "absent" */
+export type ExecutionEngineState = 'running' | 'stopped' | 'crashed' | 'absent'
+
+export interface ExecutionStatus {
+  engine_state: ExecutionEngineState
+  engine_reason: string | null
+  heartbeat_age_seconds: number | null
+  stopped_on_purpose: boolean
+  stop_reason: string | null
+  run_id: string | null
+  session_date: string | null
+  is_live: boolean
+  tick_count: number
+  entries_allowed: boolean
+  entries_stopped: boolean
+  entries_paused: boolean
+  pause_reason: string | null
+  open_positions: number
+  unprotected: number
+  realised_loss_today: number
+  daily_loss_cap: number
+  remaining_daily: number
+  caps: ExecutionSessionCaps
+  capital: ExecutionCapital | null
+  total_live_pnl: number | null
+  live_pnl_as_of: string | null
+  live_pnl_complete: boolean
+  last_error: string | null
+  escalations: Record<string, string>
+}
+
+export interface ExecutionPosition {
+  trade_id: string
+  setup_id: string
+  session_date: string
+  tradingsymbol: string
+  direction: string
+  vwap_classification: string | null
+  state: string
+  qty: number
+  entry_price: number | null
+  stop_price: number | null
+  risk_taken_rupees: number | null
+  realised_pnl: number | null
+  live_pnl: number | null
+  entry_order_id: string | null
+  stop_order_id: string | null
+  exit_order_id: string | null
+  is_live: boolean
+  run_id: string | null
+  close_reason: string | null
+  skip_reason: string | null
+  stop_adopted_from_broker: boolean
+  manual_review: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ExecutionPositions {
+  session_date: string
+  open: ExecutionPosition[]
+  closed: ExecutionPosition[]
+  rejected: ExecutionPosition[]
+  total_live_pnl: number | null
+  live_pnl_as_of: string | null
+  live_pnl_complete: boolean
+}
+
+export interface ExecutionEvent {
+  event_id: number
+  trade_id: string
+  at: string
+  event_type: string
+  payload: Record<string, unknown>
+}
+
+export interface ExecutionEvents {
+  trade_id: string
+  events: ExecutionEvent[]
+}
+
+export type ExecutionCommandKind = 'stop' | 'start' | 'close_position' | 'kill_all'
+
+export interface ExecutionCommand {
+  command_id: number
+  kind: string
+  status: 'pending' | 'applied' | 'rejected'
+  trade_id: string | null
+  result: Record<string, unknown> | null
+  at: string | null
+  applied_at: string | null
+}
+
+export interface ExecutionStartResponse {
+  success: boolean
+  message: string
+  pid: number | null
 }

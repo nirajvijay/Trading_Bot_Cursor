@@ -17,7 +17,7 @@ from trading_engine_types import (
     PER_TRADE_RISK_CAP,
 )
 from vwap_qualifier_v2_config import VwapQualifierV2Config
-from trading_engine_trail_profile import DEFAULT_TRAIL_PROFILE
+from admin_trail_profile import DEFAULT_TRAIL_PROFILE
 
 _VWAP_DEFAULTS = VwapQualifierV2Config()
 
