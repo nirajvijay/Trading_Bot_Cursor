@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 SUPPORTED_CALENDAR_YEARS = frozenset({2025, 2026})
+NSE_CALENDAR_VERSION = "2025-2026-CMTR71775-72260"
 
 
 def calendar_session_status(now: datetime) -> dict:
@@ -76,6 +77,8 @@ def _parse_iso_date(value: str) -> date:
 
 def is_nse_trading_day(day: date) -> bool:
     """Return True when NSE cash market is open on this calendar date."""
+    if day.year not in SUPPORTED_CALENDAR_YEARS:
+        return False
     if day.weekday() >= 5:
         return False
     return day.isoformat() not in NSE_HOLIDAYS
@@ -89,8 +92,15 @@ def prior_nse_trading_session(session_date: str) -> Optional[str]:
     Returns ISO date string YYYY-MM-DD, or None if no trading day found in range.
     """
     current = _parse_iso_date(session_date) - timedelta(days=1)
+    if _parse_iso_date(session_date).year not in SUPPORTED_CALENDAR_YEARS:
+        return None
     # Safety bound: one year of calendar lookback
     for _ in range(366):
+        if current.year not in SUPPORTED_CALENDAR_YEARS:
+            return None
+        if is_special_session_day(current):
+            # An unconfigured special session must not silently select older data.
+            return None
         if is_nse_trading_day(current):
             return current.isoformat()
         current -= timedelta(days=1)
