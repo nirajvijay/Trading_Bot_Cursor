@@ -81,6 +81,12 @@ RUNNER_STATUS_FILE = Path(
         str(runtime_cache_dir() / "runner_status.json"),
     )
 )
+VWAP_HEALTH_FILE = Path(
+    os.environ.get(
+        "VWAP_HEALTH_FILE",
+        str(runtime_cache_dir() / "vwap_health.json"),
+    )
+)
 
 def execution_engine_db_path() -> Path:
     """Rebuilt execution engine store: positions, position_events, commands.

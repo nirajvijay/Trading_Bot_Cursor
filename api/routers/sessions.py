@@ -10,7 +10,7 @@ from api import config
 from api.auth.deps import require_web_session
 from api.db import open_readonly
 from api.queries.radar import fetch_coverage, fetch_radar_rows, list_sessions
-from api.queries.status import read_runner_status
+from api.queries.status import read_runner_status, read_vwap_health
 from api.queries.symbol_timeline import fetch_symbol_timeline
 from api.schemas.radar import (
     HealthResponse,
@@ -18,6 +18,7 @@ from api.schemas.radar import (
     RadarResponse,
     RunnerStatus,
     SessionCoverage,
+    VwapHealthStatus,
 )
 from api.schemas.symbol_timeline import SymbolTimelineResponse
 from config.nifty100_symbols import NIFTY_100_SYMBOLS
@@ -33,6 +34,15 @@ def health() -> HealthResponse:
         instruments_db=config.INSTRUMENTS_DB_PATH.exists(),
         baselines_db=config.BASELINES_DB_PATH.exists(),
     )
+
+
+@router.get(
+    "/vwap/health",
+    response_model=VwapHealthStatus,
+    dependencies=[Depends(require_web_session)],
+)
+def vwap_health() -> VwapHealthStatus:
+    return read_vwap_health(str(config.VWAP_HEALTH_FILE))
 
 
 @router.get(

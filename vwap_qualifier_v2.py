@@ -169,11 +169,13 @@ class VwapQualifierV2:
                 "bootstrap_ready": state == "ready",
                 "feed_stale": self._feed_stale,
                 "token_count": len(self._token_to_symbol),
+                "classified": m.classified,
                 "accept": m.accept,
                 "limited": m.limited,
                 "reject": m.reject,
                 "unavailable": m.unavailable,
                 "persist_failures": m.persist_failures,
+                "callback_failures": m.callback_failures,
                 "reason": "feed_stale" if self._feed_stale else None,
             }
 
@@ -224,9 +226,10 @@ class VwapQualifierV2:
                 risk_cap_used_inr=result.risk_cap_inr
             )
             ok = self._writer.insert_sync(result, provenance=admin_snapshot)
-            if not ok and result.classification in ("ACCEPT", "LIMITED", "REJECT"):
+            if not ok:
                 with self._lock:
                     self._persist_failures += 1
+            if not ok and result.classification in ("ACCEPT", "LIMITED", "REJECT"):
                 return VwapQualificationV2(
                     setup_id=result.setup_id,
                     continuation_rule_version=result.continuation_rule_version,

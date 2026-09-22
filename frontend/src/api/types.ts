@@ -96,11 +96,26 @@ export interface VwapQualifierStatus {
   uncertain_bucket_count?: number
   failed_token_count?: number
   token_count?: number
+  classified?: number
   accept?: number
   limited?: number
   reject?: number
   unavailable?: number
+  persist_failures?: number
+  callback_failures?: number
   reason?: string | null
+}
+
+export interface VwapHealthStatus {
+  status: 'ok' | 'alarm' | 'unknown'
+  session_date?: string | null
+  triggered_count: number
+  qualified_count: number
+  stuck_count: number
+  callback_failures: number
+  persist_failures: number
+  reason?: string | null
+  checked_at?: string | null
 }
 
 export interface RunnerStatus {

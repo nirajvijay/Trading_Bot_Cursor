@@ -1,0 +1,11 @@
+[Unit]
+Description=NIFTY RADAR VWAP pipeline health check (read-only, decoupled from trading)
+After=network.target
+
+[Service]
+Type=oneshot
+User=nifty-radar
+Group=nifty-radar
+WorkingDirectory=/opt/nifty-radar/current
+EnvironmentFile=/opt/nifty-radar/secrets/api.env
+ExecStart=/opt/nifty-radar/venv/bin/python3 vwap_health_check.py

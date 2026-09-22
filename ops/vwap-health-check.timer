@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the VWAP pipeline health check every 10 minutes during market hours
+
+[Timer]
+# 09:15-15:30 IST is 03:45-10:00 UTC. A few minutes of slack on either side
+# is harmless since the check itself is a no-op outside real trading data.
+OnCalendar=Mon..Fri 03:40..10:05 UTC/10
+Persistent=false
+
+[Install]
+WantedBy=timers.target

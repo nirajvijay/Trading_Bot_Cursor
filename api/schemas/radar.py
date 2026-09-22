@@ -56,11 +56,13 @@ class VwapQualifierStatus(BaseModel):
     uncertain_bucket_count: int = 0
     failed_token_count: int = 0
     token_count: int = 0
+    classified: int = 0
     accept: int = 0
     limited: int = 0
     reject: int = 0
     unavailable: int = 0
     persist_failures: int = 0
+    callback_failures: int = 0
     reason: Optional[str] = None
 
 
@@ -81,6 +83,21 @@ class HealthResponse(BaseModel):
     live_db: bool
     instruments_db: bool
     baselines_db: bool
+
+
+class VwapHealthStatus(BaseModel):
+    """Result of the standalone vwap_health_check.py job. 'unknown' means the
+    check hasn't run yet (no file on disk), not that the pipeline is healthy."""
+
+    status: Literal["ok", "alarm", "unknown"] = "unknown"
+    session_date: Optional[str] = None
+    triggered_count: int = 0
+    qualified_count: int = 0
+    stuck_count: int = 0
+    callback_failures: int = 0
+    persist_failures: int = 0
+    reason: Optional[str] = None
+    checked_at: Optional[str] = None
 
 
 class InstrumentRow(BaseModel):

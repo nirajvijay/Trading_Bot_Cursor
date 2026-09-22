@@ -56,7 +56,7 @@ export function TopAppBar({
         <span className="label-caps font-extrabold px-2.5 py-1 bg-surface-container border border-outline-variant text-on-surface-variant rounded-sm hidden sm:inline">
           Mode:{' '}
           {activeTab === 'auth'
-            ? 'kite token'
+            ? 'vwap health'
             : activeTab === 'checklist'
               ? 'pre-market checks'
               : activeTab === 'trading'

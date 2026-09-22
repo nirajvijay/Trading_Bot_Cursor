@@ -52,6 +52,13 @@ export function VwapQualifierBadge({ view }: Props) {
             <span className="label-caps text-on-surface-variant lg:hidden">U</span>
             <span className="font-data text-xs">{view.unavailable}</span>
           </div>
+          {view.callbackFailures > 0 && (
+            <div className="flex items-center gap-1.5" title="VWAP classify crashed before it could persist a verdict">
+              <span className="label-caps text-negative hidden lg:inline">CLASSIFY FAILED:</span>
+              <span className="label-caps text-negative lg:hidden">F</span>
+              <span className="font-data text-xs text-negative font-bold">{view.callbackFailures}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
