@@ -269,7 +269,7 @@ class AdminConfigStore:
             bootstrap = AdminConfigStore(self.db_path, read_only=False)
             bootstrap.close()
         uri = f"file:{self.db_path}?mode=ro" if self.read_only else str(self.db_path)
-        self._conn = sqlite3.connect(uri, uri=self.read_only, timeout=30)
+        self._conn = sqlite3.connect(uri, uri=self.read_only, timeout=30, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys=ON")
         if not self.read_only:
