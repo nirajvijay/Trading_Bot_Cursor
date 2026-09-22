@@ -73,7 +73,7 @@ def _exit_status_file() -> Path:
 
 def _observation_log_path(session_date: str) -> Path:
     log_dir = Path(
-        os.environ.get("OBSERVATION_LOG_DIR", "/opt/nifty-radar/logs")
+        os.environ.get("OBSERVATION_LOG_DIR", "/opt/nifty-radar/data/logs")
     )
     return log_dir / f"observation-{session_date}.log"
 
