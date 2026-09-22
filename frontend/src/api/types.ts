@@ -259,6 +259,7 @@ export interface FiveMinuteCandlesCheck {
   expected_prior_session?: string | null
   symbols_covered: number
   expected_count: number
+  missing_count: number
   ema_seed_ready: number
   ema_seed_missing: number
   copy_command: string

@@ -65,12 +65,13 @@ interface Props {
   badgeLabel?: string | null
   expanded: boolean
   onToggle: () => void
+  generationBusy?: boolean
   children?: ReactNode
   secondaryAction?: Action
   primaryAction?: Action
 }
 
-function actionBtn(action: Action) {
+function actionBtn(action: Action, generationBusy: boolean) {
   const base =
     'inline-flex gap-1.5 h-8 items-center justify-center w-[190px] shrink-0 px-4 rounded-[2px] text-[12px] leading-[18px] cursor-pointer transition duration-100 hover:brightness-95 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100 disabled:active:scale-100'
   const variant =
@@ -84,7 +85,7 @@ function actionBtn(action: Action) {
       key={action.label}
       type="button"
       onClick={action.onClick}
-      disabled={action.loading || action.disabled}
+      disabled={action.loading || action.disabled || (generationBusy && action.variant === 'primary')}
       className={`${base} ${variant}`}
     >
       {action.iconSrc && (
@@ -102,6 +103,7 @@ export function ChecklistStage({
   badgeLabel,
   expanded,
   onToggle,
+  generationBusy = false,
   children,
   secondaryAction,
   primaryAction,
@@ -173,8 +175,8 @@ export function ChecklistStage({
           </div>
         </button>
         <div className="flex gap-1 items-center shrink-0 flex-wrap justify-end">
-          {secondaryAction && actionBtn(secondaryAction)}
-          {primaryAction && actionBtn(primaryAction)}
+          {secondaryAction && actionBtn(secondaryAction, generationBusy)}
+          {primaryAction && actionBtn(primaryAction, generationBusy)}
         </div>
       </div>
 

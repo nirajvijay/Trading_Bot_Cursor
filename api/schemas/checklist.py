@@ -108,6 +108,7 @@ class FiveMinuteCandlesCheck(BaseModel):
     expected_prior_session: Optional[str] = None
     symbols_covered: int = 0
     expected_count: int = 100
+    missing_count: int = 0
     ema_seed_ready: int = 0
     ema_seed_missing: int = 0
     copy_command: str = "python3 five_minute_candle_generator.py"

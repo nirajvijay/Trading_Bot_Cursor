@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -106,15 +107,14 @@ def write_checklist_cache(
         "next_step": str(checklist.get("next_step") or ""),
     }
     text = json.dumps(payload, indent=2) + "\n"
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.tmp.", dir=str(path.parent))
+    tmp = Path(tmp_name)
     try:
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, text.encode("utf-8"))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.chmod(tmp, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
         os.chmod(path, 0o600)
     finally:

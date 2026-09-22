@@ -328,6 +328,7 @@ class ChecklistQueryTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs_update")
         self.assertIn("incomplete", result["message"])
         self.assertIn("54/75 bars", result["message"])
+        self.assertEqual(result["missing_count"], 100)
 
     def test_full_checklist_aggregate(self) -> None:
         instruments = self.root / "instruments.db"

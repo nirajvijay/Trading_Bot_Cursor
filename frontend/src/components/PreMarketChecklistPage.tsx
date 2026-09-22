@@ -71,7 +71,6 @@ function InvalidBadge({ label = 'INVALID' }: { label?: string }) {
 function summarizeBlocker(message: string): {
   label: string
   detail: string
-  meta: string
 } {
   const incomplete = message.match(
     /^Prior session (\d{4}-\d{2}-\d{2}) incomplete for (\d+)\/(\d+) symbols: ([^(]+) \((\d+)\/(\d+) minutes; ends at ([\d:]+) IST \(must reach ([\d:]+) IST\)/,
@@ -80,13 +79,11 @@ function summarizeBlocker(message: string): {
     return {
       label: '1M HISTORY INCOMPLETE',
       detail: incomplete[2] + '/' + incomplete[3] + ' symbols · ' + incomplete[5] + '/' + incomplete[6] + ' minutes',
-      meta: incomplete[4].trim() + ' · ends ' + incomplete[7] + ' · target ' + incomplete[8],
     }
   }
   return {
     label: 'ACTION REQUIRED',
     detail: message.length > 88 ? message.slice(0, 85) + '…' : message,
-    meta: 'See blocked stage',
   }
 }
 
@@ -105,10 +102,12 @@ export function PreMarketChecklistPage({
   const [generatingTask, setGeneratingTask] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
   const [kiteLoginStarting, setKiteLoginStarting] = useState(false)
+  const [checkingStage, setCheckingStage] = useState<StageId | null>(null)
   const [runningAll, setRunningAll] = useState(false)
   const [expanded, setExpanded] = useState<Record<StageId, boolean> | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(false)
   const [cliLines, setCliLines] = useState<string[]>([])
+  const generationBusy = Boolean(generatingTask) || kiteLoginStarting
   const handleGenerate = useCallback(
     async (task: string) => {
       setGeneratingTask(task)
@@ -141,6 +140,18 @@ export function PreMarketChecklistPage({
       `[${clockNow()}] [KITE] ${result.message ?? (result.valid ? 'Token valid' : 'Token invalid')}`,
     ])
   }, [onCheckToken])
+
+  const handleStageCheck = useCallback(
+    async (stage: StageId) => {
+      setCheckingStage(stage)
+      try {
+        await onRefresh()
+      } finally {
+        setCheckingStage(null)
+      }
+    },
+    [onRefresh],
+  )
 
   const handleStartKiteLogin = useCallback(async () => {
     setKiteLoginStarting(true)
@@ -564,11 +575,8 @@ export function PreMarketChecklistPage({
                   <span className="font-mono text-[10px] font-bold uppercase tracking-[0.35px] text-[#93000a]">
                     {blockerSummary.label}
                   </span>
-                  <span className="font-semibold text-[12px] leading-4 text-[#ba1a1a]">
+                  <span className="font-mono font-semibold text-[12px] leading-4 text-[#ba1a1a]">
                     {blockerSummary.detail}
-                  </span>
-                  <span className="text-[10px] leading-3.5 text-[#93000a]">
-                    {blockerSummary.meta}
                   </span>
                 </div>
               ) : (
@@ -666,6 +674,7 @@ export function PreMarketChecklistPage({
             badgeLabel={kiteBadge}
             expanded={open.kite}
             onToggle={() => toggleStage('kite')}
+            generationBusy={generationBusy}
             secondaryAction={{
               label: 'Check Auth Status',
               onClick: () => void handleCheckToken(),
@@ -737,9 +746,11 @@ export function PreMarketChecklistPage({
             badgeLabel={instrumentsBadge}
             expanded={open.instruments}
             onToggle={() => toggleStage('instruments')}
+            generationBusy={generationBusy}
             secondaryAction={{
               label: 'Check Instruments',
-              onClick: () => void onRefresh(),
+              onClick: () => void handleStageCheck('instruments'),
+              loading: checkingStage === 'instruments',
               iconSrc: '/figma/icon-13.svg',
             }}
             primaryAction={
@@ -786,9 +797,11 @@ export function PreMarketChecklistPage({
             badgeLabel={histBadge}
             expanded={open.historical}
             onToggle={() => toggleStage('historical')}
+            generationBusy={generationBusy}
             secondaryAction={{
               label: 'Check Candles',
-              onClick: () => void onRefresh(),
+              onClick: () => void handleStageCheck('historical'),
+              loading: checkingStage === 'historical',
             }}
             primaryAction={
               data.areas.historical_candles.generate_action
@@ -872,9 +885,11 @@ export function PreMarketChecklistPage({
             badgeLabel={baseBadge}
             expanded={open.baselines}
             onToggle={() => toggleStage('baselines')}
+            generationBusy={generationBusy}
             secondaryAction={{
               label: 'Check Baselines',
-              onClick: () => void onRefresh(),
+              onClick: () => void handleStageCheck('baselines'),
+              loading: checkingStage === 'baselines',
             }}
             primaryAction={
               baselines.generate_action
@@ -944,9 +959,11 @@ export function PreMarketChecklistPage({
             badgeLabel={fiveBadge}
             expanded={open.five_minute}
             onToggle={() => toggleStage('five_minute')}
+            generationBusy={generationBusy}
             secondaryAction={{
               label: 'Check 5-Minute Candles',
-              onClick: () => void onRefresh(),
+              onClick: () => void handleStageCheck('five_minute'),
+              loading: checkingStage === 'five_minute',
             }}
             primaryAction={
               data.areas.five_minute_candles.generate_action
@@ -972,10 +989,10 @@ export function PreMarketChecklistPage({
               danger={data.areas.five_minute_candles.status !== 'ok'}
               alignTop
             >
-              <p className={`font-bold text-[13px] ${data.areas.five_minute_candles.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
+              <p className={`line-clamp-2 font-bold text-[13px] leading-4 ${data.areas.five_minute_candles.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
                 {data.areas.five_minute_candles.status === 'ok'
                   ? '5-minute candles valid'
-                  : '5-minute candle seed required'}
+                  : data.areas.five_minute_candles.message}
               </p>
               <div className="mt-1.5 grid w-full grid-cols-2 gap-x-3 border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
                 <span className="text-[#76777d]">Required session</span>
@@ -994,10 +1011,9 @@ export function PreMarketChecklistPage({
               </p>
               <p className="text-[11px] text-[#45464d]">symbols ready</p>
               <div className="mt-1.5 flex w-full items-center justify-between border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
-                <span className="text-[#76777d]">EMA seed ready</span>
+                <span className="text-[#76777d]">Missing</span>
                 <span className="font-mono font-semibold text-[#0b1c30]">
-                  {data.areas.five_minute_candles.ema_seed_ready}/
-                  {data.areas.five_minute_candles.expected_count}
+                  {data.areas.five_minute_candles.missing_count}
                 </span>
               </div>
             </StageMetricCard>

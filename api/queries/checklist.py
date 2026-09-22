@@ -921,6 +921,7 @@ def _build_five_minute(
             "expected_prior_session": None,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
+            "missing_count": EXPECTED_COUNT,
             "ema_seed_ready": 0,
             "ema_seed_missing": EXPECTED_COUNT,
             "copy_command": copy_command,
@@ -938,6 +939,7 @@ def _build_five_minute(
             "expected_prior_session": required_prior,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
+            "missing_count": EXPECTED_COUNT,
             "ema_seed_ready": 0,
             "ema_seed_missing": EXPECTED_COUNT,
             "copy_command": copy_command,
@@ -957,6 +959,7 @@ def _build_five_minute(
             "expected_prior_session": required_prior,
             "symbols_covered": 0,
             "expected_count": EXPECTED_COUNT,
+            "missing_count": len(tokens),
             "ema_seed_ready": 0,
             "ema_seed_missing": len(tokens),
             "copy_command": copy_command,
@@ -973,6 +976,7 @@ def _build_five_minute(
                 "expected_prior_session": required_prior,
                 "symbols_covered": 0,
                 "expected_count": EXPECTED_COUNT,
+                "missing_count": len(tokens),
                 "ema_seed_ready": 0,
                 "ema_seed_missing": len(tokens),
                 "copy_command": copy_command,
@@ -1002,6 +1006,12 @@ def _build_five_minute(
                 incomplete_required_session.append((symbol, bar_count, last_bar))
     finally:
         conn.close()
+
+    display_missing_count = (
+        len(incomplete_required_session)
+        if incomplete_required_session
+        else max(missing_count, ema_missing)
+    )
 
     if stale_count > 0:
         status = "needs_update"
@@ -1054,6 +1064,7 @@ def _build_five_minute(
         "expected_prior_session": required_prior,
         "symbols_covered": symbols_covered_on_p,
         "expected_count": EXPECTED_COUNT,
+        "missing_count": display_missing_count,
         "ema_seed_ready": ema_ready,
         "ema_seed_missing": ema_missing,
         "copy_command": copy_command,

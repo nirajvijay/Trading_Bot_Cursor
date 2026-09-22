@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from api.services.checklist_cache import (
@@ -54,6 +55,31 @@ class ChecklistCacheTests(unittest.TestCase):
             path = root / "checklist_cache.json"
             path.write_text("{not-json", encoding="utf-8")
             self.assertIsNone(read_checklist_cache("2026-08-03", local_data_dir=root))
+
+    def test_concurrent_writes_are_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_universe_manifest_atomic(root / "universe_manifest.json")
+
+            def write(index: int) -> None:
+                write_checklist_cache(
+                    {
+                        "session_date": "2026-08-03",
+                        "overall_status": "warning",
+                        "checked_at": f"2026-08-03T08:00:{index:02d}+05:30",
+                        "next_step": f"Refresh stage {index}",
+                        "blockers": [f"Refresh stage {index}"],
+                    },
+                    local_data_dir=root,
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(write, range(32)))
+
+            cached = read_checklist_cache("2026-08-03", local_data_dir=root)
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached["overall_status"], "warning")
+            self.assertEqual(list(root.glob("checklist_cache.json.tmp.*")), [])
 
     def test_schema_version_mismatch_is_miss(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
