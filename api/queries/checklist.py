@@ -14,6 +14,7 @@ from nse_trading_calendar import prior_nse_trading_session
 from session_quality import (
     LOOKBACK_COMPLETED_SESSIONS,
     MIN_VALID_SESSION_MINUTES,
+    NOMINAL_SESSION_MINUTES,
     REQUIRED_LAST_MINUTE_MIN,
     discover_completed_sessions,
     evaluate_symbol_session,
@@ -34,6 +35,9 @@ from login import read_auth_status
 EXPECTED_COUNT = len(NIFTY_100_SYMBOLS)
 EMA_PERIOD = 20
 INSTRUMENTS_STALE_DAYS = 7
+FIVE_MINUTE_START = 9 * 60 + 15
+FIVE_MINUTE_END = 15 * 60 + 25
+EXPECTED_FIVE_MINUTE_BARS = ((FIVE_MINUTE_END - FIVE_MINUTE_START) // 5) + 1
 
 _STATUS_RANK = {
     "not_checked": 0,
@@ -229,21 +233,60 @@ def _resolve_baseline_as_of(conn: sqlite3.Connection, session_date: str) -> Opti
 
 def _baseline_token_coverage(conn: sqlite3.Connection, as_of: str) -> Tuple[int, int]:
     try:
-        row = conn.execute(
+        rows = conn.execute(
             """
             SELECT
-                COUNT(DISTINCT instrument_token),
-                COUNT(DISTINCT CASE WHEN is_reliable = 1 THEN instrument_token END)
+                tradingsymbol,
+                COUNT(DISTINCT minute_of_day),
+                COUNT(DISTINCT CASE WHEN is_reliable = 1 THEN minute_of_day END)
             FROM baselines
             WHERE baseline_as_of_date = ?
+            GROUP BY tradingsymbol
             """,
             (as_of,),
-        ).fetchone()
-        if row:
-            return int(row[0] or 0), int(row[1] or 0)
+        ).fetchall()
+        by_symbol = {
+            str(row[0]): (int(row[1] or 0), int(row[2] or 0))
+            for row in rows
+        }
+        covered = 0
+        reliable = 0
+        for symbol in NIFTY_100_SYMBOLS:
+            vector_count, reliable_count = by_symbol.get(symbol, (0, 0))
+            if vector_count >= NOMINAL_SESSION_MINUTES:
+                covered += 1
+                if reliable_count >= NOMINAL_SESSION_MINUTES:
+                    reliable += 1
+        return covered, reliable
     except sqlite3.OperationalError:
         pass
     return 0, 0
+
+
+def _evaluate_five_minute_session(
+    conn: sqlite3.Connection,
+    instrument_token: int,
+    session_date: str,
+) -> Tuple[bool, int, Optional[int]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT substr(candle_time, 12, 5)
+        FROM candles_5m
+        WHERE instrument_token = ?
+          AND candle_time >= ? AND candle_time < ?
+        """,
+        (instrument_token, session_date, session_date + "~"),
+    ).fetchall()
+    minutes: set[int] = set()
+    for (hhmm,) in rows:
+        try:
+            hour, minute = str(hhmm).split(":", 1)
+            minutes.add(int(hour) * 60 + int(minute))
+        except (ValueError, AttributeError):
+            continue
+    expected = set(range(FIVE_MINUTE_START, FIVE_MINUTE_END + 1, 5))
+    last_bar = max(minutes) if minutes else None
+    return minutes == expected, len(minutes), last_bar
 
 
 def _latest_generation_run(conn: sqlite3.Connection) -> Optional[str]:
@@ -945,6 +988,18 @@ def _build_five_minute(
         )
         latest_date = aggregate_latest
         ema_ready, ema_missing = _ema_seed_ready_count(conn, tokens, session_date)
+        incomplete_required_session: List[Tuple[str, int, Optional[int]]] = []
+        token_by_symbol = {symbol: token for symbol, token in token_map.items()}
+        for symbol in NIFTY_100_SYMBOLS:
+            token = token_by_symbol.get(symbol)
+            if token is None:
+                incomplete_required_session.append((symbol, 0, None))
+                continue
+            complete, bar_count, last_bar = _evaluate_five_minute_session(
+                conn, token, required_prior
+            )
+            if not complete:
+                incomplete_required_session.append((symbol, bar_count, last_bar))
     finally:
         conn.close()
 
@@ -961,6 +1016,23 @@ def _build_five_minute(
         message = (
             f"5m prior session {required_prior}: {symbols_covered_on_p}/{EXPECTED_COUNT} "
             f"symbols ({missing_count} missing)"
+        )
+    elif incomplete_required_session:
+        sample_symbol, bar_count, last_bar = incomplete_required_session[0]
+        last_text = (
+            f", ends at {last_bar // 60:02d}:{last_bar % 60:02d} IST"
+            if last_bar is not None
+            else ""
+        )
+        more = "" if len(incomplete_required_session) <= 1 else (
+            f" (+{len(incomplete_required_session) - 1} more)"
+        )
+        status = "needs_update"
+        message = (
+            f"Prior session {required_prior} incomplete for "
+            f"{len(incomplete_required_session)}/{EXPECTED_COUNT} symbols: "
+            f"{sample_symbol} ({bar_count}/{EXPECTED_FIVE_MINUTE_BARS} bars"
+            f"{last_text}){more}"
         )
     elif ema_missing > 0:
         status = "warning" if ema_missing <= 2 else "needs_update"

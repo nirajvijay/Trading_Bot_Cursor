@@ -72,7 +72,7 @@ interface Props {
 
 function actionBtn(action: Action) {
   const base =
-    'inline-flex gap-1.5 h-8 items-center justify-center w-[190px] shrink-0 px-4 rounded-[2px] text-[12px] leading-[18px] disabled:opacity-50'
+    'inline-flex gap-1.5 h-8 items-center justify-center w-[190px] shrink-0 px-4 rounded-[2px] text-[12px] leading-[18px] cursor-pointer transition duration-100 hover:brightness-95 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100 disabled:active:scale-100'
   const variant =
     action.variant === 'primary'
       ? 'bg-black text-white'
@@ -125,7 +125,7 @@ export function ChecklistStage({
         <button
           type="button"
           onClick={onToggle}
-          className={`group flex flex-1 items-center min-w-0 text-left ${
+          className={`group flex flex-1 items-center min-w-0 text-left cursor-pointer transition-colors hover:bg-[#f8faff] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7] ${
             isKiteAuthStage ? 'gap-2.5' : 'gap-1.5'
           }`}
           aria-expanded={expanded}

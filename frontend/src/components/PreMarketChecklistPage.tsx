@@ -68,6 +68,28 @@ function InvalidBadge({ label = 'INVALID' }: { label?: string }) {
   )
 }
 
+function summarizeBlocker(message: string): {
+  label: string
+  detail: string
+  meta: string
+} {
+  const incomplete = message.match(
+    /^Prior session (\d{4}-\d{2}-\d{2}) incomplete for (\d+)\/(\d+) symbols: ([^(]+) \((\d+)\/(\d+) minutes; ends at ([\d:]+) IST \(must reach ([\d:]+) IST\)/,
+  )
+  if (incomplete) {
+    return {
+      label: '1M HISTORY INCOMPLETE',
+      detail: incomplete[2] + '/' + incomplete[3] + ' symbols · ' + incomplete[5] + '/' + incomplete[6] + ' minutes',
+      meta: incomplete[4].trim() + ' · ends ' + incomplete[7] + ' · target ' + incomplete[8],
+    }
+  }
+  return {
+    label: 'ACTION REQUIRED',
+    detail: message.length > 88 ? message.slice(0, 85) + '…' : message,
+    meta: 'See blocked stage',
+  }
+}
+
 export function PreMarketChecklistPage({
   data,
   loading,
@@ -280,7 +302,7 @@ export function PreMarketChecklistPage({
         <button
           type="button"
           onClick={() => void onRefresh()}
-          className="px-3 py-1.5 bg-black text-white rounded-[2px] text-[12px] font-semibold"
+          className="px-3 py-1.5 bg-black text-white rounded-[2px] text-[12px] font-semibold cursor-pointer transition duration-100 hover:brightness-90 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7]"
         >
           Retry
         </button>
@@ -297,6 +319,7 @@ export function PreMarketChecklistPage({
   const overallReady = effectiveOverall === 'ok'
   const gateLocked = !overallReady
   const displayNextStep = effectiveNextStep(data, effectiveOverall)
+  const blockerSummary = summarizeBlocker(displayNextStep)
   const open = expanded ?? {
     kite: shouldExpandByDefault(kiteStatus),
     instruments: shouldExpandByDefault(data.areas.instruments.status),
@@ -407,8 +430,8 @@ export function PreMarketChecklistPage({
             <button
               type="button"
               onClick={() => void handleRunAllPending()}
-              disabled={runningAll || loading || overallReady}
-              className="bg-black inline-flex gap-1 items-center px-3 py-1 rounded-[2px] text-white text-[15px] font-semibold leading-5 disabled:opacity-50"
+              disabled={runningAll || loading}
+              className="bg-black inline-flex gap-1 items-center px-3 py-1 rounded-[2px] text-white text-[15px] font-semibold leading-5 cursor-pointer transition duration-100 hover:brightness-90 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <img src="/figma/icon-2.svg" alt="" className="h-[9px] w-[7px]" />
               {runningAll ? 'Running…' : 'Run All Pending Checks'}
@@ -417,7 +440,7 @@ export function PreMarketChecklistPage({
               type="button"
               onClick={() => void onRefresh()}
               disabled={loading}
-              className="bg-[#eff4ff] inline-flex items-center px-1.5 py-1 rounded-[2px] disabled:opacity-50"
+              className="bg-[#eff4ff] inline-flex items-center px-1.5 py-1 rounded-[2px] cursor-pointer transition duration-100 hover:bg-[#d3e4fe] active:scale-[0.96] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7] disabled:cursor-not-allowed disabled:opacity-50"
               title="Refresh"
             >
               <img src="/figma/icon-3.svg" alt="" className="size-[11px]" />
@@ -536,13 +559,21 @@ export function PreMarketChecklistPage({
                 gateLocked ? 'border-[rgba(255,218,214,0.5)]' : 'border-[#e5eeff]'
               }`}
             >
-              <p
-                className={`text-[11px] leading-[16.5px] ${
-                  gateLocked ? 'text-[#ba1a1a]' : 'text-[#45464d]'
-                }`}
-              >
-                {gateLocked ? displayNextStep : 'All stages clear'}
-              </p>
+              {gateLocked ? (
+                <div className="flex flex-col gap-0.5 py-0.5">
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-[0.35px] text-[#93000a]">
+                    {blockerSummary.label}
+                  </span>
+                  <span className="font-semibold text-[12px] leading-4 text-[#ba1a1a]">
+                    {blockerSummary.detail}
+                  </span>
+                  <span className="text-[10px] leading-3.5 text-[#93000a]">
+                    {blockerSummary.meta}
+                  </span>
+                </div>
+              ) : (
+                <p className="text-[11px] leading-[16.5px] text-[#45464d]">All stages clear</p>
+              )}
             </div>
           </div>
 
@@ -568,7 +599,7 @@ export function PreMarketChecklistPage({
               type="button"
               onClick={onNavigateToObservation}
               disabled={!overallReady}
-              className="bg-[#006c4a] inline-flex items-center rounded-[2px] px-2 py-1 font-mono text-[12px] font-bold tracking-[-0.325px] leading-[18px] text-left text-white hover:bg-[#00714e] disabled:cursor-not-allowed disabled:bg-[#e5eeff] disabled:text-[#76777d] disabled:opacity-70"
+              className="bg-[#006c4a] inline-flex items-center rounded-[2px] px-2 py-1 font-mono text-[12px] font-bold tracking-[-0.325px] leading-[18px] text-left text-white cursor-pointer transition duration-100 hover:bg-[#00714e] active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7] disabled:cursor-not-allowed disabled:bg-[#e5eeff] disabled:text-[#76777d] disabled:opacity-70"
               title={overallReady ? 'Open the observation view' : 'Complete all 5 stages first'}
             >
               GO TO OBSERVATION
@@ -1008,7 +1039,7 @@ export function PreMarketChecklistPage({
                     <button
                       type="button"
                       onClick={() => focusStage(s.id)}
-                      className="w-full flex items-center gap-2 px-1 py-1.5 text-left hover:bg-[#eff4ff] rounded-[2px]"
+                      className="w-full flex items-center gap-2 px-1 py-1.5 text-left rounded-[2px] cursor-pointer transition-colors hover:bg-[#eff4ff] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#005db7]"
                     >
                       <span
                         className={`flex items-center justify-center size-5 rounded-full shrink-0 ${
@@ -1081,7 +1112,7 @@ export function PreMarketChecklistPage({
                 onClick={() =>
                   void navigator.clipboard.writeText(cliLines.join('\n') || data.suggested_commands.runner)
                 }
-                className="bg-white/10 hover:bg-white/15 px-2 py-1 rounded-[2px] font-mono text-[10px] text-white shrink-0"
+                className="bg-white/10 hover:bg-white/15 px-2 py-1 rounded-[2px] font-mono text-[10px] text-white shrink-0 cursor-pointer transition duration-100 active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#82f5c1]"
               >
                 Copy CLI
               </button>

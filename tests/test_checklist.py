@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from api.queries.checklist import (
     _build_baselines,
+    _build_five_minute,
     _build_historical,
     _build_instruments,
     _build_kite_auth,
@@ -96,18 +97,12 @@ def _init_historical_db(path: Path, *, session_date: str = "2026-07-31", symbol_
     )
     for i, symbol in enumerate(NIFTY_100_SYMBOLS[:symbol_count]):
         token = 100000 + i
-        conn.execute(
-            """
-            INSERT INTO candles VALUES (?, ?, ?, 1, 1, 1, 1, 100)
-            """,
-            (token, symbol, f"{session_date}T09:15:00+05:30"),
-        )
-        for minute in range(25):
+        for minute in range(375):
             hh = 9 + (15 + minute) // 60
             mm = (15 + minute) % 60
             conn.execute(
                 """
-                INSERT INTO candles_5m VALUES (?, ?, ?, 1, 1, 1, 1, 100)
+                INSERT INTO candles VALUES (?, ?, ?, 1, 1, 1, 1, 100)
                 """,
                 (
                     token,
@@ -115,6 +110,17 @@ def _init_historical_db(path: Path, *, session_date: str = "2026-07-31", symbol_
                     f"{session_date}T{hh:02d}:{mm:02d}:00+05:30",
                 ),
             )
+            if minute % 5 == 0:
+                conn.execute(
+                    """
+                    INSERT INTO candles_5m VALUES (?, ?, ?, 1, 1, 1, 1, 100)
+                    """,
+                    (
+                        token,
+                        symbol,
+                        f"{session_date}T{hh:02d}:{mm:02d}:00+05:30",
+                    ),
+                )
     conn.commit()
     conn.close()
 
@@ -148,12 +154,13 @@ def _init_baselines_db(path: Path, *, as_of: str = "2026-07-31") -> None:
         """
     )
     for i, symbol in enumerate(NIFTY_100_SYMBOLS):
-        conn.execute(
-            """
-            INSERT INTO baselines VALUES (?, ?, 630, 1, 1, 0.001, 21, 1, ?)
-            """,
-            (100000 + i, symbol, as_of),
-        )
+        for minute_of_day in range(9 * 60 + 15, 15 * 60 + 30):
+            conn.execute(
+                """
+                INSERT INTO baselines VALUES (?, ?, ?, 1, 1, 0.001, 21, 1, ?)
+                """,
+                (100000 + i, symbol, minute_of_day, as_of),
+            )
     conn.execute(
         "INSERT INTO baseline_generation_runs VALUES (1, '2026-08-01T10:00:00', ?)",
         (as_of,),
@@ -288,6 +295,39 @@ class ChecklistQueryTests(unittest.TestCase):
         result = _build_baselines(db, "2026-08-03")
         self.assertEqual(result["status"], "needs_update")
         self.assertIn("expected as-of 2026-07-31", result["message"])
+
+    def test_baselines_reject_partial_vectors_at_required_date(self) -> None:
+        db = self.root / "baselines.db"
+        _init_baselines_db(db)
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "DELETE FROM baselines WHERE baseline_as_of_date = ? AND minute_of_day > ?",
+            ("2026-07-31", 630),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _build_baselines(db, "2026-08-03")
+        self.assertEqual(result["status"], "needs_update")
+        self.assertIn("0/100 symbols at required date", result["message"])
+
+    def test_five_minute_rejects_truncated_prior_session(self) -> None:
+        historical = self.root / "historical.db"
+        instruments = self.root / "instruments.db"
+        _init_historical_db(historical)
+        _init_instruments_db(instruments)
+        conn = sqlite3.connect(historical)
+        conn.execute(
+            "DELETE FROM candles_5m WHERE candle_time >= ?",
+            ("2026-07-31T13:45:00+05:30",),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _build_five_minute(historical, instruments, "2026-08-03")
+        self.assertEqual(result["status"], "needs_update")
+        self.assertIn("incomplete", result["message"])
+        self.assertIn("54/75 bars", result["message"])
 
     def test_full_checklist_aggregate(self) -> None:
         instruments = self.root / "instruments.db"
