@@ -78,7 +78,16 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
       await onPasskeyLogin(username.trim(), password)
       rememberUsername(username.trim())
     } catch (err) {
-      setError(describePasskeyError(err, 'Touch ID sign-in failed'))
+      const message = describePasskeyError(err, 'Touch ID sign-in failed')
+      // First run, and after every passkey is removed, there is nothing to
+      // authenticate against. Open the recovery path rather than leaving the
+      // only way forward behind a disclosure link the user has to find.
+      if (/no passkey is enrolled/i.test(message)) {
+        setRecoveryMode(true)
+        setError('No passkey registered on this Mac yet — sign in with your code, then register it.')
+      } else {
+        setError(message)
+      }
     } finally {
       setPasskeyLoading(false)
     }
