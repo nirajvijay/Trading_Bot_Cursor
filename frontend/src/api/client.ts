@@ -157,20 +157,21 @@ export function postLogin(username: string, password: string, totp?: string): Pr
   })
 }
 
+/** Ask for a Touch ID challenge. Credentials are optional: the passkey is a
+ *  discoverable credential, so the authenticator identifies the account. */
 export function postPasskeyLoginOptions(
-  username: string,
-  password: string,
+  username?: string,
+  password?: string,
 ): Promise<PasskeyOptionsResponse> {
-  return postJson<PasskeyOptionsResponse>('/account/passkey/login/options', { username, password })
+  const body = username && password ? { username, password } : {}
+  return postJson<PasskeyOptionsResponse>('/account/passkey/login/options', body)
 }
 
 export function postPasskeyLoginVerify(
-  username: string,
   challengeId: string,
   credential: unknown,
 ): Promise<MeResponse> {
   return postJson<MeResponse>('/account/passkey/login/verify', {
-    username,
     challenge_id: challengeId,
     credential,
   })

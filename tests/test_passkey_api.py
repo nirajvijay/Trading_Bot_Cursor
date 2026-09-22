@@ -71,6 +71,64 @@ class PasskeyLoginOptionsTests(unittest.TestCase):
             self.assertEqual(allowed, [bytes_to_base64url(b"cred-a")])
 
 
+class PasswordlessPasskeyLoginTests(unittest.TestCase):
+    """Touch ID alone is the normal sign-in route: no password typed first."""
+
+    def test_options_are_issued_without_any_credentials(self) -> None:
+        with AuthTestHarness() as h:
+            get_web_auth_store().save_passkey(1, b"cred-a", b"pub-a", 0)
+            result = h.client.post("/api/v1/account/passkey/login/options", json={})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertTrue(result.json()["challenge_id"])
+
+    def test_anonymous_options_do_not_name_the_enrolled_devices(self) -> None:
+        """An empty allowlist keeps the owner's credential ids private; the
+        authenticator resolves the discoverable credential by itself."""
+        with AuthTestHarness() as h:
+            get_web_auth_store().save_passkey(1, b"cred-a", b"pub-a", 0)
+            options = h.client.post(
+                "/api/v1/account/passkey/login/options", json={}
+            ).json()["options"]
+            self.assertEqual(options.get("allowCredentials", []), [])
+
+    def test_passwordless_options_still_need_an_enrolled_passkey(self) -> None:
+        with AuthTestHarness() as h:
+            result = h.client.post("/api/v1/account/passkey/login/options", json={})
+            self.assertEqual(result.status_code, 400)
+
+    def test_a_supplied_password_is_still_checked(self) -> None:
+        """Dropping the requirement must not turn into ignoring it."""
+        with AuthTestHarness() as h:
+            get_web_auth_store().save_passkey(1, b"cred-a", b"pub-a", 0)
+            result = h.client.post(
+                "/api/v1/account/passkey/login/options",
+                json={"username": h.username, "password": "wrong"},
+            )
+            self.assertEqual(result.status_code, 401)
+
+    def test_verify_rejects_an_assertion_for_another_account(self) -> None:
+        """A user handle that is not this owner's must never open a session."""
+        with AuthTestHarness() as h:
+            store = get_web_auth_store()
+            store.save_passkey(1, b"cred-a", b"pub-a", 0)
+            challenge_id = h.client.post(
+                "/api/v1/account/passkey/login/options", json={}
+            ).json()["challenge_id"]
+            result = h.client.post(
+                "/api/v1/account/passkey/login/verify",
+                json={
+                    "challenge_id": challenge_id,
+                    "credential": {
+                        "rawId": bytes_to_base64url(b"cred-a"),
+                        "response": {
+                            "userHandle": bytes_to_base64url((99).to_bytes(8, "big"))
+                        },
+                    },
+                },
+            )
+            self.assertEqual(result.status_code, 401)
+
+
 class PasskeyVerifyGuardTests(unittest.TestCase):
     def test_unknown_challenge_is_rejected(self) -> None:
         with AuthTestHarness() as h:

@@ -32,7 +32,7 @@ function StationPanel({ clock }: { clock: string }) {
   const rows: [string, string][] = [
     ['Session', todayIst()],
     ['IST', clock],
-    ['Auth', 'Password · TOTP · Passkey'],
+    ['Auth', 'Passkey · Password · TOTP'],
   ]
   return (
     <aside className="hidden md:flex flex-col justify-between gap-8 bg-on-surface p-7 text-slate-200">
@@ -57,7 +57,7 @@ function StationPanel({ clock }: { clock: string }) {
 
 interface Props {
   onLogin: (username: string, password: string, totp?: string) => Promise<void>
-  onPasskeyLogin: (username: string, password: string) => Promise<void>
+  onPasskeyLogin: () => Promise<void>
 }
 
 export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
@@ -69,9 +69,9 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
   const [loading, setLoading] = useState(false)
   const [passkeyLoading, setPasskeyLoading] = useState(false)
   // null while the capability check is still in flight, so the primary button
-  // is not swapped out underneath a user who is already typing.
+  // is not swapped out underneath someone who is already reading the form.
   const [platformAvailable, setPlatformAvailable] = useState<boolean | null>(null)
-  const [recoveryMode, setRecoveryMode] = useState(false)
+  const [passwordMode, setPasswordMode] = useState(false)
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
@@ -84,9 +84,9 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
     void isPlatformAuthenticatorAvailable().then((available) => {
       if (cancelled) return
       setPlatformAvailable(available)
-      // No Touch ID on this machine => the authenticator code is the only way
-      // in, so open that path immediately instead of hiding it behind a button.
-      if (!available) setRecoveryMode(true)
+      // No Touch ID on this machine => the password is the only way in, so
+      // open that path immediately rather than hiding it behind a button.
+      if (!available) setPasswordMode(true)
     })
     return () => {
       cancelled = true
@@ -95,10 +95,8 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
 
   const touchIdReady = platformAvailable === true
   const busy = loading || passkeyLoading
-  const canSubmit = Boolean(username.trim() && password)
-  const marketOpen = marketStatusNow() === 'OPEN'
 
-  async function handleTotpLogin() {
+  async function handlePasswordLogin() {
     setLoading(true)
     setError(null)
     try {
@@ -115,16 +113,14 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
     setPasskeyLoading(true)
     setError(null)
     try {
-      await onPasskeyLogin(username.trim(), password)
-      rememberUsername(username.trim())
+      await onPasskeyLogin()
     } catch (err) {
       const message = describePasskeyError(err, 'Touch ID sign-in failed')
-      // First run, and after every passkey is removed, there is nothing to
-      // authenticate against. Open the recovery path rather than leaving the
-      // only way forward behind a button the user has to reason about.
+      // Nothing is enrolled yet (first run, or every passkey was removed), so
+      // Touch ID cannot work at all. Open the password path and say why.
       if (/no passkey is enrolled/i.test(message)) {
-        setRecoveryMode(true)
-        setError('No passkey registered on this Mac yet — sign in with your code, then register it.')
+        setPasswordMode(true)
+        setError('No passkey registered yet — sign in with your password, then register this Mac.')
       } else {
         setError(message)
       }
@@ -135,13 +131,14 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
-    void (recoveryMode ? handleTotpLogin() : handlePasskeyLogin())
+    void (passwordMode ? handlePasswordLogin() : handlePasskeyLogin())
   }
 
   const fieldClass =
     'h-9 box-border w-full border border-outline-variant bg-surface-container-low px-2.5 text-sm text-on-surface focus:border-primary focus:bg-white focus:outline-none'
   const buttonClass =
     'h-[38px] w-full border border-primary label-caps text-[11px] font-bold disabled:opacity-50'
+  const marketOpen = marketStatusNow() === 'OPEN'
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -168,7 +165,9 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
           <form onSubmit={handleSubmit} className="flex flex-col gap-4 p-7">
             <div className="flex flex-col gap-1">
               <h2 className="m-0 text-lg font-bold tracking-[-0.01em]">Sign in</h2>
-              <p className="m-0 text-xs text-on-surface-variant">Use your owner credentials.</p>
+              <p className="m-0 text-xs text-on-surface-variant">
+                {passwordMode ? 'Use your owner credentials.' : 'Touch the sensor to continue.'}
+              </p>
             </div>
 
             {error && (
@@ -178,64 +177,65 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
               </div>
             )}
 
-            <label className="flex flex-col gap-1.5">
-              <span className="label-caps text-on-surface-variant">Username</span>
-              <input
-                className={fieldClass}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username webauthn"
-                required
-              />
-            </label>
+            {passwordMode && (
+              <>
+                <label className="flex flex-col gap-1.5">
+                  <span className="label-caps text-on-surface-variant">Username</span>
+                  <input
+                    className={fieldClass}
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    autoComplete="username"
+                    required
+                  />
+                </label>
 
-            <label className="flex flex-col gap-1.5">
-              <span className="flex justify-between">
-                <span className="label-caps text-on-surface-variant">Password</span>
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((value) => !value)}
-                  className="label-caps cursor-pointer text-primary"
-                >
-                  {showPassword ? 'Hide' : 'Show'}
-                </button>
-              </span>
-              <input
-                type={showPassword ? 'text' : 'password'}
-                className={fieldClass}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="flex justify-between">
+                    <span className="label-caps text-on-surface-variant">Password</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((value) => !value)}
+                      className="label-caps cursor-pointer text-primary"
+                    >
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </span>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    className={fieldClass}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="current-password"
+                    required
+                  />
+                </label>
 
-            {recoveryMode && (
-              <label className="flex flex-col gap-1.5">
-                <span className="flex justify-between">
-                  <span className="label-caps text-on-surface-variant">MFA code</span>
-                  <span className="label-caps text-slate-400">If enabled</span>
-                </span>
-                <input
-                  className={`${fieldClass} font-data text-[15px] font-medium tracking-[.3em]`}
-                  value={totp}
-                  onChange={(e) => setTotp(e.target.value.replace(/\D/g, ''))}
-                  inputMode="numeric"
-                  maxLength={6}
-                  autoComplete="one-time-code"
-                  placeholder="000 000"
-                  autoFocus
-                />
-              </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="flex justify-between">
+                    <span className="label-caps text-on-surface-variant">MFA code</span>
+                    <span className="label-caps text-slate-400">If enabled</span>
+                  </span>
+                  <input
+                    className={`${fieldClass} font-data text-[15px] font-medium tracking-[.3em]`}
+                    value={totp}
+                    onChange={(e) => setTotp(e.target.value.replace(/\D/g, ''))}
+                    inputMode="numeric"
+                    maxLength={6}
+                    autoComplete="one-time-code"
+                    placeholder="000 000"
+                  />
+                </label>
+              </>
             )}
 
             <div className="flex flex-col gap-4">
               <button
                 type="submit"
-                disabled={busy || !canSubmit || (!recoveryMode && !touchIdReady)}
-                className={`${buttonClass} order-0 flex items-center justify-center gap-2 bg-primary text-white hover:opacity-90`}
+                disabled={busy || (passwordMode ? !username.trim() || !password : !touchIdReady)}
+                className={`${buttonClass} flex items-center justify-center gap-2 bg-primary text-white hover:opacity-90`}
               >
-                {recoveryMode ? (
+                {passwordMode ? (
                   loading ? 'Signing in…' : 'Sign in'
                 ) : (
                   <>
@@ -249,7 +249,7 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
 
               {touchIdReady && (
                 <>
-                  <div className="order-1 flex items-center gap-2.5">
+                  <div className="flex items-center gap-2.5">
                     <div className="h-px flex-1 bg-outline-variant" />
                     <span className="label-caps text-slate-400">or</span>
                     <div className="h-px flex-1 bg-outline-variant" />
@@ -260,20 +260,21 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
                     onClick={() => {
                       setError(null)
                       setTotp('')
-                      setRecoveryMode((value) => !value)
+                      setPassword('')
+                      setPasswordMode((value) => !value)
                     }}
-                    className={`${buttonClass} order-2 bg-white text-primary hover:bg-sky-50`}
+                    className={`${buttonClass} bg-white text-primary hover:bg-sky-50`}
                   >
-                    {recoveryMode ? 'Use Touch ID instead' : 'Use authenticator code'}
+                    {passwordMode ? 'Use Touch ID instead' : 'Use password instead'}
                   </button>
                 </>
               )}
             </div>
 
             <p className="m-0 text-[11px] leading-4 text-on-surface-variant text-pretty">
-              {recoveryMode
-                ? 'The authenticator code is the recovery path — it needs your phone.'
-                : 'Touch ID needs your username and password first. Your authenticator code stays available as recovery.'}
+              {passwordMode
+                ? 'The password path also needs your authenticator code, which lives on your phone.'
+                : 'Your fingerprint is the whole sign-in — no password, no code from your phone.'}
             </p>
           </form>
         </div>

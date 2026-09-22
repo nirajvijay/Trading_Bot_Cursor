@@ -54,8 +54,12 @@ class LoginRequest(BaseModel):
 
 
 class PasskeyLoginOptionsRequest(BaseModel):
-    username: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
+    # Both optional: a passkey is a discoverable credential (registered with
+    # resident_key=REQUIRED), so the authenticator already knows who it is
+    # signing in as. A caller that does send a password still has it checked,
+    # so the older password-first flow keeps working.
+    username: Optional[str] = None
+    password: Optional[str] = None
 
 
 class PasskeyLoginOptionsResponse(BaseModel):
@@ -64,7 +68,7 @@ class PasskeyLoginOptionsResponse(BaseModel):
 
 
 class PasskeyLoginVerifyRequest(BaseModel):
-    username: str = Field(..., min_length=1)
+    username: Optional[str] = None
     challenge_id: str = Field(..., min_length=1)
     credential: dict[str, object]
 
@@ -241,24 +245,43 @@ def login(body: LoginRequest, request: Request, response: Response) -> MeRespons
 def passkey_login_options(
     body: PasskeyLoginOptionsRequest, request: Request
 ) -> PasskeyLoginOptionsResponse:
-    """Verify the password, then issue a short-lived Touch ID challenge."""
+    """Issue a short-lived Touch ID challenge.
+
+    A password is no longer required to get one. The passkey is a discoverable
+    credential held in the Secure Enclave and every assertion demands user
+    verification, so the ceremony itself proves both possession of this Mac and
+    the owner's fingerprint (or the device passcode macOS falls back to).
+    """
     if not settings.WEB_AUTH_ENABLED:
         raise HTTPException(status_code=400, detail="Website auth is disabled")
     check_rate_limit(ACTION_LOGIN, request, username=body.username)
     store = get_web_auth_store()
-    user = store.verify_login(body.username, body.password)
-    if user is None:
-        record_auth_failure(ACTION_LOGIN, request, username=body.username)
-        write_audit("web_passkey_login_failed", reason="invalid_credentials")
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    if body.password is not None:
+        if not body.username:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        user = store.verify_login(body.username, body.password)
+        if user is None:
+            record_auth_failure(ACTION_LOGIN, request, username=body.username)
+            write_audit("web_passkey_login_failed", reason="invalid_credentials")
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+    else:
+        user = store.get_user()
+        if user is None:
+            raise HTTPException(status_code=400, detail="No owner configured")
     keys = store.list_passkeys(user.id)
     if not keys:
         raise HTTPException(status_code=400, detail="No passkey is enrolled")
+    # An anonymous caller gets an empty allowlist: the authenticator resolves
+    # the credential itself, and naming the enrolled ids to someone who has
+    # proved nothing would hand out a list of this owner's registered devices.
+    allow = (
+        [PublicKeyCredentialDescriptor(id=key.credential_id) for key in keys]
+        if body.password is not None
+        else []
+    )
     options = generate_authentication_options(
         rp_id=settings.WEBAUTHN_RP_ID,
-        allow_credentials=[
-            PublicKeyCredentialDescriptor(id=key.credential_id) for key in keys
-        ],
+        allow_credentials=allow,
         user_verification=UserVerificationRequirement.REQUIRED,
     )
     challenge = store.create_passkey_challenge(
@@ -279,7 +302,10 @@ def passkey_login_verify(
     check_rate_limit(ACTION_MFA_VERIFY, request, username=body.username)
     store = get_web_auth_store()
     user = store.get_user()
-    if user is None or user.username != body.username:
+    # A username is optional now, but when one is supplied it must still be the
+    # owner's -- otherwise a caller could assert against a name that is not the
+    # account the passkey belongs to.
+    if user is None or (body.username is not None and user.username != body.username):
         raise HTTPException(status_code=401, detail="Passkey authentication failed")
     challenge = store.consume_passkey_challenge(
         body.challenge_id, user.id, "authentication"
@@ -288,6 +314,21 @@ def passkey_login_verify(
     if challenge is None or not isinstance(credential_id, str):
         record_auth_failure(ACTION_MFA_VERIFY, request, username=body.username)
         raise HTTPException(status_code=401, detail="Passkey authentication failed")
+    # Discoverable-credential sign-in returns the user handle the credential was
+    # registered against. Bind it to this owner so an assertion minted for some
+    # other account can never be replayed into this session.
+    raw_handle = (body.credential.get("response") or {})
+    handle = raw_handle.get("userHandle") if isinstance(raw_handle, dict) else None
+    if isinstance(handle, str) and handle:
+        try:
+            if base64url_to_bytes(handle) != user.id.to_bytes(8, "big"):
+                record_auth_failure(ACTION_MFA_VERIFY, request, username=body.username)
+                write_audit("web_passkey_login_failed", reason="user_handle_mismatch")
+                raise HTTPException(
+                    status_code=401, detail="Passkey authentication failed"
+                )
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Passkey authentication failed")
     try:
         key = store.get_passkey(base64url_to_bytes(credential_id), user.id)
     except ValueError:
