@@ -84,6 +84,7 @@ function DetailModal({ symbol, sessionDate, onClose }: { symbol: string; session
 
 export function RadarHeatMap({
   rows,
+  sessionTriggered,
   loading,
   search,
   sessionDate,
@@ -96,6 +97,7 @@ export function RadarHeatMap({
   onStopObservation,
 }: {
   rows: RadarRow[]
+  sessionTriggered?: number | null
   loading: boolean
   search: string
   sessionDate: string
@@ -213,12 +215,12 @@ export function RadarHeatMap({
         </div>
         <div className="rhm-stats">
           <div className="rhm-stat triggered">
-            <div className="rhm-stat-num">{counts.TRIGGERED}</div>
-            <div className="rhm-stat-label">Triggered</div>
+            <div className="rhm-stat-num">{sessionTriggered ?? counts.TRIGGERED}</div>
+            <div className="rhm-stat-label">Triggered (session)</div>
           </div>
           <div className="rhm-stat rejected">
             <div className="rhm-stat-num">{counts.REJECTED}</div>
-            <div className="rhm-stat-label">Rejected</div>
+            <div className="rhm-stat-label">Rejected (current)</div>
           </div>
         </div>
       </div>
