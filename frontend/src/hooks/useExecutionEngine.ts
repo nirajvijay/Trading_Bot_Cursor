@@ -23,9 +23,9 @@ const RUNNING_POLL_MS = 1000
 const IDLE_POLL_MS = 5000
 
 export const DEFAULT_CAPS: ExecutionSessionCaps = {
-  per_trade_cap_rupees: 900,
-  per_trade_cap_vwap_limited_rupees: 450,
-  daily_loss_cap_rupees: 3000,
+  per_trade_cap_rupees: 50,
+  per_trade_cap_vwap_limited_rupees: 25,
+  daily_loss_cap_rupees: 150,
   total_capital_rupees: 300000,
   leverage_factor: 5,
 }
