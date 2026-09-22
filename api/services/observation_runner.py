@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -32,6 +34,9 @@ DEFAULT_STATUS_FILE = config.runtime_cache_dir() / "runner_status.json"
 RUNNER_STALE_SECONDS = 30
 SESSION_OPEN_MINUTE = 9 * 60 + 15
 SESSION_CLOSE_MINUTE = 15 * 60 + 30
+EXIT_STATUS_FILENAME = "observation_runner_exit.json"
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_ist(dt: datetime) -> datetime:
@@ -60,6 +65,85 @@ def expected_stop_at_iso(now: Optional[datetime] = None) -> str:
 def _status_file() -> Path:
     raw = config.RUNNER_STATUS_FILE or str(DEFAULT_STATUS_FILE)
     return Path(raw)
+
+
+def _exit_status_file() -> Path:
+    return config.runtime_cache_dir() / EXIT_STATUS_FILENAME
+
+
+def _observation_log_path(session_date: str) -> Path:
+    log_dir = Path(
+        os.environ.get("OBSERVATION_LOG_DIR", "/opt/nifty-radar/data/logs")
+    )
+    return log_dir / f"observation-{session_date}.log"
+
+
+def _read_last_exit_status() -> dict:
+    path = _exit_status_file()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _record_runner_exit(
+    *,
+    pid: int,
+    session_date: str,
+    exit_code: int,
+    log_path: Path,
+) -> None:
+    path = _exit_status_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": pid,
+        "session_date": session_date,
+        "exit_code": exit_code,
+        "exited_at": datetime.now(IST).isoformat(timespec="seconds"),
+        "log_file": str(log_path),
+    }
+    tmp_path = path.with_name(f"{path.name}.{pid}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _reap_runner(
+    proc: subprocess.Popen,
+    *,
+    lock_file: Path,
+    session_date: str,
+    log_path: Path,
+    log_handle,
+) -> None:
+    """Wait for the child so it cannot remain as a zombie after exiting."""
+    try:
+        exit_code = proc.wait()
+        _record_runner_exit(
+            pid=proc.pid,
+            session_date=session_date,
+            exit_code=exit_code,
+            log_path=log_path,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to reap observation runner pid=%s", proc.pid)
+    finally:
+        try:
+            log_handle.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to close observation log pid=%s", proc.pid)
+
+        # Do not clear a newer runner's lease if a replacement started while
+        # this child was exiting.
+        lease = read_start_lock()
+        if (
+            lease is not None
+            and lease.pid == proc.pid
+            and lease.session_date == session_date
+        ):
+            release_start_lock(lock_file)
 
 
 def _today_ist() -> str:
@@ -229,6 +313,7 @@ def compute_readiness(session_date: Optional[str] = None, *, now: Optional[datet
         reason = "" if market_open else "Ready to connect; waiting for regular market data at 09:15 IST"
         can_start = True
 
+    last_exit = _read_last_exit_status()
     return {
         "checklist_ok": checklist_ok,
         "checklist_status": checklist["overall_status"],
@@ -239,6 +324,10 @@ def compute_readiness(session_date: Optional[str] = None, *, now: Optional[datet
         "reason": reason,
         "session_date": checklist["session_date"],
         "expected_stop_at": expected_stop_at_iso(instant) if start_window else None,
+        "last_exit_code": last_exit.get("exit_code"),
+        "last_exit_session_date": last_exit.get("session_date"),
+        "last_exit_at": last_exit.get("exited_at"),
+        "last_exit_log_file": last_exit.get("log_file"),
     }
 
 
@@ -272,16 +361,23 @@ def start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, 
     env = os.environ.copy()
     env["RUNNER_STATUS_FILE"] = str(_status_file())
 
+    log_path = _observation_log_path(date)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = None
+
     try:
+        log_handle = log_path.open("ab", buffering=0)
         proc = subprocess.Popen(
             command,
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
     except OSError as exc:
+        if log_handle is not None:
+            log_handle.close()
         release_start_lock(lock_file)
         return False, f"Failed to start observation runner: {exc}", None
 
@@ -292,6 +388,19 @@ def start_observation_runner(session_date: Optional[str] = None) -> Tuple[bool, 
         # Lease file still exists from acquire; best-effort update failed.
         # Keep original lease (API pid) so the gap remains covered.
         pass
+
+    threading.Thread(
+        target=_reap_runner,
+        kwargs={
+            "proc": proc,
+            "lock_file": lock_file,
+            "session_date": date,
+            "log_path": log_path,
+            "log_handle": log_handle,
+        },
+        name=f"reap-observation-{proc.pid}",
+        daemon=True,
+    ).start()
 
     return True, f"Observation runner started (pid {proc.pid})", proc.pid
 
