@@ -26,14 +26,28 @@ function istClock(now: Date): string {
   return now.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false })
 }
 
-/** Dark brand panel. Design calls this the "Session only" panelContent variant:
- *  no image slot, because there is no hero image to put in it yet. */
-function StationPanel({ clock }: { clock: string }) {
-  const rows: [string, string][] = [
-    ['Session', todayIst()],
-    ['IST', clock],
-    ['Auth', 'Passkey · Password · TOTP'],
-  ]
+type Mode = 'touch' | 'password'
+
+/** Dark brand panel. No image slot -- there is no hero image for it yet.
+ *  Auth row highlights whichever method is in play; "This device" surfaces
+ *  the platform-authenticator check that decides whether Touch ID can even
+ *  be offered, so a machine without it doesn't look like a random dead end. */
+function StationPanel({
+  clock,
+  mode,
+  platformAvailable,
+}: {
+  clock: string
+  mode: Mode
+  platformAvailable: boolean | null
+}) {
+  const activeCls = 'text-white'
+  const inactiveCls = 'text-slate-500'
+  const deviceLabel =
+    platformAvailable === null ? 'Checking…' : platformAvailable ? 'Touch ID ready' : 'No Touch ID'
+  const deviceCls =
+    platformAvailable === null ? 'text-slate-500' : platformAvailable ? 'text-white' : 'text-amber-400'
+
   return (
     <aside className="hidden md:flex flex-col justify-between gap-8 bg-on-surface p-7 text-slate-200">
       <div className="flex flex-col gap-2.5">
@@ -44,12 +58,28 @@ function StationPanel({ clock }: { clock: string }) {
         </p>
       </div>
       <div className="flex flex-col border-t border-slate-700">
-        {rows.map(([label, value]) => (
-          <div key={label} className="flex justify-between gap-3 border-b border-slate-700 py-2.5">
-            <span className="label-caps text-slate-400">{label}</span>
-            <span className="font-data text-xs font-medium text-white">{value}</span>
-          </div>
-        ))}
+        <div className="flex justify-between gap-3 border-b border-slate-700 py-2.5">
+          <span className="label-caps text-slate-400">Session</span>
+          <span className="font-data text-xs font-medium text-white">{todayIst()}</span>
+        </div>
+        <div className="flex justify-between gap-3 border-b border-slate-700 py-2.5">
+          <span className="label-caps text-slate-400">IST</span>
+          <span className="font-data text-xs font-medium text-white">{clock}</span>
+        </div>
+        <div className="flex justify-between gap-3 border-b border-slate-700 py-2.5">
+          <span className="label-caps text-slate-400">Auth</span>
+          <span className="font-data text-xs font-medium flex gap-1.5">
+            <span className={mode === 'touch' ? activeCls : inactiveCls}>Passkey</span>
+            <span className="text-slate-600">·</span>
+            <span className={mode === 'password' ? activeCls : inactiveCls}>Password</span>
+            <span className="text-slate-600">·</span>
+            <span className={mode === 'password' ? activeCls : inactiveCls}>TOTP</span>
+          </span>
+        </div>
+        <div className="flex justify-between gap-3 py-2.5">
+          <span className="label-caps text-slate-400">This device</span>
+          <span className={`font-data text-xs font-medium ${deviceCls}`}>{deviceLabel}</span>
+        </div>
       </div>
     </aside>
   )
@@ -61,7 +91,8 @@ interface Props {
 }
 
 export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
-  const [username, setUsername] = useState(readLastUsername)
+  const [rememberedUsername] = useState(readLastUsername)
+  const [username, setUsername] = useState(rememberedUsername)
   const [password, setPassword] = useState('')
   const [totp, setTotp] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -95,6 +126,8 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
 
   const touchIdReady = platformAvailable === true
   const busy = loading || passkeyLoading
+  const mode: Mode = passwordMode ? 'password' : 'touch'
+  const isRemembered = rememberedUsername !== '' && username === rememberedUsername
 
   async function handlePasswordLogin() {
     setLoading(true)
@@ -160,27 +193,68 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
 
       <div className="flex flex-1 items-center justify-center overflow-auto p-6">
         <div className="grid w-full max-w-[400px] border border-outline-variant bg-white md:w-[740px] md:max-w-none md:grid-cols-[340px_400px]">
-          <StationPanel clock={istClock(now)} />
+          <StationPanel clock={istClock(now)} mode={mode} platformAvailable={platformAvailable} />
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-4 p-7">
-            <div className="flex flex-col gap-1">
-              <h2 className="m-0 text-lg font-bold tracking-[-0.01em]">Sign in</h2>
-              <p className="m-0 text-xs text-on-surface-variant">
-                {passwordMode ? 'Use your owner credentials.' : 'Touch the sensor to continue.'}
-              </p>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-1">
+                <h2 className="m-0 text-lg font-bold tracking-[-0.01em]">Sign in</h2>
+                <p className="m-0 text-xs text-on-surface-variant">
+                  {passwordMode ? 'Use your owner credentials.' : 'Touch the sensor to continue.'}
+                </p>
+              </div>
+              <span className="label-caps whitespace-nowrap border border-outline-variant bg-surface-container px-2 py-1 text-on-surface-variant">
+                {passwordMode ? 'Password + TOTP' : 'Passkey'}
+              </span>
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+              <div className="flex items-start gap-2 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
                 <span className="material-symbols-outlined text-base leading-none">error</span>
-                {error}
+                <span>{error}</span>
               </div>
+            )}
+
+            {!passwordMode && (
+              <button
+                type="submit"
+                disabled={busy || !touchIdReady}
+                className={`flex min-h-[170px] flex-1 flex-col items-center justify-center gap-3.5 border font-sans text-on-surface disabled:opacity-50 ${
+                  passkeyLoading
+                    ? 'border-primary bg-surface-container-low'
+                    : 'border-outline-variant bg-white hover:bg-surface-container-low'
+                }`}
+              >
+                <span
+                  className={`flex size-[72px] items-center justify-center rounded-full border bg-white ${
+                    passkeyLoading ? 'border-primary nr-ring' : 'border-outline-variant'
+                  }`}
+                >
+                  <span
+                    className="material-symbols-outlined text-primary"
+                    style={{ fontSize: '44px', lineHeight: '44px' }}
+                  >
+                    fingerprint
+                  </span>
+                </span>
+                <span className="flex flex-col items-center gap-1">
+                  <span className="text-[13px] font-bold">
+                    {passkeyLoading ? 'Waiting for Touch ID…' : 'Sign in with Touch ID'}
+                  </span>
+                  <span className="text-[11px] text-on-surface-variant">
+                    {passkeyLoading ? 'Rest your finger on the sensor' : 'Click, then touch the sensor'}
+                  </span>
+                </span>
+              </button>
             )}
 
             {passwordMode && (
               <>
                 <label className="flex flex-col gap-1.5">
-                  <span className="label-caps text-on-surface-variant">Username</span>
+                  <span className="flex justify-between">
+                    <span className="label-caps text-on-surface-variant">Username</span>
+                    {isRemembered && <span className="label-caps text-slate-400">Remembered</span>}
+                  </span>
                   <input
                     className={fieldClass}
                     value={username}
@@ -226,54 +300,48 @@ export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
                     placeholder="000 000"
                   />
                 </label>
+
+                <button
+                  type="submit"
+                  disabled={busy || !username.trim() || !password}
+                  className={`${buttonClass} bg-primary text-white hover:opacity-90`}
+                >
+                  {loading ? 'Signing in…' : 'Sign in'}
+                </button>
               </>
             )}
 
-            <div className="flex flex-col gap-4">
-              <button
-                type="submit"
-                disabled={busy || (passwordMode ? !username.trim() || !password : !touchIdReady)}
-                className={`${buttonClass} flex items-center justify-center gap-2 bg-primary text-white hover:opacity-90`}
-              >
-                {passwordMode ? (
-                  loading ? 'Signing in…' : 'Sign in'
-                ) : (
-                  <>
-                    <span className="material-symbols-outlined text-[18px] leading-none tracking-normal normal-case">
-                      fingerprint
-                    </span>
-                    {passkeyLoading ? 'Waiting for Touch ID…' : 'Sign in with Touch ID'}
-                  </>
-                )}
-              </button>
-
-              {touchIdReady && (
-                <>
-                  <div className="flex items-center gap-2.5">
-                    <div className="h-px flex-1 bg-outline-variant" />
-                    <span className="label-caps text-slate-400">or</span>
-                    <div className="h-px flex-1 bg-outline-variant" />
-                  </div>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => {
-                      setError(null)
-                      setTotp('')
-                      setPassword('')
-                      setPasswordMode((value) => !value)
-                    }}
-                    className={`${buttonClass} bg-white text-primary hover:bg-sky-50`}
-                  >
-                    {passwordMode ? 'Use Touch ID instead' : 'Use password instead'}
-                  </button>
-                </>
-              )}
-            </div>
+            {touchIdReady && (
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-px flex-1 bg-outline-variant" />
+                  <span className="label-caps text-slate-400">or</span>
+                  <div className="h-px flex-1 bg-outline-variant" />
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setError(null)
+                    setTotp('')
+                    setPassword('')
+                    setPasswordMode((value) => !value)
+                  }}
+                  className={`${buttonClass} flex items-center justify-center gap-2 bg-white text-primary hover:bg-sky-50`}
+                >
+                  <span className="material-symbols-outlined text-[18px] leading-none tracking-normal normal-case">
+                    {passwordMode ? 'fingerprint' : 'password'}
+                  </span>
+                  {passwordMode ? 'Use Touch ID instead' : 'Use password instead'}
+                </button>
+              </div>
+            )}
 
             <p className="m-0 text-[11px] leading-4 text-on-surface-variant text-pretty">
               {passwordMode
-                ? 'The password path also needs your authenticator code, which lives on your phone.'
+                ? touchIdReady
+                  ? 'The password path also needs your authenticator code, which lives on your phone.'
+                  : "Touch ID isn't available on this device, so password and authenticator code are the way in."
                 : 'Your fingerprint is the whole sign-in — no password, no code from your phone.'}
             </p>
           </form>
