@@ -108,11 +108,10 @@ export default function App() {
     setShowPasskeySetup(data.passkey_count === 0)
   }, [])
 
-  const handlePasskeyLogin = useCallback(async (username: string, password: string) => {
-    if (!username || !password) throw new Error('Enter your username and password first')
-    const { challenge_id, options } = await postPasskeyLoginOptions(username, password)
+  const handlePasskeyLogin = useCallback(async () => {
+    const { challenge_id, options } = await postPasskeyLoginOptions()
     const credential = await getPasskey(options)
-    const data = await postPasskeyLoginVerify(username, challenge_id, credential)
+    const data = await postPasskeyLoginVerify(challenge_id, credential)
     setMe(data)
     setShowPasskeySetup(false)
   }, [])
