@@ -4,9 +4,11 @@ import { useRadarDashboard } from './hooks/useRadarDashboard'
 import { usePreMarketChecklist } from './hooks/usePreMarketChecklist'
 import { useObservationReadiness } from './hooks/useObservationReadiness'
 import { useTokenCheck } from './hooks/useTokenCheck'
-import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postStartObservation, postStopObservation, setAuthHandlers } from './api/client'
+import { ApiError, fetchMe, postKiteStart, postLogin, postLogout, postPasskeyLoginOptions, postPasskeyLoginVerify, postStartObservation, postStopObservation, setAuthHandlers } from './api/client'
 import { LoginPage } from './components/LoginPage'
 import { MfaSetupPage } from './components/MfaSetupPage'
+import { PasskeySetupPrompt } from './components/PasskeySetupPrompt'
+import { getPasskey } from './lib/passkey'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
 import { AdminConsolePage } from './components/admin/AdminConsolePage'
@@ -26,6 +28,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('radar')
   const [sessionDate] = useState(todayIst())
   const [search, setSearch] = useState('')
+  const [showPasskeySetup, setShowPasskeySetup] = useState(false)
   const authenticated = Boolean(me)
   const radarEnabled = authenticated && activeTab === 'radar'
   const {
@@ -100,6 +103,16 @@ export default function App() {
   const handleLogin = useCallback(async (username: string, password: string, totp?: string) => {
     const data = await postLogin(username, password, totp)
     setMe(data)
+    setShowPasskeySetup(data.passkey_count === 0)
+  }, [])
+
+  const handlePasskeyLogin = useCallback(async (username: string, password: string) => {
+    if (!username || !password) throw new Error('Enter your username and password first')
+    const { challenge_id, options } = await postPasskeyLoginOptions(username, password)
+    const credential = await getPasskey(options)
+    const data = await postPasskeyLoginVerify(username, challenge_id, credential)
+    setMe(data)
+    setShowPasskeySetup(false)
   }, [])
 
   const handleLogout = useCallback(async () => {
@@ -195,7 +208,7 @@ export default function App() {
   }
 
   if (!authenticated) {
-    return <LoginPage onLogin={handleLogin} />
+    return <LoginPage onLogin={handleLogin} onPasskeyLogin={handlePasskeyLogin} />
   }
 
   if (me && !me.mfa_enabled) {
@@ -211,19 +224,20 @@ export default function App() {
   }
 
   return (
-    <StationConsoleShell
-      activeTab={activeTab}
-      onTabChange={setActiveTab}
-      sessionDate={sessionDate}
-      search={search}
-      onSearchChange={setSearch}
-      username={me?.username}
-      onLogout={() => void handleLogout()}
-      runnerPresence={runnerPresence}
-      feedStatus={feedStatus}
-      brokerAuthOk={brokerAuthOk}
-      checklistGateLocked={checklistGateLocked}
-    >
+    <>
+      <StationConsoleShell
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        sessionDate={sessionDate}
+        search={search}
+        onSearchChange={setSearch}
+        username={me?.username}
+        onLogout={() => void handleLogout()}
+        runnerPresence={runnerPresence}
+        feedStatus={feedStatus}
+        brokerAuthOk={brokerAuthOk}
+        checklistGateLocked={checklistGateLocked}
+      >
       <main className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {activeTab === 'radar' ? (
           <>
@@ -271,6 +285,8 @@ export default function App() {
       {activeTab !== 'checklist' && (
         <AppFooter activeTab={activeTab} status={status} runnerPresence={runnerPresence} rows={rows} />
       )}
-    </StationConsoleShell>
+      </StationConsoleShell>
+      {showPasskeySetup && <PasskeySetupPrompt onDone={() => setShowPasskeySetup(false)} />}
+    </>
   )
 }

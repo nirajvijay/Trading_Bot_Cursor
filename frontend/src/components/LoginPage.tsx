@@ -2,14 +2,16 @@ import { useState, type FormEvent } from 'react'
 
 interface Props {
   onLogin: (username: string, password: string, totp?: string) => Promise<void>
+  onPasskeyLogin: (username: string, password: string) => Promise<void>
 }
 
-export function LoginPage({ onLogin }: Props) {
+export function LoginPage({ onLogin, onPasskeyLogin }: Props) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [totp, setTotp] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [passkeyLoading, setPasskeyLoading] = useState(false)
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -21,6 +23,18 @@ export function LoginPage({ onLogin }: Props) {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handlePasskeyLogin() {
+    setPasskeyLoading(true)
+    setError(null)
+    try {
+      await onPasskeyLogin(username.trim(), password)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Touch ID sign-in failed')
+    } finally {
+      setPasskeyLoading(false)
     }
   }
 
@@ -80,6 +94,17 @@ export function LoginPage({ onLogin }: Props) {
         >
           {loading ? 'Signing in...' : 'Sign in'}
         </button>
+        <button
+          type="button"
+          disabled={loading || passkeyLoading || !username.trim() || !password}
+          onClick={() => void handlePasskeyLogin()}
+          className="w-full border border-primary text-primary py-2 label-caps font-bold hover:bg-sky-50 disabled:opacity-50"
+        >
+          {passkeyLoading ? 'Waiting for Touch ID...' : 'Sign in with Touch ID'}
+        </button>
+        <p className="text-[10px] leading-4 text-on-surface-variant">
+          Use your Mac fingerprint or device passcode. Your authenticator code remains available as recovery.
+        </p>
       </form>
     </div>
   )

@@ -9,6 +9,7 @@ import type {
   LoginUrlResponse,
   MeResponse,
   MfaSetupResponse,
+  PasskeyOptionsResponse,
   ObservationReadiness,
   ObservationStartResponse,
   ObservationStopResponse,
@@ -152,6 +153,39 @@ export function postLogin(username: string, password: string, totp?: string): Pr
     username,
     password,
     ...(totp ? { totp } : {}),
+  })
+}
+
+export function postPasskeyLoginOptions(
+  username: string,
+  password: string,
+): Promise<PasskeyOptionsResponse> {
+  return postJson<PasskeyOptionsResponse>('/account/passkey/login/options', { username, password })
+}
+
+export function postPasskeyLoginVerify(
+  username: string,
+  challengeId: string,
+  credential: unknown,
+): Promise<MeResponse> {
+  return postJson<MeResponse>('/account/passkey/login/verify', {
+    username,
+    challenge_id: challengeId,
+    credential,
+  })
+}
+
+export function postPasskeyRegisterOptions(): Promise<PasskeyOptionsResponse> {
+  return postJson<PasskeyOptionsResponse>('/account/passkey/register/options', {})
+}
+
+export function postPasskeyRegisterVerify(
+  challengeId: string,
+  credential: unknown,
+): Promise<{ success: boolean; message: string }> {
+  return postJson('/account/passkey/register/verify', {
+    challenge_id: challengeId,
+    credential,
   })
 }
 

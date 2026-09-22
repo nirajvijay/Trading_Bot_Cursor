@@ -160,6 +160,12 @@ export interface MeResponse {
   mfa_required: boolean
   step_up_active: boolean
   auth_enabled: boolean
+  passkey_count: number
+}
+
+export interface PasskeyOptionsResponse {
+  challenge_id: string
+  options: Record<string, unknown>
 }
 
 export interface MfaSetupResponse {

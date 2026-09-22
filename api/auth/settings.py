@@ -62,6 +62,18 @@ WEB_AUTH_COOKIE_SECURE = _env_bool(
     "WEB_AUTH_COOKIE_SECURE",
     APP_ENV == "production",
 )
+WEBAUTHN_RP_ID = (
+    os.environ.get("WEBAUTHN_RP_ID")
+    or ("njtrading.website" if APP_ENV == "production" else "localhost")
+).strip()
+WEBAUTHN_ORIGIN = (
+    os.environ.get("WEBAUTHN_ORIGIN")
+    or (
+        "https://njtrading.website"
+        if APP_ENV == "production"
+        else "http://localhost:5173"
+    )
+).strip()
 WEB_AUTH_ORIGIN_ALLOWLIST = tuple(
     origin.strip()
     for origin in (
@@ -126,6 +138,10 @@ def validate_startup_settings() -> None:
         raise RuntimeError(
             "KITE_EXPECTED_USER_ID must be set when APP_ENV=production"
         )
+    if not WEBAUTHN_RP_ID or not WEBAUTHN_ORIGIN.startswith("https://"):
+        raise RuntimeError(
+            "WEBAUTHN_RP_ID and an https:// WEBAUTHN_ORIGIN are required in production"
+        )
     if not WEB_AUTH_COOKIE_SECURE:
         raise RuntimeError(
             "WEB_AUTH_COOKIE_SECURE must be true when APP_ENV=production"
@@ -162,6 +178,7 @@ def reload_from_environ() -> None:
     global DATA_ROOT, SECRETS_ROOT
     global WEB_AUTH_DB_PATH, KITE_OAUTH_STATE_DB_PATH, AUDIT_LOG_PATH, KITE_SECRETS_PATH
     global APP_ENV, WEB_AUTH_ENABLED, WEB_AUTH_MFA_REQUIRED, WEB_AUTH_COOKIE_SECURE
+    global WEBAUTHN_RP_ID, WEBAUTHN_ORIGIN
     global WEB_AUTH_ORIGIN_ALLOWLIST, SESSION_TTL_SECONDS, STEP_UP_TTL_SECONDS
     global KITE_OAUTH_TTL_SECONDS, KITE_PASTE_LOGIN_ENABLED, KITE_AUTO_LOGIN_ENABLED
     global KITE_EXPECTED_USER_ID
@@ -198,6 +215,18 @@ def reload_from_environ() -> None:
         "WEB_AUTH_COOKIE_SECURE",
         APP_ENV == "production",
     )
+    WEBAUTHN_RP_ID = (
+        os.environ.get("WEBAUTHN_RP_ID")
+        or ("njtrading.website" if APP_ENV == "production" else "localhost")
+    ).strip()
+    WEBAUTHN_ORIGIN = (
+        os.environ.get("WEBAUTHN_ORIGIN")
+        or (
+            "https://njtrading.website"
+            if APP_ENV == "production"
+            else "http://localhost:5173"
+        )
+    ).strip()
     WEB_AUTH_ORIGIN_ALLOWLIST = tuple(
         origin.strip()
         for origin in (
