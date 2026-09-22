@@ -343,7 +343,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--queue-maxsize", type=int, default=10_000)
     p.add_argument("--stale-seconds", type=float, default=30.0)
-    p.add_argument("--health-interval", type=float, default=10.0)
+    # Keep the status heartbeat comfortably below the execution engine's
+    # five-second feed-stale safety cutoff.
+    p.add_argument("--health-interval", type=float, default=2.0)
     p.add_argument(
         "--status-file",
         type=Path,
@@ -700,7 +702,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     metrics_stop = threading.Event()
 
     def _metrics_loop() -> None:
-        while not metrics_stop.wait(max(args.health_interval, 5.0)):
+        while not metrics_stop.wait(max(args.health_interval, 1.0)):
             sm = detector.metrics.snapshot()
             pm = engine.metrics.snapshot()
             cm = continuation.metrics.snapshot()
