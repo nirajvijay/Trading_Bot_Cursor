@@ -42,6 +42,18 @@ instrument dump around 08:30, so the run starts at 08:40 and stops at the 09:15
 open. It runs once per day; after a block, recovery is manual from the page.
 An abnormal process death is restarted by systemd; stage attempts survive it.
 
+## Observation autostart
+
+The API service starts observation once per day, after the automatic run has
+completed with every stage valid. It checks every 30 seconds from 09:00 (the
+earliest observation start) until the 09:15 open, and uses the same start path
+as the website's Start button. It never starts after a blocked, running, manual
+or dirty checklist, never restarts a running observation, and makes at most one
+attempt per day (`runtime-cache/observation-autostart-YYYY-MM-DD.marker`). The
+outcome is appended to the daily morning log. Only observation starts; the
+execution engine and trading remain manual. It runs only with APP_ENV=production
+and needs no separate flag: it acts only on days the morning job completed.
+
 ## State and concurrency
 
 `runtime-cache/checklist-runs.db` stores one current run record per IST date,
