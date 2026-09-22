@@ -14,7 +14,6 @@ from nse_trading_calendar import prior_nse_trading_session
 from session_quality import (
     LOOKBACK_COMPLETED_SESSIONS,
     MIN_VALID_SESSION_MINUTES,
-    NOMINAL_SESSION_MINUTES,
     REQUIRED_LAST_MINUTE_MIN,
     discover_completed_sessions,
     evaluate_symbol_session,
@@ -238,7 +237,8 @@ def _baseline_token_coverage(conn: sqlite3.Connection, as_of: str) -> Tuple[int,
             SELECT
                 tradingsymbol,
                 COUNT(DISTINCT minute_of_day),
-                COUNT(DISTINCT CASE WHEN is_reliable = 1 THEN minute_of_day END)
+                COUNT(DISTINCT CASE WHEN is_reliable = 1 THEN minute_of_day END),
+                MAX(minute_of_day)
             FROM baselines
             WHERE baseline_as_of_date = ?
             GROUP BY tradingsymbol
@@ -246,16 +246,23 @@ def _baseline_token_coverage(conn: sqlite3.Connection, as_of: str) -> Tuple[int,
             (as_of,),
         ).fetchall()
         by_symbol = {
-            str(row[0]): (int(row[1] or 0), int(row[2] or 0))
+            str(row[0]): (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0))
             for row in rows
         }
         covered = 0
         reliable = 0
         for symbol in NIFTY_100_SYMBOLS:
-            vector_count, reliable_count = by_symbol.get(symbol, (0, 0))
-            if vector_count >= NOMINAL_SESSION_MINUTES:
+            vector_count, reliable_count, last_minute = by_symbol.get(symbol, (0, 0, 0))
+            # Baselines are intentionally safe through 15:00, not the full
+            # 15:29 market-data horizon. Keep the same quality contract as
+            # one-minute history: enough valid minutes and a late-session bar.
+            valid_window = (
+                vector_count >= MIN_VALID_SESSION_MINUTES
+                and last_minute >= REQUIRED_LAST_MINUTE_MIN
+            )
+            if valid_window:
                 covered += 1
-                if reliable_count >= NOMINAL_SESSION_MINUTES:
+                if reliable_count >= MIN_VALID_SESSION_MINUTES:
                     reliable += 1
         return covered, reliable
     except sqlite3.OperationalError:

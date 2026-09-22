@@ -311,6 +311,22 @@ class ChecklistQueryTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs_update")
         self.assertIn("0/100 symbols at required date", result["message"])
 
+    def test_baselines_accept_safe_1500_session_window(self) -> None:
+        db = self.root / "baselines.db"
+        _init_baselines_db(db)
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "DELETE FROM baselines WHERE baseline_as_of_date = ? AND minute_of_day > ?",
+            ("2026-07-31", 914),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _build_baselines(db, "2026-08-03")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["symbols_covered"], 100)
+        self.assertEqual(result["reliable_count"], 100)
+
     def test_five_minute_rejects_truncated_prior_session(self) -> None:
         historical = self.root / "historical.db"
         instruments = self.root / "instruments.db"

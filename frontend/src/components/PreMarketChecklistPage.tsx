@@ -81,9 +81,18 @@ function summarizeBlocker(message: string): {
       detail: incomplete[2] + '/' + incomplete[3] + ' symbols · ' + incomplete[5] + '/' + incomplete[6] + ' minutes',
     }
   }
+  const baselines = message.match(
+    /^Baselines:\s*(?:Baselines:\s*)?expected as-of ([^,]+), actual latest ([^(]+)\((\d+)\/(\d+) symbols/,
+  )
+  if (baselines) {
+    return {
+      label: 'BASELINES INCOMPLETE',
+      detail: baselines[3] + '/' + baselines[4] + ' symbols · target ' + baselines[1].trim(),
+    }
+  }
   return {
     label: 'ACTION REQUIRED',
-    detail: message.length > 88 ? message.slice(0, 85) + '…' : message,
+    detail: 'Review blocked stage',
   }
 }
 
@@ -992,7 +1001,9 @@ export function PreMarketChecklistPage({
               <p className={`line-clamp-2 font-bold text-[13px] leading-4 ${data.areas.five_minute_candles.status === 'ok' ? 'text-[#0b1c30]' : 'text-[#ba1a1a]'}`}>
                 {data.areas.five_minute_candles.status === 'ok'
                   ? '5-minute candles valid'
-                  : data.areas.five_minute_candles.message}
+                  : data.areas.five_minute_candles.status === 'warning'
+                    ? 'Warning (Missing / Stale)'
+                    : 'Invalid (Missing / Stale)'}
               </p>
               <div className="mt-1.5 grid w-full grid-cols-2 gap-x-3 border-t border-[#e5eeff] pt-1.5 text-[11px] leading-4">
                 <span className="text-[#76777d]">Required session</span>
