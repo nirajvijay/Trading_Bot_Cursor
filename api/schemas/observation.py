@@ -19,6 +19,10 @@ class ObservationReadinessResponse(BaseModel):
     reason: str = ""
     session_date: str
     expected_stop_at: Optional[str] = None
+    last_exit_code: Optional[int] = None
+    last_exit_session_date: Optional[str] = None
+    last_exit_at: Optional[str] = None
+    last_exit_log_file: Optional[str] = None
 
 
 class ObservationStartResponse(BaseModel):

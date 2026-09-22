@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from api.services.observation_start_lock import (
@@ -16,10 +18,44 @@ from api.services.observation_start_lock import (
     release_start_lock,
     update_start_lock_pid,
 )
-from api.services.observation_runner import start_observation_runner
+from api.services.observation_runner import _reap_runner, start_observation_runner
 
 
 class ObservationStartLockTests(unittest.TestCase):
+    def test_reaper_waits_records_exit_and_releases_own_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exit_file = root / "observation_runner_exit.json"
+            log_file = root / "observation-2026-08-03.log"
+            log_handle = log_file.open("ab")
+            fake_proc = MagicMock()
+            fake_proc.pid = 12345
+            fake_proc.wait.return_value = 17
+
+            with patch(
+                "api.services.observation_runner._exit_status_file",
+                return_value=exit_file,
+            ), patch(
+                "api.services.observation_runner.read_start_lock",
+                return_value=SimpleNamespace(
+                    pid=fake_proc.pid,
+                    session_date="2026-08-03",
+                ),
+            ), patch(
+                "api.services.observation_runner.release_start_lock"
+            ) as mock_release:
+                _reap_runner(
+                    fake_proc,
+                    lock_file=root / "observation_start.lock.json",
+                    session_date="2026-08-03",
+                    log_path=log_file,
+                    log_handle=log_handle,
+                )
+
+            fake_proc.wait.assert_called_once_with()
+            self.assertEqual(json.loads(exit_file.read_text())["exit_code"], 17)
+            mock_release.assert_called_once()
+
     def test_second_acquire_blocked_while_live_pid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -84,6 +120,9 @@ class ObservationStartLockTests(unittest.TestCase):
             ), patch(
                 "api.services.observation_runner.subprocess.Popen",
                 return_value=fake_proc,
+            ), patch(
+                "api.services.observation_runner._observation_log_path",
+                return_value=root / "observation.log",
             ), patch(
                 "api.services.observation_runner.release_start_lock"
             ) as mock_release:
