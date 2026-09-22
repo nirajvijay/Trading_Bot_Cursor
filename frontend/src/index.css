@@ -79,6 +79,18 @@ body {
   }
 }
 
+.nr-ring {
+  animation: nr-ring 1.2s ease-out infinite;
+}
+@keyframes nr-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(0, 93, 183, 0.35);
+  }
+  100% {
+    box-shadow: 0 0 0 14px rgba(0, 93, 183, 0);
+  }
+}
+
 .cli-copy-btn button {
   background: #1e293b;
   color: #e2e8f0;
