@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -395,6 +396,123 @@ class PositionsTests(ExecutionApiTestCase):
         self.seed_store()
         body = self.client.get(f"{BASE}/positions?session_date=2026-09-21").json()
         self.assertEqual(body["open"], [])
+
+
+class DeskPnlApiTests(ExecutionApiTestCase):
+    """B4: totals, Stock Day Total, live/fallback badge, mismatch, unattributed."""
+
+    def write_live_marks(self, pnl: dict, *, sources: dict, feed: dict, reasons=None) -> None:
+        payload = {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "pnl": pnl,
+            "total_pnl": sum(v for v in pnl.values() if v is not None),
+            "complete": True,
+            "source": sources,
+            "reason": reasons or {},
+            "feed": feed,
+        }
+        self.marks_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    def save(self, trade_id: str, symbol: str, state, **fields) -> None:
+        from engine_store import SqlitePositionStore
+        from engine_types import Position, TriggerCandidate
+
+        store = SqlitePositionStore(self.db)
+        try:
+            store.save(
+                Position(
+                    trade_id=trade_id,
+                    candidate=TriggerCandidate(**_candidate_row(trade_id, symbol)),
+                    state=state,
+                    run_id="run-1",
+                    **fields,
+                )
+            )
+        finally:
+            store.close()
+
+    def positions(self) -> dict:
+        return self.client.get(f"{BASE}/positions?session_date=2026-09-22").json()
+
+    def test_totals_and_badge_come_through(self) -> None:
+        self.seed_store()  # s1 AAA open, s2 BBB closed at -350
+        self.write_live_marks(
+            {"s1": 742.5},
+            sources={"s1": "ws"},
+            feed={"state": "live", "reason": None, "last_tick_at": "2026-09-22T05:00:00+00:00"},
+        )
+        body = self.positions()
+        self.assertAlmostEqual(body["total_realised_pnl"], -350.0)
+        self.assertAlmostEqual(body["total_ongoing_pnl"], 742.5)
+        self.assertAlmostEqual(body["total_day_pnl"], 392.5)
+        self.assertEqual(body["live_pnl_feed_state"], "live")
+        self.assertEqual(body["live_pnl_last_tick_at"], "2026-09-22T05:00:00+00:00")
+        open_row = body["open"][0]
+        self.assertEqual(open_row["live_pnl_source"], "ws")
+        self.assertAlmostEqual(open_row["stock_day_total"], 742.5)
+        self.assertAlmostEqual(body["closed"][0]["stock_day_total"], -350.0)
+
+    def test_fallback_state_and_reason_come_through(self) -> None:
+        self.seed_store()
+        self.write_live_marks(
+            {"s1": 100.0},
+            sources={"s1": "kite_rest"},
+            reasons={"s1": "tick_stale"},
+            feed={"state": "fallback", "reason": "tick_stale", "last_tick_at": None},
+        )
+        body = self.positions()
+        self.assertEqual(body["live_pnl_feed_state"], "fallback")
+        self.assertEqual(body["live_pnl_feed_reason"], "tick_stale")
+        self.assertEqual(body["open"][0]["live_pnl_reason"], "tick_stale")
+
+    def test_same_stock_reentry_stock_day_total(self) -> None:
+        from engine_types import ExecutionState
+
+        self.save(
+            "r1", "RELIANCE", ExecutionState.CLOSED, qty=10, realised_pnl=500.0,
+            extra={"stock_day": {"kite_pnl": 500.0, "ours": 500.0, "diff": 0.0, "mismatch": False}},
+        )
+        self.save("r2", "RELIANCE", ExecutionState.PROTECTED, qty=10)
+        self.write_live_marks({"r2": 200.0}, sources={"r2": "ws"}, feed={"state": "live"})
+        body = self.positions()
+        self.assertAlmostEqual(body["closed"][0]["stock_day_total"], 500.0)
+        self.assertAlmostEqual(body["open"][0]["stock_day_total"], 700.0)
+        self.assertAlmostEqual(body["total_day_pnl"], 700.0)
+
+    def test_mismatch_and_unattributed_rows(self) -> None:
+        from engine_types import ExecutionState
+
+        self.save(
+            "m1", "TCS", ExecutionState.CLOSED, qty=10, realised_pnl=650.0,
+            extra={"stock_day": {"kite_pnl": 800.0, "ours": 650.0, "diff": 150.0, "mismatch": True}},
+        )
+        self.save("u1", "INFY", ExecutionState.CLOSED, qty=10, extra={"close_reason": "unattributed"})
+        body = self.positions()
+        rows = {r["trade_id"]: r for r in body["closed"]}
+        self.assertEqual(rows["m1"]["pnl_mismatch"], {"kite_pnl": 800.0, "ours": 650.0, "diff": 150.0})
+        self.assertAlmostEqual(rows["m1"]["stock_day_total"], 800.0)
+        self.assertTrue(rows["u1"]["realised_unattributed"])
+        self.assertFalse(rows["m1"]["realised_unattributed"])
+        self.assertAlmostEqual(body["total_realised_pnl"], 800.0)
+
+    def test_status_carries_the_same_totals(self) -> None:
+        self.seed_store()
+        self.write_heartbeat()
+        self.write_live_marks({"s1": 742.5}, sources={"s1": "ws"}, feed={"state": "live"})
+        with mock.patch("api.routers.execution._today", return_value="2026-09-22"):
+            body = self.client.get(f"{BASE}/status").json()
+        self.assertAlmostEqual(body["total_day_pnl"], 392.5)
+        self.assertAlmostEqual(body["total_realised_pnl"], -350.0)
+        self.assertAlmostEqual(body["total_ongoing_pnl"], 742.5)
+        self.assertEqual(body["live_pnl_feed_state"], "live")
+
+    def test_an_old_marks_file_leaves_the_badge_empty(self) -> None:
+        self.seed_store()
+        self.write_marks({"s1": 742.5})
+        body = self.positions()
+        self.assertIsNone(body["live_pnl_feed_state"])
+        self.assertIsNone(body["open"][0]["live_pnl_source"])
+        self.assertAlmostEqual(body["total_ongoing_pnl"], 742.5)
 
 
 class EventsTests(ExecutionApiTestCase):
