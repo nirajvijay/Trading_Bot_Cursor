@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from engine_entry import broker_tag_for
 from engine_reconcile import (
     BrokerTruth,
     ReconcileAction,
@@ -289,7 +290,7 @@ class StopReconciliationTests(unittest.TestCase):
         # Crash between placing the stop and persisting its id.
         decision = reconcile(
             position(stop_order_id=None),
-            truth(net={"AAA": 300}, orders=[order(order_id="unknown", tag="s1")]),
+            truth(net={"AAA": 300}, orders=[order(order_id="unknown", tag=broker_tag_for("s1"))]),
         )
         self.assertFalse(decision.has(ReconcileAction.REPLACE_STOP))
 
@@ -407,7 +408,7 @@ class EntryFillTests(unittest.TestCase):
                 orders=[
                     order(
                         order_id="whatever",
-                        tag="s1",
+                        tag=broker_tag_for("s1"),
                         order_type="MARKET",
                         status="COMPLETE",
                         avg=110.0,

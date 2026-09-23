@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from typing import List, Optional
 
+from engine_entry import broker_tag_for
 from engine_exit import (
     CloseReason,
     ClosingOrder,
@@ -146,7 +147,7 @@ class AttributionTests(unittest.TestCase):
     def test_our_stop_found_by_tag_is_still_a_stop_hit(self) -> None:
         pos = position(stop_order_id=None)
         self.assertEqual(
-            attribute(pos, order(order_id="lost", tag="s1", order_type="SL-M")),
+            attribute(pos, order(order_id="lost", tag=broker_tag_for("s1"), order_type="SL-M")),
             CloseReason.STOP_HIT,
         )
 
@@ -492,8 +493,9 @@ class FlattenTests(ExitTestCase):
     def test_the_exit_order_uses_a_tag_distinct_from_the_entry(self) -> None:
         pos = position(state=ExecutionState.ENTERED, stop_order_id=None)
         flatten(pos, reason=CloseReason.KILL_ALL, broker=self.broker, store=self.store)
-        self.assertEqual(flatten_tag_for(pos), "s1-x")
-        exits = [o for o in self.broker.orders.values() if o.tag == "s1-x"]
+        expected_tag = f"{broker_tag_for('s1')}-x"
+        self.assertEqual(flatten_tag_for(pos), expected_tag)
+        exits = [o for o in self.broker.orders.values() if o.tag == expected_tag]
         self.assertEqual(len(exits), 1)
 
     def test_the_reason_is_stashed_for_later_attribution(self) -> None:
@@ -569,7 +571,8 @@ class FlattenTests(ExitTestCase):
             pos, reason=CloseReason.KILL_ALL, broker=self.broker, store=self.store
         )
         self.assertTrue(second.submitted)
-        exits = [o for o in self.broker.orders.values() if o.tag == "s1-x"]
+        expected_tag = f"{broker_tag_for('s1')}-x"
+        exits = [o for o in self.broker.orders.values() if o.tag == expected_tag]
         self.assertEqual(len(exits), 1)
 
 

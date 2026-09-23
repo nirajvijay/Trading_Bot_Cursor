@@ -14,6 +14,7 @@ from engine_entry import (
     FillVerdict,
     ResponseKind,
     apply_entry_fill,
+    broker_tag_for,
     compute_stop_price,
     is_definite_rejection,
     place_entry,
@@ -252,7 +253,8 @@ class CrashSafetyTests(EntryTestCase):
     def test_trade_id_is_the_broker_tag(self) -> None:
         self.run_entry()
         placed = list(self.broker.orders.values())
-        self.assertEqual(placed[0].tag, "s1")
+        self.assertEqual(placed[0].tag, broker_tag_for("s1"))
+        self.assertLessEqual(len(placed[0].tag), 20)
 
 
 class ResponseClassificationTests(unittest.TestCase):
@@ -262,6 +264,7 @@ class ResponseClassificationTests(unittest.TestCase):
             "Invalid quantity for this instrument",
             "RMS: blocked for this symbol",
             "margin shortfall",
+            "Invalid tags: max allowed tag length is 20",
         ):
             with self.subTest(message=message):
                 self.assertTrue(is_definite_rejection(message))
@@ -298,6 +301,26 @@ class ResponseClassificationTests(unittest.TestCase):
 
         response = place_entry(Broker(), candidate=candidate(), quantity=10, tag="s1")
         self.assertEqual(response.kind, ResponseKind.REJECTED)
+
+
+class BrokerTagTests(unittest.TestCase):
+    def test_a_long_composite_trade_id_still_fits_kites_limit(self) -> None:
+        trade_id = "900609|2026-09-23T11:09:00+05:30|intraday_spike_v1|intraday_pullback_v1"
+        tag = broker_tag_for(trade_id)
+        self.assertLessEqual(len(tag), 20)
+        self.assertTrue(tag.isalnum())
+
+    def test_the_same_trade_id_always_yields_the_same_tag(self) -> None:
+        trade_id = "900609|2026-09-23T11:09:00+05:30|intraday_spike_v1|intraday_pullback_v1"
+        self.assertEqual(broker_tag_for(trade_id), broker_tag_for(trade_id))
+
+    def test_different_trade_ids_yield_different_tags(self) -> None:
+        self.assertNotEqual(broker_tag_for("s1"), broker_tag_for("s2"))
+
+    def test_the_base_tag_leaves_room_for_the_flatten_suffix(self) -> None:
+        # engine_exit.flatten_tag_for appends a 2-char suffix; the base must
+        # stay short enough that the combined tag is still <= 20 chars.
+        self.assertLessEqual(len(broker_tag_for("s1")), 18)
 
 
 class AmbiguityResolutionTests(unittest.TestCase):
@@ -369,7 +392,7 @@ class SubmitOutcomeTests(EntryTestCase):
 
     def test_ambiguous_then_found_filled_proceeds_exactly_like_success(self) -> None:
         broker = RaisingBroker(TimeoutError("Read timed out"))
-        broker.tagged = [order(order_id="o7", avg=110.0)]
+        broker.tagged = [order(order_id="o7", avg=110.0, tag=broker_tag_for("s1"))]
         outcome = self.run_entry(broker=broker)
         self.assertEqual(outcome.result, EntryResult.FILLED)
         assert outcome.position is not None

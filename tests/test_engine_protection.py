@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Optional
 
+from engine_entry import broker_tag_for
 from engine_protection import ensure_protected
 from engine_store import SqlitePositionStore
 from engine_types import ExecutionState, Position, TriggerCandidate
@@ -96,7 +97,7 @@ class HappyPathTests(ProtectionTestCase):
     def test_the_stop_carries_the_trade_id_as_its_tag(self) -> None:
         ensure_protected(position(), broker=self.broker, store=self.store)
         placed = [o for o in self.broker.orders.values() if o.order_type in {"SL", "SL-M"}]
-        self.assertEqual(placed[0].tag, "s1")
+        self.assertEqual(placed[0].tag, broker_tag_for("s1"))
 
     def test_the_protected_state_is_persisted(self) -> None:
         ensure_protected(position(), broker=self.broker, store=self.store)
