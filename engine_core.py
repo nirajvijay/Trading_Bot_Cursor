@@ -72,6 +72,11 @@ from engine_squareoff import SquareoffProgress, squareoff_all
 from engine_types import ExecutionState, Position, TriggerCandidate
 from trading_engine_broker import BrokerPort, parse_timestamp_text
 
+# Kite's own day P&L for a stock, pinned on the closed row that made it flat.
+STOCK_DAY_KEY = "stock_day"
+# Our per-trade sum may differ from Kite's by rounding; beyond this it is flagged.
+PNL_MISMATCH_TOLERANCE_RUPEES = 1.0
+
 # Escalation key prefix for an entry stuck waiting at the broker (one per trade).
 ENTRY_STALL_ESCALATION_STEP = "entry_stalled"
 
@@ -467,6 +472,48 @@ class ExecutionEngine:
         self.failures.escalated[key] = detail
         self._on_escalate(key, detail)
 
+    def _record_stock_day(self, position: Position, truth: BrokerTruth) -> None:
+        """When a stock goes fully flat, pin Kite's own day P&L for it here.
+
+        Kite is the source of truth: the desk shows this number as the stock's
+        day total on this (its latest) closed row and in Total Realised P&L.
+        It is read from the same positions payload that just showed the stock
+        flat, so it already includes the exit that flattened it.
+
+        Our own per-trade figures are compared against it. A difference over
+        PNL_MISMATCH_TOLERANCE_RUPEES is flagged on the row and logged, for
+        information only; it never replaces Kite's number.
+        """
+        symbol = position.candidate.tradingsymbol
+        if truth.net_for(symbol) != 0:
+            return
+        kite_pnl = truth.pnl.get(symbol)
+        if kite_pnl is None:
+            return
+        ours_values = [
+            p.realised_pnl
+            for p in self.store.closed_today(self.session_date)
+            if p.candidate.tradingsymbol == symbol
+        ]
+        ours = round(sum(v for v in ours_values if v is not None), 2)
+        diff = round(float(kite_pnl) - ours, 2)
+        mismatch = abs(diff) > PNL_MISMATCH_TOLERANCE_RUPEES
+        position.extra[STOCK_DAY_KEY] = {
+            "kite_pnl": round(float(kite_pnl), 2),
+            "ours": ours,
+            "diff": diff,
+            "mismatch": mismatch,
+            "unattributed_trades": sum(1 for v in ours_values if v is None),
+        }
+        if mismatch:
+            self.store.save_with_event(
+                position,
+                "realised_pnl_mismatch",
+                {"symbol": symbol, "kite_pnl": kite_pnl, "ours": ours, "diff": diff},
+            )
+        else:
+            self.store.save(position)
+
     def _claimed_exit_order_ids(self, position: Position) -> set:
         """Exit orders already booked by earlier closed trades in this stock."""
         claimed: set = set()
@@ -501,6 +548,7 @@ class ExecutionEngine:
                 fallback_qty=int(position.qty or 0),
                 realised=realised,
             )
+            self._record_stock_day(position, truth)
             if realised.over_exit_qty > 0:
                 self.store.append_event(
                     position.trade_id,

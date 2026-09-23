@@ -26,7 +26,7 @@ from engine_sizing import RiskCappedSizing
 from engine_store import SqlitePositionStore
 from engine_types import ExecutionState, Position, RiskLimits, TriggerCandidate
 from trading_engine_broker import FakeBroker
-from trading_engine_types import BrokerOrder
+from trading_engine_types import BrokerOrder, PositionQuote
 
 MORNING = datetime(2026, 9, 22, 5, 0, tzinfo=timezone.utc)      # 10:30 IST
 AFTER_CUTOFF = datetime(2026, 9, 22, 9, 0, tzinfo=timezone.utc)  # 14:30 IST
@@ -665,6 +665,10 @@ class KiteRealisedPnlLifecycleTests(LifecycleTestCase):
         self.assertAlmostEqual(second.realised_pnl, (111.0 - 110.0) * 295, places=2)
         # Trade #1 is untouched.
         self.assertAlmostEqual(self.store.get("s1").realised_pnl, (106.50 - 110.0) * 295, places=2)
+        # Kite's day figure pinned on the latest closed row covers both trades.
+        day = second.extra["stock_day"]
+        self.assertAlmostEqual(day["kite_pnl"], (106.50 - 110.0) * 295 + 295.0, places=2)
+        self.assertFalse(day["mismatch"])
 
     def test_a_manual_close_in_kite_in_two_pieces(self) -> None:
         engine = self._open("s1")
@@ -691,6 +695,54 @@ class KiteRealisedPnlLifecycleTests(LifecycleTestCase):
         expected_loss = 100 * 2.0 + 195 * 3.0
         self.assertAlmostEqual(self.store.get("s1").realised_pnl, -expected_loss, places=2)
         self.assertAlmostEqual(engine.realised_loss_today, expected_loss, places=2)
+
+
+class StockDayKitePnlTests(LifecycleTestCase):
+    """B2.3: Kite's own day P&L pinned when a stock goes flat, with a mismatch check."""
+
+    def _open_and_stop_out(self) -> ExecutionEngine:
+        self.candidates = [candidate("s1")]
+        engine = self.engine()
+        engine.tick()
+        self.candidates = []
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.broker.fill_sl(stored.stop_order_id, 106.50)
+        return engine
+
+    def test_kite_matches_ours_so_no_warning(self) -> None:
+        engine = self._open_and_stop_out()
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        day = stored.extra["stock_day"]
+        self.assertAlmostEqual(day["kite_pnl"], (106.50 - 110.0) * 295, places=2)
+        self.assertFalse(day["mismatch"])
+        self.assertNotIn("realised_pnl_mismatch", self.events("s1"))
+
+    def test_a_difference_over_one_rupee_is_flagged_and_logged_once(self) -> None:
+        engine = self._open_and_stop_out()
+        ours = (106.50 - 110.0) * 295
+        self.broker.position_quotes["AAA"] = PositionQuote(quantity=0, pnl=ours + 150.0)
+        engine.tick()
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        day = stored.extra["stock_day"]
+        self.assertTrue(day["mismatch"])
+        self.assertAlmostEqual(day["diff"], 150.0, places=2)
+        self.assertAlmostEqual(day["kite_pnl"], ours + 150.0, places=2)
+        self.assertEqual(self.events("s1").count("realised_pnl_mismatch"), 1)
+
+    def test_rounding_under_one_rupee_is_not_a_mismatch(self) -> None:
+        engine = self._open_and_stop_out()
+        ours = (106.50 - 110.0) * 295
+        self.broker.position_quotes["AAA"] = PositionQuote(quantity=0, pnl=ours + 0.50)
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertFalse(stored.extra["stock_day"]["mismatch"])
+        self.assertNotIn("realised_pnl_mismatch", self.events("s1"))
 
 
 class PartialEntrySquareoffTests(PartialEntryTestCase):
