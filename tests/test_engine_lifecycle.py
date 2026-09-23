@@ -735,6 +735,20 @@ class StockDayKitePnlTests(LifecycleTestCase):
         self.assertAlmostEqual(day["kite_pnl"], ours + 150.0, places=2)
         self.assertEqual(self.events("s1").count("realised_pnl_mismatch"), 1)
 
+    def test_a_failure_pinning_kites_figure_never_undoes_the_close(self) -> None:
+        engine = self._open_and_stop_out()
+
+        def broken(*_a, **_k):
+            raise RuntimeError("boom")
+
+        engine._record_stock_day = broken
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.CLOSED)
+        self.assertIn("stock_day_record_failed", self.events("s1"))
+        self.assertNotIn("reconcile", engine.failures.escalated)
+
     def test_rounding_under_one_rupee_is_not_a_mismatch(self) -> None:
         engine = self._open_and_stop_out()
         ours = (106.50 - 110.0) * 295

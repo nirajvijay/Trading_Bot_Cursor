@@ -631,7 +631,12 @@ class ExecutionEngine:
                 fallback_qty=int(position.qty or 0),
                 realised=realised,
             )
-            self._record_stock_day(position, truth)
+            try:
+                self._record_stock_day(position, truth)
+            except Exception as exc:  # noqa: BLE001 - information only; the close is already booked
+                self.store.append_event(
+                    position.trade_id, "stock_day_record_failed", {"error": str(exc)}
+                )
             if realised.over_exit_qty > 0:
                 self.store.append_event(
                     position.trade_id,
