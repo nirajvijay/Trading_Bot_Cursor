@@ -27,7 +27,14 @@ from typing import Callable, Dict, List, Optional, Protocol
 
 import engine_clock
 from engine_config import SessionRiskConfig, margin_used_rupees
-from engine_entry import EntryOutcome, EntryResult, FillVerdict, apply_entry_fill, submit_entry
+from engine_entry import (
+    PARTIAL_FILL_ESCALATE_SECONDS,
+    EntryOutcome,
+    EntryResult,
+    FillVerdict,
+    apply_entry_fill,
+    submit_entry,
+)
 from engine_exit import (
     CloseReason,
     finalize_exit,
@@ -39,6 +46,7 @@ from engine_orders import transition
 from engine_priority import VWAP_ENTRY_CLASSES, rank_candidates
 from engine_protection import ensure_protected
 from engine_reconcile import (
+    ENTRY_PARTIAL_WAIT_REASON,
     BrokerTruth,
     ReconcileAction,
     fetch_broker_truth,
@@ -59,6 +67,9 @@ from engine_sizing import SizingPolicy
 from engine_squareoff import SquareoffProgress, squareoff_all
 from engine_types import ExecutionState, Position, TriggerCandidate
 from trading_engine_broker import BrokerPort, parse_timestamp_text
+
+# Escalation key prefix for an entry stuck partly filled (one per trade).
+PARTIAL_FILL_ESCALATION_STEP = "entry_partial_fill"
 
 # How long a trigger may sit without a VWAP verdict before it's given up on.
 # Two seconds is 2x the 1-second tick interval: check now, check once more a
@@ -379,9 +390,54 @@ class ExecutionEngine:
 
         for position in positions:
             decision = reconcile(position, truth)
+            self._watch_partial_entry(position, decision)
             if decision.is_noop:
                 continue
             self._apply_reconciliation(position, decision, truth)
+
+    def _watch_partial_entry(self, position: Position, decision) -> None:
+        """Escalate an entry left partly filled for too long. Alert only.
+
+        While an entry is partly filled, the shares already bought have no stop
+        (protection starts once the fill is final). A MARKET order normally
+        completes within a second, so a stall past the limit must reach a
+        human. Nothing is cancelled or placed early because of it.
+        """
+        key = f"{PARTIAL_FILL_ESCALATION_STEP}:{position.trade_id}"
+        if decision.reason != ENTRY_PARTIAL_WAIT_REASON:
+            # Final, cancelled, or never partly filled: clear any standing alert.
+            self.failures.escalated.pop(key, None)
+            return
+
+        now = self.now_fn()
+        seen_text = position.extra.get("partial_fill_seen_at")
+        seen = parse_timestamp_text(seen_text) if seen_text else None
+        if seen is None:
+            position.extra["partial_fill_seen_at"] = now.isoformat()
+            self.store.save(position)
+            return
+
+        waited = (now - seen).total_seconds()
+        if waited <= PARTIAL_FILL_ESCALATE_SECONDS:
+            return
+        if position.extra.get("partial_fill_escalated"):
+            return
+
+        filled = int(decision.fill_qty or 0)
+        ordered = int(position.qty or 0)
+        position.extra["partial_fill_escalated"] = True
+        self.store.save_with_event(
+            position,
+            "entry_partial_fill_stalled",
+            {"filled": filled, "quantity": ordered, "seconds": round(waited, 1)},
+        )
+        detail = (
+            f"{position.candidate.tradingsymbol} entry partly filled "
+            f"{filled}/{ordered} for {waited:.0f}s; filled shares have no stop yet"
+        )
+        # Shown with the other escalations on the heartbeat and the desk.
+        self.failures.escalated[key] = detail
+        self._on_escalate(key, detail)
 
     def _apply_reconciliation(self, position: Position, decision, truth: BrokerTruth) -> None:
         if decision.has(ReconcileAction.FINALIZE_EXIT):
