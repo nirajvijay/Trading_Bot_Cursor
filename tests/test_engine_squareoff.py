@@ -214,6 +214,32 @@ class UnfilledEntryTests(SquareoffTestCase):
         events = [r["event_type"] for r in self.store.list_events("a")]
         self.assertIn("entry_cancel_raced_fill", events)
 
+    def test_a_partly_filled_entry_cancelled_is_not_marked_cancelled(self) -> None:
+        # The cancel went through, but 120 shares had already filled: held size.
+        class Broker:
+            def cancel_order(self, order_id):
+                return BrokerOrder(
+                    order_id=order_id,
+                    tag="a",
+                    tradingsymbol="AAA",
+                    transaction_type="BUY",
+                    order_type="MARKET",
+                    quantity=300,
+                    status="CANCELLED",
+                    filled_quantity=120,
+                    average_price=110.0,
+                )
+
+        pos = position("a", state=ExecutionState.ENTRY_SUBMITTED)
+        progress = squareoff_all(
+            [pos], reason=CloseReason.EOD_SQUAREOFF, broker=Broker(), store=self.store
+        )
+        self.assertEqual(pos.state, ExecutionState.ENTRY_SUBMITTED)
+        self.assertFalse(progress.complete)
+        events = [r["event_type"] for r in self.store.list_events("a")]
+        self.assertIn("entry_cancel_partial_fill", events)
+        self.assertNotIn("cancelled", events)
+
     def test_an_ambiguous_cancel_is_not_treated_as_done(self) -> None:
         class Broker:
             def cancel_order(self, order_id):
