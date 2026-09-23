@@ -31,6 +31,7 @@ from api.schemas.execution import (
     PreflightResponse,
     SessionCaps,
 )
+from api.services.desk_pnl import DeskPnl, DeskRow, build_desk_pnl
 from api.services.execution_engine_runner import (
     engine_is_running,
     heartbeat,
@@ -92,8 +93,49 @@ def _extra(row) -> dict:
         return {}
 
 
-def _to_view(row, live_pnl: Dict[str, Optional[float]]) -> PositionView:
+def _desk_rows(rows) -> List[DeskRow]:
+    return [
+        DeskRow(
+            trade_id=str(row["trade_id"]),
+            tradingsymbol=str(row["tradingsymbol"]),
+            state=str(row["state"]),
+            realised_pnl=row["realised_pnl"],
+            created_at=str(row["created_at"]),
+            extra=_extra(row),
+        )
+        for row in rows
+    ]
+
+
+def _feed_fields(marks: dict) -> dict:
+    feed = marks.get("feed") or {}
+    return {
+        "live_pnl_feed_state": feed.get("state"),
+        "live_pnl_feed_reason": feed.get("reason"),
+        "live_pnl_last_tick_at": feed.get("last_tick_at"),
+    }
+
+
+def _total_fields(desk: Optional[DeskPnl]) -> dict:
+    if desk is None:
+        return {}
+    return {
+        "total_day_pnl": desk.total_day,
+        "total_realised_pnl": desk.total_realised,
+        "total_ongoing_pnl": desk.total_ongoing,
+    }
+
+
+def _to_view(
+    row,
+    live_pnl: Dict[str, Optional[float]],
+    marks: Optional[dict] = None,
+    desk: Optional[DeskPnl] = None,
+) -> PositionView:
     extra = _extra(row)
+    trade_id = str(row["trade_id"])
+    marks = marks or {}
+    row_pnl = desk.rows.get(trade_id) if desk is not None else None
     return PositionView(
         trade_id=str(row["trade_id"]),
         setup_id=str(row["setup_id"]),
@@ -107,7 +149,12 @@ def _to_view(row, live_pnl: Dict[str, Optional[float]]) -> PositionView:
         stop_price=row["stop_price"],
         risk_taken_rupees=row["risk_taken_rupees"],
         realised_pnl=row["realised_pnl"],
-        live_pnl=live_pnl.get(str(row["trade_id"])),
+        live_pnl=live_pnl.get(trade_id),
+        live_pnl_source=(marks.get("source") or {}).get(trade_id),
+        live_pnl_reason=(marks.get("reason") or {}).get(trade_id),
+        stock_day_total=row_pnl.stock_day_total if row_pnl else None,
+        pnl_mismatch=row_pnl.mismatch if row_pnl else None,
+        realised_unattributed=bool(row_pnl.unattributed) if row_pnl else False,
         entry_order_id=row["entry_order_id"],
         stop_order_id=row["stop_order_id"],
         exit_order_id=row["exit_order_id"],
@@ -161,9 +208,14 @@ def execution_status() -> ExecutionStatusResponse:
     )
 
     capital: Optional[CapitalView] = None
+    desk: Optional[DeskPnl] = None
     store = _store()
     try:
         if store is not None:
+            desk = build_desk_pnl(
+                _desk_rows(store.list_positions(_today())),
+                dict(marks.get("pnl") or {}),
+            )
             session_config = SessionRiskConfig(
                 daily_loss_cap_rupees=caps.daily_loss_cap_rupees
             )
@@ -208,6 +260,8 @@ def execution_status() -> ExecutionStatusResponse:
         total_live_pnl=marks.get("total_pnl"),
         live_pnl_as_of=marks.get("as_of"),
         live_pnl_complete=bool(marks.get("complete")),
+        **_total_fields(desk),
+        **_feed_fields(marks),
         last_error=data.get("last_error"),
         escalations=dict(data.get("escalations") or {}),
     )
@@ -233,11 +287,12 @@ def execution_positions(
     finally:
         store.close()
 
+    desk = build_desk_pnl(_desk_rows(rows), pnl)
     open_rows: List[PositionView] = []
     closed_rows: List[PositionView] = []
     rejected_rows: List[PositionView] = []
     for row in rows:
-        view = _to_view(row, pnl)
+        view = _to_view(row, pnl, marks, desk)
         state = str(row["state"])
         if state in _OPEN_STATES:
             open_rows.append(view)
@@ -254,6 +309,8 @@ def execution_positions(
         total_live_pnl=marks.get("total_pnl"),
         live_pnl_as_of=marks.get("as_of"),
         live_pnl_complete=bool(marks.get("complete")),
+        **_total_fields(desk),
+        **_feed_fields(marks),
     )
 
 

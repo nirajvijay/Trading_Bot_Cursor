@@ -89,6 +89,15 @@ class ExecutionStatusResponse(BaseModel):
     total_live_pnl: Optional[float] = None
     live_pnl_as_of: Optional[str] = None
     live_pnl_complete: bool = False
+    # Desk summary: Total Day = Total Realised + Total Ongoing.
+    total_day_pnl: Optional[float] = None
+    total_realised_pnl: Optional[float] = None
+    total_ongoing_pnl: Optional[float] = None
+    # The live Open P&L feed: "live" (WebSocket), "fallback" (Kite REST,
+    # feed stale), "off" (PAPER), or None before the engine has written any.
+    live_pnl_feed_state: Optional[str] = None
+    live_pnl_feed_reason: Optional[str] = None
+    live_pnl_last_tick_at: Optional[str] = None
     last_error: Optional[str] = None
     escalations: Dict[str, str] = Field(default_factory=dict)
 
@@ -107,6 +116,15 @@ class PositionView(BaseModel):
     risk_taken_rupees: Optional[float] = None
     realised_pnl: Optional[float] = None
     live_pnl: Optional[float] = None
+    # "ws" (live WebSocket tick) or "kite_rest" (fallback), with why.
+    live_pnl_source: Optional[str] = None
+    live_pnl_reason: Optional[str] = None
+    # This trade's P&L plus earlier closed trades in the same stock today.
+    stock_day_total: Optional[float] = None
+    # Kite's day figure for the stock vs our per-trade sum, when over Rs 1 apart.
+    pnl_mismatch: Optional[Dict[str, float]] = None
+    # Closed but no closing order found at Kite: "unattributed — check Kite".
+    realised_unattributed: bool = False
     entry_order_id: Optional[str] = None
     stop_order_id: Optional[str] = None
     exit_order_id: Optional[str] = None
@@ -128,6 +146,15 @@ class PositionsResponse(BaseModel):
     total_live_pnl: Optional[float] = None
     live_pnl_as_of: Optional[str] = None
     live_pnl_complete: bool = False
+    # Desk summary: Total Day = Total Realised + Total Ongoing.
+    total_day_pnl: Optional[float] = None
+    total_realised_pnl: Optional[float] = None
+    total_ongoing_pnl: Optional[float] = None
+    # The live Open P&L feed: "live" (WebSocket), "fallback" (Kite REST,
+    # feed stale), "off" (PAPER), or None before the engine has written any.
+    live_pnl_feed_state: Optional[str] = None
+    live_pnl_feed_reason: Optional[str] = None
+    live_pnl_last_tick_at: Optional[str] = None
 
 
 class EventView(BaseModel):

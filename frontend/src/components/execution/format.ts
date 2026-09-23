@@ -112,6 +112,15 @@ const REASON_LABELS: Record<string, string> = {
   entries_stopped: 'Entries stopped',
   feed_stale: 'Feed stale',
   insufficient_margin_preflight: 'Insufficient margin',
+  // Why the live Open P&L fell back to Kite REST.
+  ws_disconnected: 'WebSocket disconnected',
+  ws_connecting: 'WebSocket connecting',
+  ws_not_started: 'WebSocket not started',
+  ws_reconnect_exhausted: 'WebSocket gave up reconnecting',
+  ws_stopped: 'WebSocket stopped',
+  tick_stale: 'No tick for over 5s',
+  no_tick_yet: 'Waiting for first tick',
+  entry_order_not_visible: 'Entry fill not visible yet',
 }
 
 export function reasonLabel(reason: string | null | undefined): string {
@@ -136,4 +145,11 @@ export function pnlClass(n: number | null | undefined): string {
     return 'text-on-surface-variant'
   }
   return n < 0 ? 'text-negative' : 'text-positive'
+}
+
+/** Hover text for a stock whose Kite day P&L differs from our trades' sum. */
+export function mismatchTitle(m: { kite_pnl: number; ours: number; diff: number }): string {
+  return `Kite: ${inr(m.kite_pnl)} · Our trades: ${inr(m.ours)} · Difference ${inr(
+    Math.abs(m.diff),
+  )} — possibly a trade made outside the engine.`
 }

@@ -20,12 +20,14 @@ from engine_config import SessionRiskConfig
 from engine_core import ExecutionEngine
 from engine_exit import CloseReason
 from engine_feed import FeedHealth
+from engine_live_ticks import Tick, TickFeedHealth
 from engine_risk import RiskPolicy
 from engine_runloop import FAILURE_THRESHOLDS, STEP_INGEST
 from engine_sizing import RiskCappedSizing
 from engine_store import SqlitePositionStore
 from engine_types import ExecutionState, Position, RiskLimits, TriggerCandidate
 from trading_engine_broker import FakeBroker
+from trading_engine_types import BrokerOrder, PositionQuote
 
 MORNING = datetime(2026, 9, 22, 5, 0, tzinfo=timezone.utc)      # 10:30 IST
 AFTER_CUTOFF = datetime(2026, 9, 22, 9, 0, tzinfo=timezone.utc)  # 14:30 IST
@@ -606,6 +608,310 @@ class PartialFillStallTests(PartialEntryTestCase):
         engine.tick()
         self.assertNotIn("entry_partial_fill_stalled", self.events("s1"))
         self.assertNotIn(self.KEY, engine.failures.escalated)
+
+
+class KiteRealisedPnlLifecycleTests(LifecycleTestCase):
+    """Realised P&L from Kite's orders, scoped to the trade (B2.1/B2.2/B2.4/B3)."""
+
+    LATER = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    def _open(self, setup_id: str) -> ExecutionEngine:
+        self.candidates = [candidate(setup_id)]
+        engine = self.engine()
+        engine.tick()
+        self.candidates = []
+        return engine
+
+    def _manual_sell(self, order_id: str, qty: int, price: float, minutes: int) -> None:
+        # A close placed by hand in the Kite app: no engine tag.
+        self.broker.orders[order_id] = BrokerOrder(
+            order_id=order_id,
+            tag="",
+            tradingsymbol="AAA",
+            transaction_type="SELL",
+            order_type="MARKET",
+            quantity=qty,
+            status="COMPLETE",
+            average_price=price,
+            filled_quantity=qty,
+            order_timestamp=(self.LATER + timedelta(minutes=minutes)).isoformat(),
+        )
+
+    def test_a_reentered_trade_books_its_own_exit_not_the_earlier_trades(self) -> None:
+        # Regression: select_closing_order's "earliest fill wins" over a
+        # symbol-wide candidate list booked trade #2 against trade #1's stop.
+        engine = self._open("s1")
+        first = self.store.get("s1")
+        assert first is not None
+        self.broker.fill_sl(first.stop_order_id, 106.50)
+        engine.tick()
+        self.assertEqual(self.store.get("s1").state, ExecutionState.CLOSED)
+
+        self.broker.last_prices["AAA"] = 110.0
+        self.candidates = [candidate("s2")]
+        engine.tick()
+        self.candidates = []
+        self.assertEqual(self.store.get("s2").state, ExecutionState.PROTECTED)
+
+        self.broker.last_prices["AAA"] = 111.0
+        self.queue.enqueue(CommandKind.CLOSE_POSITION, trade_id="s2")
+        for _ in range(4):
+            engine.tick()
+        second = self.store.get("s2")
+        assert second is not None
+        self.assertEqual(second.state, ExecutionState.CLOSED)
+        self.assertEqual(second.extra.get("close_reason"), CloseReason.MANUAL_CLOSE.value)
+        self.assertEqual(second.extra.get("closing_order_id"), second.exit_order_id)
+        self.assertNotEqual(second.extra.get("closing_order_id"), first.stop_order_id)
+        self.assertAlmostEqual(second.realised_pnl, (111.0 - 110.0) * 295, places=2)
+        # Trade #1 is untouched.
+        self.assertAlmostEqual(self.store.get("s1").realised_pnl, (106.50 - 110.0) * 295, places=2)
+        # Kite's day figure pinned on the latest closed row covers both trades.
+        day = second.extra["stock_day"]
+        self.assertAlmostEqual(day["kite_pnl"], (106.50 - 110.0) * 295 + 295.0, places=2)
+        self.assertFalse(day["mismatch"])
+
+    def test_a_manual_close_in_kite_in_two_pieces(self) -> None:
+        engine = self._open("s1")
+        self._manual_sell("m1", 100, 112.0, minutes=0)
+        engine.tick()
+        self._manual_sell("m2", 195, 113.0, minutes=1)
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.CLOSED)
+        self.assertEqual(
+            stored.extra.get("close_reason"), CloseReason.MANUAL_BROKER_INTERVENTION.value
+        )
+        self.assertAlmostEqual(stored.realised_pnl, 100 * 2.0 + 195 * 3.0, places=2)
+        self.assertEqual(sorted(stored.extra.get("exit_order_ids")), ["m1", "m2"])
+
+    def test_the_loss_cap_counts_the_full_loss_of_an_exit_in_pieces(self) -> None:
+        engine = self._open("s1")
+        self._manual_sell("m1", 100, 108.0, minutes=0)
+        engine.tick()
+        self._manual_sell("m2", 195, 107.0, minutes=1)
+        engine.tick()
+        engine.tick()
+        expected_loss = 100 * 2.0 + 195 * 3.0
+        self.assertAlmostEqual(self.store.get("s1").realised_pnl, -expected_loss, places=2)
+        self.assertAlmostEqual(engine.realised_loss_today, expected_loss, places=2)
+
+
+class StockDayKitePnlTests(LifecycleTestCase):
+    """B2.3: Kite's own day P&L pinned when a stock goes flat, with a mismatch check."""
+
+    def _open_and_stop_out(self) -> ExecutionEngine:
+        self.candidates = [candidate("s1")]
+        engine = self.engine()
+        engine.tick()
+        self.candidates = []
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.broker.fill_sl(stored.stop_order_id, 106.50)
+        return engine
+
+    def test_kite_matches_ours_so_no_warning(self) -> None:
+        engine = self._open_and_stop_out()
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        day = stored.extra["stock_day"]
+        self.assertAlmostEqual(day["kite_pnl"], (106.50 - 110.0) * 295, places=2)
+        self.assertFalse(day["mismatch"])
+        self.assertNotIn("realised_pnl_mismatch", self.events("s1"))
+
+    def test_a_difference_over_one_rupee_is_flagged_and_logged_once(self) -> None:
+        engine = self._open_and_stop_out()
+        ours = (106.50 - 110.0) * 295
+        self.broker.position_quotes["AAA"] = PositionQuote(quantity=0, pnl=ours + 150.0)
+        engine.tick()
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        day = stored.extra["stock_day"]
+        self.assertTrue(day["mismatch"])
+        self.assertAlmostEqual(day["diff"], 150.0, places=2)
+        self.assertAlmostEqual(day["kite_pnl"], ours + 150.0, places=2)
+        self.assertEqual(self.events("s1").count("realised_pnl_mismatch"), 1)
+
+    def test_a_failure_pinning_kites_figure_never_undoes_the_close(self) -> None:
+        engine = self._open_and_stop_out()
+
+        def broken(*_a, **_k):
+            raise RuntimeError("boom")
+
+        engine._record_stock_day = broken
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.CLOSED)
+        self.assertIn("stock_day_record_failed", self.events("s1"))
+        self.assertNotIn("reconcile", engine.failures.escalated)
+
+    def test_rounding_under_one_rupee_is_not_a_mismatch(self) -> None:
+        engine = self._open_and_stop_out()
+        ours = (106.50 - 110.0) * 295
+        self.broker.position_quotes["AAA"] = PositionQuote(quantity=0, pnl=ours + 0.50)
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertFalse(stored.extra["stock_day"]["mismatch"])
+        self.assertNotIn("realised_pnl_mismatch", self.events("s1"))
+
+
+class StubTickFeed:
+    """A connected live feed whose ticks each test sets by hand."""
+
+    live = True
+
+    def __init__(self, clock: "Clock") -> None:
+        self.clock = clock
+        self.connected = True
+        self.subscribed: set = set()
+        self.sync_calls: List[set] = []
+        self.prices: dict = {}
+        self.tick_age = 0.5
+
+    def start(self) -> bool:
+        return True
+
+    def stop(self) -> None:
+        pass
+
+    def sync(self, tokens) -> None:
+        self.subscribed = set(tokens)
+        self.sync_calls.append(set(tokens))
+
+    def latest(self, token):
+        price = self.prices.get(token)
+        if price is None or token not in self.subscribed:
+            return None
+        return Tick(price, self.clock() - timedelta(seconds=self.tick_age))
+
+    def health(self) -> TickFeedHealth:
+        return TickFeedHealth(
+            live=True,
+            connected=self.connected,
+            last_tick_at=self.clock(),
+            reason=None if self.connected else "ws_disconnected",
+        )
+
+
+class LiveOpenPnlTests(LifecycleTestCase):
+    """B1: the desk's Open P&L from the WebSocket, display only."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.feed = StubTickFeed(self.clock)
+
+    def live_engine(self) -> ExecutionEngine:
+        engine = self.engine()
+        engine.tick_feed = self.feed
+        engine.live_feed_health = self.feed.health()
+        return engine
+
+    def _open(self, engine: ExecutionEngine, setup_id: str = "s1") -> None:
+        # Entry happens in ingest, after this tick's subscription sync, so the
+        # instrument is subscribed on the next tick.
+        self.candidates = [candidate(setup_id)]
+        engine.tick()
+        self.candidates = []
+        engine.tick()
+
+    def test_subscribes_on_entry_and_unsubscribes_on_close(self) -> None:
+        engine = self.live_engine()
+        self._open(engine)
+        engine.tick()
+        self.assertEqual(self.feed.subscribed, {1})
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.broker.fill_sl(stored.stop_order_id, 106.50)
+        engine.tick()
+        self.assertEqual(self.feed.subscribed, set())
+        engine.tick()
+        self.assertEqual(self.feed.sync_calls[-1], set())
+
+    def test_mark_is_the_tick_against_kites_entry_price(self) -> None:
+        engine = self.live_engine()
+        self._open(engine)
+        self.feed.prices[1] = 112.40
+        engine.tick()
+        self.assertAlmostEqual(engine.live_pnl["s1"], (112.40 - 110.0) * 295, places=2)
+        self.assertEqual(engine.live_pnl_source["s1"], "ws")
+
+    def test_a_reentry_uses_its_own_entry_order_not_the_stock_average(self) -> None:
+        engine = self.live_engine()
+        self._open(engine, "s1")
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.broker.fill_sl(stored.stop_order_id, 106.50)
+        engine.tick()
+
+        self.broker.last_prices["AAA"] = 111.0  # trade #2 fills higher (within 1.5x)
+        self._open(engine, "s2")
+        second = self.store.get("s2")
+        assert second is not None
+        second.entry_price = 999.0  # the stored price must not be used either
+        self.store.save(second)
+        self.feed.prices[1] = 113.0
+        engine.tick()
+        self.assertEqual(engine.live_pnl_source["s2"], "ws")
+        self.assertAlmostEqual(engine.live_pnl["s2"], (113.0 - 111.0) * second.qty, places=2)
+
+    def test_a_stale_tick_falls_back_to_kite_rest(self) -> None:
+        engine = self.live_engine()
+        self._open(engine)
+        self.feed.prices[1] = 112.40
+        self.feed.tick_age = 6.0
+        self.broker.last_prices["AAA"] = 111.0
+        engine.tick()
+        self.assertEqual(engine.live_pnl_source["s1"], "kite_rest")
+        self.assertEqual(engine.live_pnl_reason["s1"], "tick_stale")
+        self.assertAlmostEqual(engine.live_pnl["s1"], (111.0 - 110.0) * 295, places=2)
+
+    def test_a_disconnected_feed_falls_back_to_kite_rest(self) -> None:
+        engine = self.live_engine()
+        self._open(engine)
+        self.feed.prices[1] = 112.40
+        self.feed.connected = False
+        engine.tick()
+        self.assertEqual(engine.live_pnl_source["s1"], "kite_rest")
+        self.assertEqual(engine.live_pnl_reason["s1"], "ws_disconnected")
+
+    def test_a_wild_tick_changes_only_the_display(self) -> None:
+        """Display-only guard: nothing that trades reads the WebSocket mark."""
+        engine = self.live_engine()
+        self._open(engine)
+        engine.tick()
+        before = self.store.get("s1")
+        assert before is not None
+        events_before = self.events("s1")
+        orders_before = self.broker.market_place_count
+
+        self.feed.prices[1] = 1.0  # a huge paper loss, far past stop and cap
+        for _ in range(3):
+            engine.tick()
+
+        self.assertLess(engine.live_pnl["s1"], -30_000)
+        after = self.store.get("s1")
+        assert after is not None
+        self.assertEqual(after.state, ExecutionState.PROTECTED)
+        self.assertEqual(after.stop_order_id, before.stop_order_id)
+        self.assertAlmostEqual(after.stop_price, before.stop_price, places=4)
+        self.assertEqual(self.events("s1"), events_before)
+        self.assertEqual(self.broker.market_place_count, orders_before)
+        self.assertFalse(engine.breached)
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertEqual(engine.realised_loss_today, 0.0)
+
+    def test_paper_default_keeps_kite_rest_marks(self) -> None:
+        engine = self.engine()  # NullTickFeed
+        self._open(engine)
+        self.broker.last_prices["AAA"] = 112.0
+        engine.tick()
+        self.assertEqual(engine.live_pnl_source["s1"], "kite_rest")
+        self.assertAlmostEqual(engine.live_pnl["s1"], (112.0 - 110.0) * 295, places=2)
 
 
 class PartialEntrySquareoffTests(PartialEntryTestCase):

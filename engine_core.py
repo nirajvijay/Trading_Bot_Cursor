@@ -36,16 +36,27 @@ from engine_entry import (
     submit_entry,
 )
 from engine_exit import (
+    EXIT_ORDER_IDS_KEY,
     CloseReason,
     finalize_exit,
     flatten,
     identify_closing_order,
+    kite_realised_pnl,
+    trade_exit_orders,
 )
 from engine_feed import FeedMonitor
+from engine_live_marks import (
+    REASON_NOT_ENTERED,
+    SOURCE_KITE_REST,
+    LiveMark,
+    compute_live_mark,
+)
+from engine_live_ticks import NullTickFeed, TickFeedHealth
 from engine_orders import transition
 from engine_priority import VWAP_ENTRY_CLASSES, rank_candidates
 from engine_protection import ensure_protected
 from engine_reconcile import (
+    HOLDING_STATES,
     ENTRY_PARTIAL_WAIT_REASON,
     ENTRY_WORKING_WAIT_REASON,
     BrokerTruth,
@@ -68,6 +79,12 @@ from engine_sizing import SizingPolicy
 from engine_squareoff import SquareoffProgress, squareoff_all
 from engine_types import ExecutionState, Position, TriggerCandidate
 from trading_engine_broker import BrokerPort, parse_timestamp_text
+from trading_engine_types import broker_order_filled_qty
+
+# Kite's own day P&L for a stock, pinned on the closed row that made it flat.
+STOCK_DAY_KEY = "stock_day"
+# Our per-trade sum may differ from Kite's by rounding; beyond this it is flagged.
+PNL_MISMATCH_TOLERANCE_RUPEES = 1.0
 
 # Escalation key prefix for an entry stuck waiting at the broker (one per trade).
 ENTRY_STALL_ESCALATION_STEP = "entry_stalled"
@@ -115,6 +132,7 @@ class ExecutionEngine:
         run_id: Optional[str] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         command_source: Optional[Callable[[], list]] = None,
+        tick_feed=None,
     ) -> None:
         self.broker = broker
         self.store = store
@@ -142,7 +160,13 @@ class ExecutionEngine:
         self.shutdown_reason: Optional[CloseReason] = None
         self.shutdown_complete = False
         self.breached = False
+        # Display only (the desk's Open P&L). Never read by stops,
+        # reconciliation, the risk cap or square-off.
+        self.tick_feed = tick_feed if tick_feed is not None else NullTickFeed()
         self.live_pnl: Dict[str, Optional[float]] = {}
+        self.live_pnl_source: Dict[str, str] = {}
+        self.live_pnl_reason: Dict[str, Optional[str]] = {}
+        self.live_feed_health: TickFeedHealth = self.tick_feed.health()
         self.last_truth: Optional[BrokerTruth] = None
         self.escalation_notices: List[str] = []
         self.realised_loss_today = 0.0
@@ -379,6 +403,9 @@ class ExecutionEngine:
         """
         if not positions:
             self.live_pnl = {}
+            self.live_pnl_source = {}
+            self.live_pnl_reason = {}
+            self._sync_tick_feed([])
             return
 
         truth = fetch_broker_truth(self.broker, symbols_of(positions))
@@ -391,9 +418,7 @@ class ExecutionEngine:
             )
             return
 
-        self.live_pnl = {
-            p.trade_id: truth.pnl.get(p.candidate.tradingsymbol) for p in positions
-        }
+        self._update_live_marks(positions, truth)
 
         for position in positions:
             decision = reconcile(position, truth)
@@ -401,6 +426,72 @@ class ExecutionEngine:
             if decision.is_noop:
                 continue
             self._apply_reconciliation(position, decision, truth)
+
+        # After reconciliation, so a trade that just filled is subscribed and
+        # one that just closed is dropped.
+        self._sync_tick_feed(positions)
+
+    # ------------------------------------------------------------------
+    # Live Open P&L for the desk (display only)
+    # ------------------------------------------------------------------
+
+    def _update_live_marks(self, positions: List[Position], truth: BrokerTruth) -> None:
+        """Per-trade Open P&L: WebSocket tick against Kite's entry fill price,
+        or Kite REST pnl while the feed cannot be trusted.
+
+        Guarded: a failure here must never count against reconciliation, whose
+        escalation pauses entries. It degrades to Kite REST pnl instead.
+        """
+        try:
+            now = self.now_fn()
+            health = self.tick_feed.health()
+            values: Dict[str, Optional[float]] = {}
+            sources: Dict[str, str] = {}
+            reasons: Dict[str, Optional[str]] = {}
+            for p in positions:
+                kite_rest = truth.pnl.get(p.candidate.tradingsymbol)
+                if p.state not in HOLDING_STATES:
+                    mark = LiveMark(kite_rest, SOURCE_KITE_REST, REASON_NOT_ENTERED)
+                else:
+                    entry = truth.order(p.entry_order_id)
+                    entry_qty = broker_order_filled_qty(entry) if entry is not None else 0
+                    open_qty = min(int(p.qty or 0), entry_qty) if entry_qty else 0
+                    mark = compute_live_mark(
+                        direction=p.candidate.direction,
+                        entry_avg=entry.average_price if entry is not None else None,
+                        qty=open_qty,
+                        tick=self.tick_feed.latest(p.candidate.instrument_token),
+                        feed_health=health,
+                        kite_rest_pnl=kite_rest,
+                        now=now,
+                    )
+                values[p.trade_id] = mark.value
+                sources[p.trade_id] = mark.source
+                reasons[p.trade_id] = mark.reason
+            self.live_pnl = values
+            self.live_pnl_source = sources
+            self.live_pnl_reason = reasons
+            self.live_feed_health = health
+        except Exception as exc:  # noqa: BLE001 - display must never break a tick
+            self.live_pnl = {
+                p.trade_id: truth.pnl.get(p.candidate.tradingsymbol) for p in positions
+            }
+            self.live_pnl_source = {p.trade_id: SOURCE_KITE_REST for p in positions}
+            self.live_pnl_reason = {p.trade_id: f"mark_error: {exc}" for p in positions}
+
+    def _sync_tick_feed(self, positions: List[Position]) -> None:
+        """Subscribe to exactly the instruments held right now."""
+        try:
+            self.tick_feed.sync(
+                {
+                    int(p.candidate.instrument_token)
+                    for p in positions
+                    if p.state in HOLDING_STATES and p.candidate.instrument_token
+                }
+            )
+            self.live_feed_health = self.tick_feed.health()
+        except Exception:  # noqa: BLE001 - display must never break a tick
+            pass
 
     def _watch_waiting_entry(self, position: Position, decision) -> None:
         """Escalate an entry left waiting at the broker for too long. Alert only.
@@ -464,15 +555,98 @@ class ExecutionEngine:
         self.failures.escalated[key] = detail
         self._on_escalate(key, detail)
 
+    def _record_stock_day(self, position: Position, truth: BrokerTruth) -> None:
+        """When a stock goes fully flat, pin Kite's own day P&L for it here.
+
+        Kite is the source of truth: the desk shows this number as the stock's
+        day total on this (its latest) closed row and in Total Realised P&L.
+        It is read from the same positions payload that just showed the stock
+        flat, so it already includes the exit that flattened it.
+
+        Our own per-trade figures are compared against it. A difference over
+        PNL_MISMATCH_TOLERANCE_RUPEES is flagged on the row and logged, for
+        information only; it never replaces Kite's number.
+        """
+        symbol = position.candidate.tradingsymbol
+        if truth.net_for(symbol) != 0:
+            return
+        kite_pnl = truth.pnl.get(symbol)
+        if kite_pnl is None:
+            return
+        ours_values = [
+            p.realised_pnl
+            for p in self.store.closed_today(self.session_date)
+            if p.candidate.tradingsymbol == symbol
+        ]
+        ours = round(sum(v for v in ours_values if v is not None), 2)
+        diff = round(float(kite_pnl) - ours, 2)
+        mismatch = abs(diff) > PNL_MISMATCH_TOLERANCE_RUPEES
+        position.extra[STOCK_DAY_KEY] = {
+            "kite_pnl": round(float(kite_pnl), 2),
+            "ours": ours,
+            "diff": diff,
+            "mismatch": mismatch,
+            "unattributed_trades": sum(1 for v in ours_values if v is None),
+        }
+        if mismatch:
+            self.store.save_with_event(
+                position,
+                "realised_pnl_mismatch",
+                {"symbol": symbol, "kite_pnl": kite_pnl, "ours": ours, "diff": diff},
+            )
+        else:
+            self.store.save(position)
+
+    def _claimed_exit_order_ids(self, position: Position) -> set:
+        """Exit orders already booked by earlier closed trades in this stock."""
+        claimed: set = set()
+        symbol = position.candidate.tradingsymbol
+        for closed in self.store.closed_today(self.session_date):
+            if closed.trade_id == position.trade_id:
+                continue
+            if closed.candidate.tradingsymbol != symbol:
+                continue
+            claimed.update(str(i) for i in closed.extra.get(EXIT_ORDER_IDS_KEY) or [])
+            if closed.extra.get("closing_order_id"):
+                claimed.add(str(closed.extra["closing_order_id"]))
+        return claimed
+
     def _apply_reconciliation(self, position: Position, decision, truth: BrokerTruth) -> None:
         if decision.has(ReconcileAction.FINALIZE_EXIT):
-            closing = identify_closing_order(position, truth.orders_by_id.values())
+            entry_order = truth.order(position.entry_order_id)
+            exits = trade_exit_orders(
+                position,
+                truth.orders_by_id.values(),
+                claimed=self._claimed_exit_order_ids(position),
+                entry_order=entry_order,
+            )
+            closing = identify_closing_order(position, exits)
+            realised = kite_realised_pnl(
+                position, entry_order=entry_order, exit_orders=exits
+            )
             finalize_exit(
                 position,
                 closing=closing,
                 store=self.store,
                 fallback_qty=int(position.qty or 0),
+                realised=realised,
             )
+            try:
+                self._record_stock_day(position, truth)
+            except Exception as exc:  # noqa: BLE001 - information only; the close is already booked
+                self.store.append_event(
+                    position.trade_id, "stock_day_record_failed", {"error": str(exc)}
+                )
+            if realised.over_exit_qty > 0:
+                self.store.append_event(
+                    position.trade_id,
+                    "over_exit_detected",
+                    {
+                        "over_exit_qty": realised.over_exit_qty,
+                        "entry_qty": realised.entry_qty,
+                        "exit_order_ids": realised.exit_order_ids,
+                    },
+                )
             return
 
         if decision.has(ReconcileAction.APPLY_ENTRY_FILL):

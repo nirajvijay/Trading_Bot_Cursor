@@ -9,7 +9,7 @@ then is ignored even if it is still sitting in the database, which prevents an
 accidental late start from immediately firing on a stale, already-passed
 opportunity.
 
-The three ways this process ends itself -- a daily-loss breach, the 15:15 EOD
+The three ways this process ends itself -- a daily-loss breach, the 14:50 EOD
 cutoff, and a manual Kill-It-All-Now -- all converge on the same sequence:
 close everything, confirm every position is actually CLOSED, write the
 stopping-on-purpose note, then exit. A plain STOP does not end the process; it
@@ -32,6 +32,8 @@ from engine_commands import CommandQueue
 from engine_config import SessionRiskConfig, validate
 from engine_core import ExecutionEngine
 from engine_feed import FeedMonitor
+from engine_live_marks import feed_state, first_reason
+from engine_live_ticks import LiveTickFeed, NullTickFeed
 from engine_risk import RiskPolicy
 from engine_runloop import (
     TICK_INTERVAL_SECONDS,
@@ -115,6 +117,35 @@ def build_broker(*, live_orders: bool):
     return KiteBroker(_get_kite(), live_orders_enabled=True)
 
 
+def build_tick_feed(*, live_orders: bool):
+    """The live Open P&L feed: a dedicated KiteTicker in LIVE, nothing in PAPER.
+
+    Display only. Building it never fails the engine: missing credentials just
+    mean every mark stays on Kite REST pnl with the reason shown on the desk.
+    """
+    if not live_orders:
+        return NullTickFeed()
+    from login import _read_env_merged
+
+    env = _read_env_merged()
+    return LiveTickFeed(
+        api_key=str(env.get("KITE_API_KEY") or ""),
+        access_token=str(env.get("KITE_ACCESS_TOKEN") or ""),
+    )
+
+
+def live_mark_feed_summary(engine: ExecutionEngine) -> dict:
+    health = engine.live_feed_health
+    return {
+        "state": feed_state(
+            feed_health=health, sources=engine.live_pnl_source.values()
+        ),
+        "connected": health.connected,
+        "reason": health.reason or first_reason(engine.live_pnl_reason),
+        "last_tick_at": health.last_tick_at.isoformat() if health.last_tick_at else None,
+    }
+
+
 def build_feed_monitor(runner_status_file: Optional[str]) -> FeedMonitor:
     """Staleness is judged against the actual last-tick timestamp.
 
@@ -167,6 +198,7 @@ def build_engine(args: argparse.Namespace, *, store, queue, floor_iso: str):
         is_live=bool(args.live_orders),
         run_id=args.run_id or uuid4().hex[:12],
         command_source=queue.take_pending,
+        tick_feed=build_tick_feed(live_orders=bool(args.live_orders)),
     )
 
 
@@ -236,6 +268,12 @@ def run(argv: Optional[List[str]] = None) -> int:
         queue.close()
         return 2
 
+    # The live P&L feed lives exactly as long as this process: started here,
+    # stopped in the finally below on every way out. A failed start is
+    # recorded on the feed and the desk falls back to Kite REST; it never
+    # stops the engine.
+    engine.tick_feed.start()
+
     loop_started = time.monotonic()
     interval = float(args.tick_seconds or TICK_INTERVAL_SECONDS)
     stop_reason: Optional[str] = None
@@ -245,7 +283,12 @@ def run(argv: Optional[List[str]] = None) -> int:
             tick_started = time.monotonic()
             engine.tick()
             heartbeat.write(snapshot_status(engine))
-            marks.write(engine.live_pnl)
+            marks.write(
+                engine.live_pnl,
+                sources=engine.live_pnl_source,
+                reasons=engine.live_pnl_reason,
+                feed=live_mark_feed_summary(engine),
+            )
 
             if engine.shutdown_reason is not None and engine.shutdown_complete:
                 # Everything is confirmed CLOSED: there is no useful work left
@@ -299,6 +342,10 @@ def run(argv: Optional[List[str]] = None) -> int:
             final.escalations = dict(engine.failures.escalated)
             final.step_failures = {"accumulated_drift_seconds": int(drift)}
             heartbeat.write_stop_note(final, stop_reason)
+        try:
+            engine.tick_feed.stop()
+        except Exception:  # noqa: BLE001 - never mask the real exit
+            pass
         store.close()
         queue.close()
 
