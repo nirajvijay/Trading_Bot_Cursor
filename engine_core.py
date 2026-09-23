@@ -476,6 +476,8 @@ class ExecutionEngine:
             )
 
     def _ensure_protection(self, positions: List[Position]) -> None:
+        if not engine_clock.protection_retry_allowed(self.now_fn()):
+            return
         for position in positions:
             if position.state != ExecutionState.ENTERED:
                 continue

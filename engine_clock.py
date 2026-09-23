@@ -21,13 +21,30 @@ MARKET_CLOSE_IST = time(15, 30)
 # past this time — it does not force-close anything at 14:00 and does not stop.
 ENTRY_CUTOFF_IST = time(14, 0)
 
-# Proactive square-off of everything still open. A ~10 minute buffer before
-# Zerodha's 15:25 equity MIS auto-square-off, which costs Rs 50 + 18% GST per
-# position and executes into the rush of every other trader's forced exits.
-# Also avoids the last, thinner/choppier minutes before close. Since entries
-# already stopped at 14:00, anything still open has had over an hour to play
-# out — this is not cutting trades short.
-EOD_SQUAREOFF_IST = time(15, 15)
+# Proactive square-off of everything still open. Zerodha stops accepting new
+# MIS orders at 15:12 IST — after that it will refuse both a fresh protective
+# stop and a fresh exit, and may auto-square-off the position itself for a
+# Rs 50 + 18% GST fee. 14:50 leaves ~22 minutes of buffer before that wall,
+# enough for squareoff_all to submit exits for everything open and for
+# reconciliation to confirm each one actually closed, not just submitted.
+# (An earlier version of this constant, 15:15, was set off a stale belief that
+# Zerodha's cutoff was 15:25 — it was already past Zerodha's real 15:12 cutoff
+# and cost a live auto-square-off charge on 2026-09-23; see
+# Reference/broker_tag_fix_and_live_pnl_lag.md section 3.)
+EOD_SQUAREOFF_IST = time(14, 50)
+
+# Zerodha's real MIS order cutoff (not ours — we cannot change this). Anything
+# still trying to place a fresh order at or after this time is guaranteed to
+# be rejected by the broker.
+BROKER_MIS_CUTOFF_IST = time(15, 12)
+
+# Stop retrying a protective stop placement once this close to the broker's
+# real cutoff — a retry here can only ever be rejected, so continuing just
+# hammers Kite and spams the event log. With EOD_SQUAREOFF_IST at 14:50 this
+# should rarely matter; it exists as a belt-and-suspenders guard for whatever
+# keeps a position open past 14:50 anyway (manual override, a stuck
+# square-off, etc).
+PROTECTION_RETRY_CUTOFF_IST = time(15, 5)
 
 
 def to_ist(now: Optional[datetime] = None) -> datetime:
@@ -78,5 +95,10 @@ def start_refusal_reason(now: Optional[datetime] = None) -> Optional[str]:
 
 
 def eod_squareoff_due(now: Optional[datetime] = None) -> bool:
-    """True from 15:15 IST onward: force-close everything still open."""
+    """True from EOD_SQUAREOFF_IST onward: force-close everything still open."""
     return ist_time(now) >= EOD_SQUAREOFF_IST
+
+
+def protection_retry_allowed(now: Optional[datetime] = None) -> bool:
+    """False once too close to Zerodha's real MIS cutoff to place a new stop."""
+    return ist_time(now) < PROTECTION_RETRY_CUTOFF_IST

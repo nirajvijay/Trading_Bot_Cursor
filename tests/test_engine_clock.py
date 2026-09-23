@@ -11,6 +11,7 @@ from engine_clock import (
     ist_time,
     market_session_open,
     new_entries_allowed,
+    protection_retry_allowed,
     start_allowed,
     start_refusal_reason,
     to_ist,
@@ -86,22 +87,33 @@ class StartWindowTests(unittest.TestCase):
 
 
 class EodSquareoffTests(unittest.TestCase):
-    def test_not_due_before_three_fifteen(self) -> None:
-        self.assertFalse(eod_squareoff_due(at(15, 14, 59)))
+    def test_not_due_before_fourteen_fifty(self) -> None:
+        self.assertFalse(eod_squareoff_due(at(14, 49, 59)))
 
-    def test_due_from_three_fifteen_exactly_and_onward(self) -> None:
-        self.assertTrue(eod_squareoff_due(at(15, 15)))
-        self.assertTrue(eod_squareoff_due(at(15, 25)))
+    def test_due_from_fourteen_fifty_exactly_and_onward(self) -> None:
+        self.assertTrue(eod_squareoff_due(at(14, 50)))
+        self.assertTrue(eod_squareoff_due(at(15, 0)))
 
     def test_due_stays_true_past_the_close(self) -> None:
         # A loop still alive past 15:30 must still consider square-off due, not
         # wrap around to "not yet".
         self.assertTrue(eod_squareoff_due(at(15, 45)))
 
-    def test_ten_minute_buffer_before_broker_auto_squareoff(self) -> None:
-        # Zerodha force-closes equity MIS at 15:25; ours must fire before that.
-        self.assertTrue(eod_squareoff_due(at(15, 15)))
-        self.assertFalse(eod_squareoff_due(at(15, 5)))
+    def test_buffer_before_broker_mis_cutoff(self) -> None:
+        # Zerodha stops accepting new MIS orders at 15:12; ours must fire well
+        # before that so squareoff_all can submit and confirm every exit.
+        self.assertTrue(eod_squareoff_due(at(14, 50)))
+        self.assertFalse(eod_squareoff_due(at(14, 40)))
+
+
+class ProtectionRetryCutoffTests(unittest.TestCase):
+    def test_retry_allowed_before_fifteen_oh_five(self) -> None:
+        self.assertTrue(protection_retry_allowed(at(15, 4, 59)))
+
+    def test_retry_blocked_from_fifteen_oh_five_exactly_and_onward(self) -> None:
+        self.assertFalse(protection_retry_allowed(at(15, 5)))
+        self.assertFalse(protection_retry_allowed(at(15, 12)))
+        self.assertFalse(protection_retry_allowed(at(15, 30)))
 
 
 class TimezoneHandlingTests(unittest.TestCase):
@@ -128,6 +140,7 @@ class TimezoneHandlingTests(unittest.TestCase):
             new_entries_allowed,
             start_allowed,
             eod_squareoff_due,
+            protection_retry_allowed,
         ):
             with self.subTest(fn=fn.__name__):
                 self.assertIsInstance(fn(), bool)
