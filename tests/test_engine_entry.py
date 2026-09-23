@@ -380,15 +380,17 @@ class SubmitOutcomeTests(EntryTestCase):
         # No retry with the same numbers.
         self.assertEqual(broker.place_calls, 1)
 
-    def test_ambiguous_then_absent_stays_pending_for_a_fresh_retry(self) -> None:
+    def test_ambiguous_then_absent_finalizes_as_rejected(self) -> None:
         broker = RaisingBroker(TimeoutError("Read timed out"))
         outcome = self.run_entry(broker=broker)
-        self.assertEqual(outcome.result, EntryResult.RETRY_NEXT_TICK)
+        self.assertEqual(outcome.result, EntryResult.REJECTED)
         stored = self.store.get("s1")
         assert stored is not None
-        self.assertEqual(stored.state, ExecutionState.PENDING_ENTRY)
+        self.assertEqual(stored.state, ExecutionState.REJECTED)
         types = [r["event_type"] for r in self.store.list_events("s1")]
-        self.assertEqual(types, ["entry_intent", "entry_ambiguous", "entry_unreached"])
+        self.assertEqual(
+            types, ["entry_intent", "entry_ambiguous", "entry_unreached", "entry_rejected"]
+        )
 
     def test_ambiguous_then_found_filled_proceeds_exactly_like_success(self) -> None:
         broker = RaisingBroker(TimeoutError("Read timed out"))

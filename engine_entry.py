@@ -102,10 +102,10 @@ class FillVerdict(str, Enum):
 
 class EntryResult(str, Enum):
     SKIPPED = "skipped"            # a gate or sizing refused; nothing sent
-    REJECTED = "rejected"          # broker definitively refused
+    REJECTED = "rejected"          # broker definitively refused, or ambiguous
+                                    # and then confirmed absent from the book
     SUBMITTED = "submitted"        # sent, fill not visible yet
     FILLED = "filled"              # sent and filled; see outcome.verdict
-    RETRY_NEXT_TICK = "retry"      # ambiguous, resolved to "never reached broker"
 
 
 @dataclass(frozen=True)
@@ -371,13 +371,22 @@ def submit_entry(
         store.append_event(trade_id_value, "entry_ambiguous", {"reason": response.reason})
         order = resolve_ambiguous_entry(broker, tag=broker_tag)
         if order is None:
-            # Never reached the broker. Leave the intent row in PENDING_ENTRY
-            # so the next tick retries this one fresh, with nothing orphaned at
-            # the broker.
+            # resolve_ambiguous_entry's contract guarantees this means the
+            # order never reached the broker, not merely "not visible yet" --
+            # so this is as final as the definite-rejection branch above.
+            # Finalize here rather than leaving PENDING_ENTRY for a "next
+            # tick" retry that nothing in the tick loop actually performs:
+            # ingest_triggers() never revisits a setup_id once a row for it
+            # exists, and reconciliation treats PENDING_ENTRY as momentary by
+            # construction. Leaving it pending only made a failed entry look
+            # identical to a healthy in-flight one, open-desk table included.
             store.append_event(trade_id_value, "entry_unreached", {"reason": response.reason})
-            return EntryOutcome(
-                EntryResult.RETRY_NEXT_TICK, position, response.reason
+            position.extra["reject_reason"] = response.reason
+            transition(position, ExecutionState.REJECTED)
+            store.save_with_event(
+                position, "entry_rejected", {"reason": response.reason}
             )
+            return EntryOutcome(EntryResult.REJECTED, position, response.reason)
 
     assert order is not None
     position.entry_order_id = str(order.order_id)
