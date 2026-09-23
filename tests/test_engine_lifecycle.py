@@ -26,6 +26,7 @@ from engine_sizing import RiskCappedSizing
 from engine_store import SqlitePositionStore
 from engine_types import ExecutionState, Position, RiskLimits, TriggerCandidate
 from trading_engine_broker import FakeBroker
+from trading_engine_types import BrokerOrder
 
 MORNING = datetime(2026, 9, 22, 5, 0, tzinfo=timezone.utc)      # 10:30 IST
 AFTER_CUTOFF = datetime(2026, 9, 22, 9, 0, tzinfo=timezone.utc)  # 14:30 IST
@@ -606,6 +607,90 @@ class PartialFillStallTests(PartialEntryTestCase):
         engine.tick()
         self.assertNotIn("entry_partial_fill_stalled", self.events("s1"))
         self.assertNotIn(self.KEY, engine.failures.escalated)
+
+
+class KiteRealisedPnlLifecycleTests(LifecycleTestCase):
+    """Realised P&L from Kite's orders, scoped to the trade (B2.1/B2.2/B2.4/B3)."""
+
+    LATER = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    def _open(self, setup_id: str) -> ExecutionEngine:
+        self.candidates = [candidate(setup_id)]
+        engine = self.engine()
+        engine.tick()
+        self.candidates = []
+        return engine
+
+    def _manual_sell(self, order_id: str, qty: int, price: float, minutes: int) -> None:
+        # A close placed by hand in the Kite app: no engine tag.
+        self.broker.orders[order_id] = BrokerOrder(
+            order_id=order_id,
+            tag="",
+            tradingsymbol="AAA",
+            transaction_type="SELL",
+            order_type="MARKET",
+            quantity=qty,
+            status="COMPLETE",
+            average_price=price,
+            filled_quantity=qty,
+            order_timestamp=(self.LATER + timedelta(minutes=minutes)).isoformat(),
+        )
+
+    def test_a_reentered_trade_books_its_own_exit_not_the_earlier_trades(self) -> None:
+        # Regression: select_closing_order's "earliest fill wins" over a
+        # symbol-wide candidate list booked trade #2 against trade #1's stop.
+        engine = self._open("s1")
+        first = self.store.get("s1")
+        assert first is not None
+        self.broker.fill_sl(first.stop_order_id, 106.50)
+        engine.tick()
+        self.assertEqual(self.store.get("s1").state, ExecutionState.CLOSED)
+
+        self.broker.last_prices["AAA"] = 110.0
+        self.candidates = [candidate("s2")]
+        engine.tick()
+        self.candidates = []
+        self.assertEqual(self.store.get("s2").state, ExecutionState.PROTECTED)
+
+        self.broker.last_prices["AAA"] = 111.0
+        self.queue.enqueue(CommandKind.CLOSE_POSITION, trade_id="s2")
+        for _ in range(4):
+            engine.tick()
+        second = self.store.get("s2")
+        assert second is not None
+        self.assertEqual(second.state, ExecutionState.CLOSED)
+        self.assertEqual(second.extra.get("close_reason"), CloseReason.MANUAL_CLOSE.value)
+        self.assertEqual(second.extra.get("closing_order_id"), second.exit_order_id)
+        self.assertNotEqual(second.extra.get("closing_order_id"), first.stop_order_id)
+        self.assertAlmostEqual(second.realised_pnl, (111.0 - 110.0) * 295, places=2)
+        # Trade #1 is untouched.
+        self.assertAlmostEqual(self.store.get("s1").realised_pnl, (106.50 - 110.0) * 295, places=2)
+
+    def test_a_manual_close_in_kite_in_two_pieces(self) -> None:
+        engine = self._open("s1")
+        self._manual_sell("m1", 100, 112.0, minutes=0)
+        engine.tick()
+        self._manual_sell("m2", 195, 113.0, minutes=1)
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.CLOSED)
+        self.assertEqual(
+            stored.extra.get("close_reason"), CloseReason.MANUAL_BROKER_INTERVENTION.value
+        )
+        self.assertAlmostEqual(stored.realised_pnl, 100 * 2.0 + 195 * 3.0, places=2)
+        self.assertEqual(sorted(stored.extra.get("exit_order_ids")), ["m1", "m2"])
+
+    def test_the_loss_cap_counts_the_full_loss_of_an_exit_in_pieces(self) -> None:
+        engine = self._open("s1")
+        self._manual_sell("m1", 100, 108.0, minutes=0)
+        engine.tick()
+        self._manual_sell("m2", 195, 107.0, minutes=1)
+        engine.tick()
+        engine.tick()
+        expected_loss = 100 * 2.0 + 195 * 3.0
+        self.assertAlmostEqual(self.store.get("s1").realised_pnl, -expected_loss, places=2)
+        self.assertAlmostEqual(engine.realised_loss_today, expected_loss, places=2)
 
 
 class PartialEntrySquareoffTests(PartialEntryTestCase):

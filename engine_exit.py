@@ -24,9 +24,10 @@ silently misreport every violent exit.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Iterable, List, Optional
+from typing import AbstractSet, Dict, Iterable, List, Optional
 
 from engine_entry import broker_tag_for, exit_transaction_type_for
 from engine_orders import transition
@@ -140,6 +141,153 @@ def exit_side_orders(
     return out
 
 
+# Every tag the engine itself sends: broker_tag_for's "te" + 16 hex, plus the
+# flatten suffix on exits. Anything else (empty, or a human's own tag) is an
+# order placed outside the engine.
+_ENGINE_TAG_RE = re.compile(r"^te[0-9a-f]{16}(" + re.escape(FLATTEN_TAG_SUFFIX) + r")?$")
+
+# Where a closed trade records every exit order it booked, so a later trade in
+# the same stock can never book the same order again.
+EXIT_ORDER_IDS_KEY = "exit_order_ids"
+
+
+def is_engine_tag(tag: Optional[str]) -> bool:
+    return bool(_ENGINE_TAG_RE.match(str(tag or "")))
+
+
+def is_own_exit_order(position: Position, order: BrokerOrder) -> bool:
+    """An exit order this trade itself placed (its stop or its flatten)."""
+    order_id = str(order.order_id)
+    if position.stop_order_id and order_id == str(position.stop_order_id):
+        return True
+    if position.exit_order_id and order_id == str(position.exit_order_id):
+        return True
+    tag = str(order.tag or "")
+    return tag in (broker_tag_for(position.trade_id), flatten_tag_for(position))
+
+
+def trade_exit_orders(
+    position: Position,
+    orders: Iterable[BrokerOrder],
+    *,
+    claimed: AbstractSet[str] = frozenset(),
+    entry_order: Optional[BrokerOrder] = None,
+) -> List[BrokerOrder]:
+    """The exit orders that belong to THIS trade, not merely to its symbol.
+
+    exit_side_orders() matches by symbol, which is fine for one trade per stock
+    per day. With a same-day re-entry it also returns the earlier trade's
+    exits, and "earliest fill wins" then books trade #2 against trade #1's
+    exit. So the candidates are scoped to the trade first:
+
+    1. Orders this trade placed itself (its stop, its flatten) always belong.
+    2. Orders carrying another engine trade's tag never do.
+    3. Orders from outside the engine (a manual close in Kite) belong only if
+       placed after this trade's entry and not already booked by an earlier
+       closed trade (`claimed`).
+    """
+    entry_at = (
+        parse_timestamp_text(entry_order.order_timestamp) if entry_order is not None else None
+    )
+    out: List[BrokerOrder] = []
+    for order in exit_side_orders(position, orders):
+        if is_own_exit_order(position, order):
+            out.append(order)
+            continue
+        if is_engine_tag(order.tag):
+            continue
+        if str(order.order_id) in claimed:
+            continue
+        placed_at = parse_timestamp_text(order.order_timestamp)
+        if entry_at is not None and placed_at is not None and placed_at < entry_at:
+            continue
+        out.append(order)
+    return out
+
+
+@dataclass(frozen=True)
+class RealisedResult:
+    """Realised P&L for one trade, from Kite's own fills on both sides."""
+
+    pnl: Optional[float]
+    entry_price: Optional[float] = None
+    entry_qty: int = 0
+    exit_qty: int = 0
+    exit_order_ids: List[str] = field(default_factory=list)
+    # Exit quantity beyond the entry's filled quantity: an over-exit that left
+    # opposite exposure, recorded rather than booked.
+    over_exit_qty: int = 0
+    reason: Optional[str] = None
+
+
+def kite_realised_pnl(
+    position: Position,
+    *,
+    entry_order: Optional[BrokerOrder],
+    exit_orders: Iterable[BrokerOrder],
+) -> RealisedResult:
+    """Sum every exit against the entry, all at Kite's average prices.
+
+    Never the stored entry_price, and never just one closing order: a trade
+    exited in pieces (a partial stop fill, then our flatten, or a manual close
+    in Kite) books every piece at its own fill price. Exits are taken oldest
+    first and capped at the entry's filled quantity.
+    """
+    if entry_order is None:
+        return RealisedResult(pnl=None, reason="entry_order_not_visible")
+    entry_qty = broker_order_filled_qty(entry_order)
+    entry_avg = entry_order.average_price
+    if entry_qty <= 0 or entry_avg is None or float(entry_avg) <= 0:
+        return RealisedResult(pnl=None, reason="entry_fill_unknown")
+    entry_avg = float(entry_avg)
+
+    def placed(order: BrokerOrder) -> float:
+        stamp = parse_timestamp_text(order.order_timestamp)
+        return stamp.timestamp() if stamp is not None else float("inf")
+
+    remaining = entry_qty
+    booked = 0
+    over = 0
+    pnl = 0.0
+    used: List[str] = []
+    for order in sorted(exit_orders, key=placed):
+        qty = broker_order_filled_qty(order)
+        price = order.average_price
+        if qty <= 0 or price is None or float(price) <= 0:
+            continue
+        take = min(qty, remaining)
+        over += qty - take
+        if take <= 0:
+            continue
+        pnl += realised_pnl(
+            direction=position.candidate.direction,
+            qty=take,
+            entry_fill=entry_avg,
+            exit_fill=float(price),
+        )
+        remaining -= take
+        booked += take
+        used.append(str(order.order_id))
+
+    if booked <= 0:
+        return RealisedResult(
+            pnl=None,
+            entry_price=entry_avg,
+            entry_qty=entry_qty,
+            over_exit_qty=over,
+            reason="no_exit_orders",
+        )
+    return RealisedResult(
+        pnl=round(pnl, 2),
+        entry_price=entry_avg,
+        entry_qty=entry_qty,
+        exit_qty=booked,
+        exit_order_ids=used,
+        over_exit_qty=over,
+        reason=None if booked == entry_qty else "exits_short_of_entry",
+    )
+
+
 def attribute(position: Position, order: BrokerOrder) -> CloseReason:
     """Name the reason for one closing order, from what we recognize."""
     order_id = str(order.order_id)
@@ -248,6 +396,7 @@ def finalize_exit(
     closing: Optional[ClosingOrder],
     store,
     fallback_qty: Optional[int] = None,
+    realised: Optional[RealisedResult] = None,
 ) -> CloseReason:
     """The unified finalization: identical for every path and every reason.
 
@@ -256,6 +405,11 @@ def finalize_exit(
     2. Compute realized P&L from the real entry fill and the real exit fill.
     3. Write a closed event with the real numbers and the reason.
     4. Set state CLOSED and realised_pnl -- in the same transaction as (3).
+
+    When `realised` is given (the engine's normal path), realised P&L is
+    Kite's: every exit piece against the entry order's Kite average price,
+    which also feeds the daily-loss cap. Without it, the single closing order
+    against the recorded entry price is used, as before.
     """
     reason = closing.reason if closing is not None else CloseReason.UNATTRIBUTED
     exit_fill = closing.fill_price if closing is not None else None
@@ -263,7 +417,10 @@ def finalize_exit(
     closing_order_id = str(closing.order.order_id) if closing is not None else None
 
     pnl: Optional[float] = None
-    if exit_fill is not None and position.entry_price is not None:
+    if realised is not None:
+        pnl = realised.pnl
+        position.extra[EXIT_ORDER_IDS_KEY] = list(realised.exit_order_ids)
+    elif exit_fill is not None and position.entry_price is not None:
         qty = exit_qty or int(position.qty or 0)
         pnl = realised_pnl(
             direction=position.candidate.direction,
@@ -287,6 +444,19 @@ def finalize_exit(
             "exit_qty": exit_qty,
             "entry_fill": position.entry_price,
             "realised_pnl": pnl,
+            **(
+                {
+                    "pnl_source": "kite_orders",
+                    "kite_entry_price": realised.entry_price,
+                    "kite_entry_qty": realised.entry_qty,
+                    "kite_exit_qty": realised.exit_qty,
+                    "exit_order_ids": list(realised.exit_order_ids),
+                    "over_exit_qty": realised.over_exit_qty,
+                    "realised_note": realised.reason,
+                }
+                if realised is not None
+                else {}
+            ),
         },
     )
     return reason

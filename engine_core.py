@@ -36,10 +36,13 @@ from engine_entry import (
     submit_entry,
 )
 from engine_exit import (
+    EXIT_ORDER_IDS_KEY,
     CloseReason,
     finalize_exit,
     flatten,
     identify_closing_order,
+    kite_realised_pnl,
+    trade_exit_orders,
 )
 from engine_feed import FeedMonitor
 from engine_orders import transition
@@ -464,15 +467,50 @@ class ExecutionEngine:
         self.failures.escalated[key] = detail
         self._on_escalate(key, detail)
 
+    def _claimed_exit_order_ids(self, position: Position) -> set:
+        """Exit orders already booked by earlier closed trades in this stock."""
+        claimed: set = set()
+        symbol = position.candidate.tradingsymbol
+        for closed in self.store.closed_today(self.session_date):
+            if closed.trade_id == position.trade_id:
+                continue
+            if closed.candidate.tradingsymbol != symbol:
+                continue
+            claimed.update(str(i) for i in closed.extra.get(EXIT_ORDER_IDS_KEY) or [])
+            if closed.extra.get("closing_order_id"):
+                claimed.add(str(closed.extra["closing_order_id"]))
+        return claimed
+
     def _apply_reconciliation(self, position: Position, decision, truth: BrokerTruth) -> None:
         if decision.has(ReconcileAction.FINALIZE_EXIT):
-            closing = identify_closing_order(position, truth.orders_by_id.values())
+            entry_order = truth.order(position.entry_order_id)
+            exits = trade_exit_orders(
+                position,
+                truth.orders_by_id.values(),
+                claimed=self._claimed_exit_order_ids(position),
+                entry_order=entry_order,
+            )
+            closing = identify_closing_order(position, exits)
+            realised = kite_realised_pnl(
+                position, entry_order=entry_order, exit_orders=exits
+            )
             finalize_exit(
                 position,
                 closing=closing,
                 store=self.store,
                 fallback_qty=int(position.qty or 0),
+                realised=realised,
             )
+            if realised.over_exit_qty > 0:
+                self.store.append_event(
+                    position.trade_id,
+                    "over_exit_detected",
+                    {
+                        "over_exit_qty": realised.over_exit_qty,
+                        "entry_qty": realised.entry_qty,
+                        "exit_order_ids": realised.exit_order_ids,
+                    },
+                )
             return
 
         if decision.has(ReconcileAction.APPLY_ENTRY_FILL):
