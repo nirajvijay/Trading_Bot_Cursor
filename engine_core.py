@@ -45,10 +45,18 @@ from engine_exit import (
     trade_exit_orders,
 )
 from engine_feed import FeedMonitor
+from engine_live_marks import (
+    REASON_NOT_ENTERED,
+    SOURCE_KITE_REST,
+    LiveMark,
+    compute_live_mark,
+)
+from engine_live_ticks import NullTickFeed, TickFeedHealth
 from engine_orders import transition
 from engine_priority import VWAP_ENTRY_CLASSES, rank_candidates
 from engine_protection import ensure_protected
 from engine_reconcile import (
+    HOLDING_STATES,
     ENTRY_PARTIAL_WAIT_REASON,
     ENTRY_WORKING_WAIT_REASON,
     BrokerTruth,
@@ -71,6 +79,7 @@ from engine_sizing import SizingPolicy
 from engine_squareoff import SquareoffProgress, squareoff_all
 from engine_types import ExecutionState, Position, TriggerCandidate
 from trading_engine_broker import BrokerPort, parse_timestamp_text
+from trading_engine_types import broker_order_filled_qty
 
 # Kite's own day P&L for a stock, pinned on the closed row that made it flat.
 STOCK_DAY_KEY = "stock_day"
@@ -123,6 +132,7 @@ class ExecutionEngine:
         run_id: Optional[str] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         command_source: Optional[Callable[[], list]] = None,
+        tick_feed=None,
     ) -> None:
         self.broker = broker
         self.store = store
@@ -150,7 +160,13 @@ class ExecutionEngine:
         self.shutdown_reason: Optional[CloseReason] = None
         self.shutdown_complete = False
         self.breached = False
+        # Display only (the desk's Open P&L). Never read by stops,
+        # reconciliation, the risk cap or square-off.
+        self.tick_feed = tick_feed if tick_feed is not None else NullTickFeed()
         self.live_pnl: Dict[str, Optional[float]] = {}
+        self.live_pnl_source: Dict[str, str] = {}
+        self.live_pnl_reason: Dict[str, Optional[str]] = {}
+        self.live_feed_health: TickFeedHealth = self.tick_feed.health()
         self.last_truth: Optional[BrokerTruth] = None
         self.escalation_notices: List[str] = []
         self.realised_loss_today = 0.0
@@ -387,6 +403,9 @@ class ExecutionEngine:
         """
         if not positions:
             self.live_pnl = {}
+            self.live_pnl_source = {}
+            self.live_pnl_reason = {}
+            self._sync_tick_feed([])
             return
 
         truth = fetch_broker_truth(self.broker, symbols_of(positions))
@@ -399,9 +418,7 @@ class ExecutionEngine:
             )
             return
 
-        self.live_pnl = {
-            p.trade_id: truth.pnl.get(p.candidate.tradingsymbol) for p in positions
-        }
+        self._update_live_marks(positions, truth)
 
         for position in positions:
             decision = reconcile(position, truth)
@@ -409,6 +426,72 @@ class ExecutionEngine:
             if decision.is_noop:
                 continue
             self._apply_reconciliation(position, decision, truth)
+
+        # After reconciliation, so a trade that just filled is subscribed and
+        # one that just closed is dropped.
+        self._sync_tick_feed(positions)
+
+    # ------------------------------------------------------------------
+    # Live Open P&L for the desk (display only)
+    # ------------------------------------------------------------------
+
+    def _update_live_marks(self, positions: List[Position], truth: BrokerTruth) -> None:
+        """Per-trade Open P&L: WebSocket tick against Kite's entry fill price,
+        or Kite REST pnl while the feed cannot be trusted.
+
+        Guarded: a failure here must never count against reconciliation, whose
+        escalation pauses entries. It degrades to Kite REST pnl instead.
+        """
+        try:
+            now = self.now_fn()
+            health = self.tick_feed.health()
+            values: Dict[str, Optional[float]] = {}
+            sources: Dict[str, str] = {}
+            reasons: Dict[str, Optional[str]] = {}
+            for p in positions:
+                kite_rest = truth.pnl.get(p.candidate.tradingsymbol)
+                if p.state not in HOLDING_STATES:
+                    mark = LiveMark(kite_rest, SOURCE_KITE_REST, REASON_NOT_ENTERED)
+                else:
+                    entry = truth.order(p.entry_order_id)
+                    entry_qty = broker_order_filled_qty(entry) if entry is not None else 0
+                    open_qty = min(int(p.qty or 0), entry_qty) if entry_qty else 0
+                    mark = compute_live_mark(
+                        direction=p.candidate.direction,
+                        entry_avg=entry.average_price if entry is not None else None,
+                        qty=open_qty,
+                        tick=self.tick_feed.latest(p.candidate.instrument_token),
+                        feed_health=health,
+                        kite_rest_pnl=kite_rest,
+                        now=now,
+                    )
+                values[p.trade_id] = mark.value
+                sources[p.trade_id] = mark.source
+                reasons[p.trade_id] = mark.reason
+            self.live_pnl = values
+            self.live_pnl_source = sources
+            self.live_pnl_reason = reasons
+            self.live_feed_health = health
+        except Exception as exc:  # noqa: BLE001 - display must never break a tick
+            self.live_pnl = {
+                p.trade_id: truth.pnl.get(p.candidate.tradingsymbol) for p in positions
+            }
+            self.live_pnl_source = {p.trade_id: SOURCE_KITE_REST for p in positions}
+            self.live_pnl_reason = {p.trade_id: f"mark_error: {exc}" for p in positions}
+
+    def _sync_tick_feed(self, positions: List[Position]) -> None:
+        """Subscribe to exactly the instruments held right now."""
+        try:
+            self.tick_feed.sync(
+                {
+                    int(p.candidate.instrument_token)
+                    for p in positions
+                    if p.state in HOLDING_STATES and p.candidate.instrument_token
+                }
+            )
+            self.live_feed_health = self.tick_feed.health()
+        except Exception:  # noqa: BLE001 - display must never break a tick
+            pass
 
     def _watch_waiting_entry(self, position: Position, decision) -> None:
         """Escalate an entry left waiting at the broker for too long. Alert only.
