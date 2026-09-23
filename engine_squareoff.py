@@ -27,6 +27,7 @@ from engine_reconcile import HOLDING_STATES
 from engine_risk import DailyLossCheck, RiskPolicy
 from engine_store import realised_loss_rupees
 from engine_types import ExecutionState, Position
+from trading_engine_types import broker_order_filled_qty
 
 # Nothing has filled yet, so there is no size to flatten — these get cancelled.
 UNFILLED_STATES = (ExecutionState.PENDING_ENTRY, ExecutionState.ENTRY_SUBMITTED)
@@ -184,6 +185,19 @@ def _cancel_unfilled(
     if status not in {"CANCELLED", "REJECTED"}:
         store.append_event(
             position.trade_id, "entry_cancel_ambiguous", {"status": status}
+        )
+        return False
+    filled = broker_order_filled_qty(result)
+    if filled > 0:
+        # Cancelled, but part of it filled first: those shares are really held.
+        # Marking the trade CANCELLED would drop them from every later check,
+        # including this square-off. Leave it for reconciliation, which applies
+        # the now-final partial fill next tick; the square-off then flattens it
+        # like any other held position.
+        store.append_event(
+            position.trade_id,
+            "entry_cancel_partial_fill",
+            {"order_id": result.order_id, "filled": filled},
         )
         return False
 

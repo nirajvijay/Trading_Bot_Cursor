@@ -608,6 +608,27 @@ class PartialFillStallTests(PartialEntryTestCase):
         self.assertNotIn(self.KEY, engine.failures.escalated)
 
 
+class PartialEntrySquareoffTests(PartialEntryTestCase):
+    """A partly filled entry caught by a square-off is flattened, never dropped."""
+
+    def test_kill_all_flattens_the_filled_part_of_a_partial_entry(self) -> None:
+        engine = self._submit()
+        self._fill(120, 110.10)
+        engine.tick()
+        self.queue.enqueue(CommandKind.KILL_ALL)
+        for _ in range(5):
+            engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        events = self.events("s1")
+        self.assertIn("entry_cancel_partial_fill", events)
+        self.assertNotIn("cancelled", events)
+        self.assertEqual(stored.state, ExecutionState.CLOSED)
+        self.assertEqual(stored.qty, 120)
+        self.assertEqual(self.broker.list_net_positions().get("AAA", 0), 0)
+        self.assertTrue(engine.shutdown_complete)
+
+
 class UnfilledEntryStallTests(PartialEntryTestCase):
     """An entry still OPEN at Kite with 0 filled past 10s: escalated once, alert only."""
 
