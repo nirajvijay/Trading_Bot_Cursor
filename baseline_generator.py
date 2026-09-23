@@ -35,9 +35,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from api.config import BASELINES_DB_PATH, HISTORICAL_DB_PATH
+
 ROOT = Path(__file__).resolve().parent
-DEFAULT_HISTORICAL_DB_PATH = ROOT / "data" / "nifty50_historical.db"
-DEFAULT_BASELINES_DB_PATH = ROOT / "data" / "nifty50_baselines.db"
+DEFAULT_HISTORICAL_DB_PATH = HISTORICAL_DB_PATH
+DEFAULT_BASELINES_DB_PATH = BASELINES_DB_PATH
 
 GENERATOR_VERSION = "1.0.0"
 LOOKBACK_SESSIONS = 21
@@ -187,35 +189,17 @@ def discover_sessions_for_stock(
     """
     Return this stock's latest completed session dates (YYYY-MM-DD), newest last.
 
-    Only sessions on or before as_of are considered. When as_of is None, uses
-    all available completed sessions for the stock.
+    Incomplete calendar dates (failing session_quality) are excluded.
+    Only sessions on or before as_of are considered.
     """
-    if as_of is not None:
-        rows = historical_conn.execute(
-            """
-            SELECT DISTINCT substr(candle_time, 1, 10) AS session_date
-            FROM candles
-            WHERE instrument_token = ?
-              AND substr(candle_time, 1, 10) <= ?
-            ORDER BY session_date DESC
-            LIMIT ?
-            """,
-            (instrument_token, as_of, lookback_sessions),
-        ).fetchall()
-    else:
-        rows = historical_conn.execute(
-            """
-            SELECT DISTINCT substr(candle_time, 1, 10) AS session_date
-            FROM candles
-            WHERE instrument_token = ?
-            ORDER BY session_date DESC
-            LIMIT ?
-            """,
-            (instrument_token, lookback_sessions),
-        ).fetchall()
+    from session_quality import discover_completed_sessions
 
-    # Query returns newest-first; reverse to chronological order.
-    return [row[0] for row in reversed(rows)]
+    return discover_completed_sessions(
+        historical_conn,
+        instrument_token,
+        lookback_sessions=lookback_sessions,
+        as_of=as_of,
+    )
 
 
 def load_session_candles(
@@ -457,7 +441,23 @@ def generate_baselines(
 
             baselines_conn.commit()
 
-        run_as_of = as_of or (max(as_of_dates_seen) if as_of_dates_seen else "")
+        written_as_of_dates = sorted(as_of_dates_seen)
+        if len(written_as_of_dates) == 1:
+            written_as_of = written_as_of_dates[0]
+        elif written_as_of_dates:
+            # Prefer the newest written as-of when stocks diverge.
+            written_as_of = written_as_of_dates[-1]
+        else:
+            written_as_of = ""
+
+        requested_as_of_matched = (
+            True
+            if as_of is None
+            else bool(as_of_dates_seen) and as_of_dates_seen == {as_of}
+        )
+        # Log the as-of that was actually written into baseline rows — never the
+        # requested date when every stock fell back to an older completed session.
+        run_as_of = written_as_of
         log_generation_run(
             baselines_conn,
             generated_at=generated_at,
@@ -481,7 +481,9 @@ def generate_baselines(
         "historical_db": str(historical_db),
         "baselines_db": str(baselines_db),
         "generated_at": generated_at,
-        "baseline_as_of_date": as_of or (max(as_of_dates_seen) if as_of_dates_seen else ""),
+        "baseline_as_of_date": written_as_of,
+        "requested_as_of": as_of,
+        "requested_as_of_matched": requested_as_of_matched,
         "lookback_sessions": lookback_sessions,
         "trim_fraction": trim_fraction,
         "generator_version": GENERATOR_VERSION,
@@ -549,11 +551,33 @@ def main() -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    print("\nBaseline generation complete")
+    requested = summary.get("requested_as_of")
+    written = summary.get("baseline_as_of_date") or ""
+    matched = bool(summary.get("requested_as_of_matched"))
+
+    if requested and not matched:
+        print("\nBaseline generation incomplete for requested as-of")
+        print(f"  requested as_of:      {requested}")
+        print(f"  wrote as_of:          {written or 'none'}")
+        if written and written != requested:
+            print(
+                f"  reason:               requested {requested} → wrote {written} "
+                f"because {requested} is not a completed session for the universe"
+            )
+        else:
+            print(
+                f"  reason:               requested {requested} produced no "
+                f"baseline rows at that as-of"
+            )
+    else:
+        print("\nBaseline generation complete")
     print(f"  historical_db:        {summary['historical_db']}")
     print(f"  baselines_db:         {summary['baselines_db']}")
     print(f"  generated_at:         {summary['generated_at']}")
     print(f"  baseline_as_of_date:  {summary['baseline_as_of_date']}")
+    if requested:
+        print(f"  requested_as_of:      {requested}")
+        print(f"  requested_matched:    {matched}")
     print(f"  lookback_sessions:    {summary['lookback_sessions']}")
     print(f"  trim_fraction:        {summary['trim_fraction']}")
     print(f"  generator_version:    {summary['generator_version']}")
@@ -566,6 +590,11 @@ def main() -> None:
         print(f"  as_of dates used:     {', '.join(summary['as_of_dates_seen'])}")
     if summary["errors"]:
         print(f"  errors:               {len(summary['errors'])}")
+
+    if requested and not matched:
+        # Fail closed for website generate / automation: success only when the
+        # written baseline_as_of_date equals the requested as-of.
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

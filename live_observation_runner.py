@@ -2,13 +2,14 @@
 Live observation runner: Kite ticks → 1m/5m candles → spike → pullback → continuation.
 
 Observation only. No orders, risk, or execution.
-Default run duration: 60 minutes.
+Default run duration: 60 minutes (or --until-session-close for full session to 15:30 IST).
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sqlite3
 import sys
@@ -20,11 +21,21 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 from zoneinfo import ZoneInfo
 
+from api.runner_status import write_runner_status
+from api.services.observation_runner import (
+    seconds_until_session_close,
+    session_close_datetime,
+)
 from baseline_store import BaselineStore, DEFAULT_BASELINES_DB_PATH
 from candle_aggregation import CompletedOneMinuteCandle
 from candle_emission import CandleEmissionError
 from continuation_tick_size import TickSizePreflightError, preflight_tick_sizes
-from continuation_types import ContinuationRejectedEvent, ContinuationTriggeredEvent
+from continuation_types import (
+    ContinuationArmedEvent,
+    ContinuationDisarmedEvent,
+    ContinuationRejectedEvent,
+    ContinuationTriggeredEvent,
+)
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
 from intraday_continuation_engine import IntradayContinuationEngine
 from intraday_continuation_writer import IntradayContinuationWriter
@@ -43,6 +54,8 @@ from pullback_indicators import Ema20State
 from spike_types import IntradaySpikeEvent
 from tick_event import IST
 from tick_receiver import TickReceiver
+from vwap_qualifier_v2 import VwapQualifierV2
+from vwap_qualifier_v2_writer import VwapQualifierV2Writer
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST)
@@ -297,7 +310,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--duration-minutes",
         type=float,
         default=60.0,
-        help="Auto-stop after N minutes (default: 60)",
+        help="Auto-stop after N minutes (default: 60; ignored with --until-session-close)",
+    )
+    p.add_argument(
+        "--until-session-close",
+        action="store_true",
+        help="Auto-stop at 15:30 IST (overrides --duration-minutes)",
     )
     p.add_argument(
         "--db",
@@ -325,7 +343,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--queue-maxsize", type=int, default=10_000)
     p.add_argument("--stale-seconds", type=float, default=30.0)
-    p.add_argument("--health-interval", type=float, default=10.0)
+    # Keep the status heartbeat comfortably below the execution engine's
+    # five-second feed-stale safety cutoff.
+    p.add_argument("--health-interval", type=float, default=2.0)
+    p.add_argument(
+        "--status-file",
+        type=Path,
+        default=None,
+        help="Optional path to write runner status JSON for the read API",
+    )
     return p.parse_args(argv)
 
 
@@ -342,17 +368,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     session_date = _ist_today()
     stocks = load_nifty50_tokens(args.instruments_db)
     if not stocks:
-        print("No Nifty 50 tokens loaded from %s" % args.instruments_db, flush=True)
+        print("No Nifty 100 tokens loaded from %s" % args.instruments_db, flush=True)
         return 1
     token_to_symbol = {s.instrument_token: s.tradingsymbol for s in stocks}
     tokens = list(token_to_symbol.keys())
     token_set = set(tokens)
 
-    print(
-        "Observation-only live runner | session_date=%s | duration=%.1f min | tokens=%d"
-        % (session_date, args.duration_minutes, len(tokens)),
-        flush=True,
-    )
+    if args.until_session_close:
+        stop_at = session_close_datetime()
+        print(
+            "Observation-only live runner | session_date=%s | until_session_close=%s | tokens=%d"
+            % (session_date, stop_at.isoformat(timespec="seconds"), len(tokens)),
+            flush=True,
+        )
+    else:
+        print(
+            "Observation-only live runner | session_date=%s | duration=%.1f min | tokens=%d"
+            % (session_date, args.duration_minutes, len(tokens)),
+            flush=True,
+        )
     print("DB: %s" % args.db, flush=True)
     print(
         "Restored 0 active setup(s) (restore deferred / none present)",
@@ -424,6 +458,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     pullback_writer = IntradayPullbackWriter(db_path=args.db)
     continuation_writer = IntradayContinuationWriter(db_path=args.db)
+    vwap_writer = VwapQualifierV2Writer(db_path=args.db)
+    vwap_engine = VwapQualifierV2(
+        session_date=session_date,
+        token_to_symbol=token_to_symbol,
+        writer=vwap_writer,
+        start_scheduler=True,
+    )
 
     try:
         tick_sizes = preflight_tick_sizes(args.instruments_db, tokens)
@@ -480,6 +521,35 @@ def main(argv: Optional[list[str]] = None) -> int:
             ),
             flush=True,
         )
+        try:
+            qualification = vwap_engine.on_triggered(event)
+        except Exception:  # noqa: BLE001
+            logger.exception("vwap qualifier on_raw_trigger failed")
+            return
+        if qualification is not None:
+            print(
+                "VWAP_QUALIFIED %s setup=%s class=%s gap=%s reason=%s"
+                % (
+                    event.tradingsymbol,
+                    event.setup_id,
+                    qualification.classification,
+                    "%.4f" % qualification.gap if qualification.gap is not None else "-",
+                    qualification.quality_reason or "-",
+                ),
+                flush=True,
+            )
+
+    def on_armed(event: ContinuationArmedEvent) -> None:
+        try:
+            vwap_engine.on_armed(event)
+        except Exception:  # noqa: BLE001
+            logger.exception("vwap v2 on_armed failed")
+
+    def on_disarmed(event: ContinuationDisarmedEvent) -> None:
+        try:
+            vwap_engine.on_disarmed(event.setup_id, event.instrument_token)
+        except Exception:  # noqa: BLE001
+            logger.exception("vwap v2 on_disarmed failed")
 
     def on_rejected(event: ContinuationRejectedEvent) -> None:
         state.continuation_rejected += 1
@@ -503,6 +573,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         pullback_closer=engine,
         on_triggered=on_triggered,
         on_rejected=on_rejected,
+        on_armed=on_armed,
+        on_disarmed=on_disarmed,
     )
     continuation_holder["engine"] = continuation
 
@@ -548,6 +620,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         detector.on_candle(candle)
         continuation.on_one_minute(candle)
+        vwap_engine.on_one_minute(candle)
 
     def track_5m(candle) -> None:
         state.tokens_with_5m.add(candle.instrument_token)
@@ -572,17 +645,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         five_minute_builder=five_builder,
         five_minute_writer=five_writer,
         five_minute_consumers=[track_5m],
-        closeables=[spike_writer, pullback_writer, continuation_writer],
+        closeables=[spike_writer, pullback_writer, continuation_writer, vwap_engine, vwap_writer],
     )
     pipeline = LiveCandlePipeline(
         coordinator=coordinator,
         tick_consumers=[continuation.on_tick],
     )
 
+    def on_feed_ready(restored_at) -> None:
+        pipeline.builder.mark_feed_restored(restored_at)
+        vwap_engine.mark_feed_restored(restored_at)
+
+    def on_feed_interrupted(interrupted_at) -> None:
+        pipeline.builder.mark_feed_interrupted(interrupted_at)
+        vwap_engine.mark_feed_interrupted(interrupted_at)
+
     receiver = TickReceiver(
         on_tick=pipeline.on_tick,
-        on_feed_ready=pipeline.builder.mark_feed_restored,
-        on_feed_interrupted=pipeline.builder.mark_feed_interrupted,
+        on_feed_ready=on_feed_ready,
+        on_feed_interrupted=on_feed_interrupted,
         instruments_db=args.instruments_db,
         queue_maxsize=args.queue_maxsize,
         stale_seconds=args.stale_seconds,
@@ -608,22 +689,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    duration_s = max(1.0, float(args.duration_minutes) * 60.0)
-    timer = threading.Timer(duration_s, lambda: _request_stop("duration_elapsed"))
+    if args.until_session_close:
+        duration_s = seconds_until_session_close()
+        stop_reason_name = "session_close"
+    else:
+        duration_s = max(1.0, float(args.duration_minutes) * 60.0)
+        stop_reason_name = "duration_elapsed"
+    timer = threading.Timer(duration_s, lambda: _request_stop(stop_reason_name))
     timer.daemon = True
     timer.start()
 
     metrics_stop = threading.Event()
 
     def _metrics_loop() -> None:
-        while not metrics_stop.wait(max(args.health_interval, 5.0)):
+        while not metrics_stop.wait(max(args.health_interval, 1.0)):
             sm = detector.metrics.snapshot()
             pm = engine.metrics.snapshot()
             cm = continuation.metrics.snapshot()
+            vm = vwap_engine.metrics
             print(
                 "METRICS 1m_tokens=%d 5m_tokens=%d spikes_acc=%d pb_recv=%d "
                 "setups=%d ready_ema=%d ready_shallow=%d inv=%d exp=%d "
                 "cont_trig=%d cont_rej=%d "
+                "vwap_acc=%d vwap_lim=%d vwap_rej=%d vwap_unav=%d "
                 "writer_fail=%d strat_fail=%d degraded=%d 5m_incomplete=%d"
                 % (
                     len(state.tokens_with_1m),
@@ -639,6 +727,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     cm.rejected_volume
                     + cm.rejected_insufficient_history
                     + cm.rejected_unreliable_volume,
+                    vm.accept,
+                    vm.limited,
+                    vm.reject,
+                    vm.unavailable,
                     pm.writer_failure + sm.writer_failures + cm.writer_failures,
                     pm.strategy_failure + cm.strategy_failure,
                     pm.subsystem_degraded + cm.degraded,
@@ -646,17 +738,49 @@ def main(argv: Optional[list[str]] = None) -> int:
                 ),
                 flush=True,
             )
+            if args.status_file is not None:
+                last_tick = receiver.last_tick_at
+                if not receiver.connected:
+                    feed_status = "DISCONNECTED"
+                elif last_tick is None:
+                    feed_status = "WAITING"
+                elif receiver.is_feed_stale():
+                    feed_status = "STALE"
+                else:
+                    feed_status = "STABLE"
+                vwap_payload = None
+                try:
+                    vwap_payload = vwap_engine.status_snapshot()
+                except Exception:  # noqa: BLE001
+                    logger.exception("vwap qualifier status snapshot failed")
+                write_runner_status(
+                    args.status_file,
+                    session_date=session_date,
+                    subscribed_tokens=len(tokens),
+                    feed_status=feed_status,
+                    last_tick_time=last_tick.isoformat() if last_tick else None,
+                    websocket_connected=receiver.connected,
+                    vwap_qualifier=vwap_payload,
+                    pid=os.getpid(),
+                )
 
     metrics_thread = threading.Thread(
         target=_metrics_loop, name="observation-metrics", daemon=True
     )
     metrics_thread.start()
 
-    print(
-        "Starting live feed for %.1f minutes. Ctrl+C to stop early.\n"
-        % args.duration_minutes,
-        flush=True,
-    )
+    if args.until_session_close:
+        print(
+            "Starting live feed until 15:30 IST (%s). Ctrl+C to stop early.\n"
+            % session_close_datetime().isoformat(timespec="seconds"),
+            flush=True,
+        )
+    else:
+        print(
+            "Starting live feed for %.1f minutes. Ctrl+C to stop early.\n"
+            % args.duration_minutes,
+            flush=True,
+        )
 
     exit_code = 0
     try:
@@ -680,6 +804,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         metrics_stop.set()
         metrics_thread.join(timeout=2.0)
         print("\nShutting down pipeline (reason=%s)..." % stop_reason["value"], flush=True)
+        if stop_reason["value"] == "session_close":
+            try:
+                engine.on_session_closed(session_date)
+            except Exception:
+                logger.exception("engine.on_session_closed() failed")
         try:
             pipeline.shutdown()
         except Exception:
@@ -756,6 +885,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             cm.disarmed_pullback_structural,
             cm.audit_sync_failures,
             cm.degraded,
+        ),
+        flush=True,
+    )
+    vm = vwap_engine.metrics
+    print("=== VWAP qualifier metrics ===", flush=True)
+    print(
+        "  classified=%d accept=%d limited=%d reject=%d unavailable=%d "
+        "reconstruct_ok=%d reconstruct_fail=%d overflow=%d"
+        % (
+            vm.classified,
+            vm.accept,
+            vm.limited,
+            vm.reject,
+            vm.unavailable,
+            vm.reconstruct_ok,
+            vm.reconstruct_fail,
+            vm.buffer_overflows,
         ),
         flush=True,
     )

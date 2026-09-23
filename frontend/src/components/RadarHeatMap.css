@@ -1,0 +1,285 @@
+/* Ported from the "Stock Radar" design artifact. Scoped under .radar-heat-map
+   so its tokens (--rhm-*) never leak into or collide with the app's own
+   --color-* variables in index.css. */
+.radar-heat-map {
+  /* Neon-on-white theme. One semantic color per meaning, reused everywhere
+     (status cards, price direction, VWAP badge) so the palette stays simple:
+     gray = idle, yellow/amber = building, green = go, blue = live/triggered,
+     pink-red = rejected/stop. */
+  --rhm-bg: #f4f6fb;
+  --rhm-surface: #ffffff;
+  --rhm-card: #ffffff;
+  --rhm-border: #e2e6ee;
+  --rhm-ink: #0b1220;
+  --rhm-ink-muted: #6b7280;
+  --rhm-ink-on-accent: #ffffff;
+
+  --rhm-cyan: #0091ff;
+
+  --rhm-waiting: #cbd2db;       --rhm-waiting-ink: #6b7280;
+  --rhm-spike: #b5c400;         --rhm-spike-ink: #ffffff;
+  --rhm-setup: #ff8a00;         --rhm-setup-ink: #ffffff;
+  --rhm-armed: #00c853;         --rhm-armed-ink: #ffffff;                    --rhm-armed-glow: rgba(0,200,83,0.35);
+  --rhm-triggered: #0091ff;     --rhm-triggered-ink: #ffffff;                --rhm-triggered-glow: rgba(0,145,255,0.4);
+  --rhm-rejected: #ff1744;      --rhm-rejected-ink: #ffffff;
+  --rhm-negated: #fbe4e8;       --rhm-negated-ink: #b0324a;
+
+  --rhm-up: #00c853;
+  --rhm-down: #ff1744;
+  --rhm-focus: #0091ff;
+
+  /* VWAP confirmation badge — reuses the same semantic colors above */
+  --rhm-vwap-accept: var(--rhm-armed);
+  --rhm-vwap-limited: var(--rhm-setup);
+  --rhm-vwap-reject: var(--rhm-rejected);
+  --rhm-vwap-unavailable: var(--rhm-ink-muted);
+
+  --rhm-radius-sm: 4px;
+  --rhm-radius-md: 8px;
+  --rhm-shadow-card: 0 1px 2px rgba(0,0,0,0.4);
+  --rhm-shadow-modal: 0 20px 60px rgba(0,0,0,0.55);
+
+  --rhm-font-ui: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --rhm-font-mono: "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace;
+
+  background: var(--rhm-bg);
+  color: var(--rhm-ink);
+  font-family: var(--rhm-font-ui);
+  padding: 8px 14px;
+  display: flex; flex-direction: column; gap: 6px;
+  flex: 1 1 auto; min-height: 0;
+}
+
+.radar-heat-map .rhm-header {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  background: var(--rhm-surface); border: 1px solid var(--rhm-border); border-radius: var(--rhm-radius-md);
+  padding: 7px 14px; flex: 0 0 auto;
+}
+.radar-heat-map .rhm-brand-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--rhm-armed); box-shadow: 0 0 8px var(--rhm-armed-glow); flex: 0 0 auto; }
+
+.radar-heat-map .rhm-start-btn {
+  flex: 0 0 auto; font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase;
+  background: var(--rhm-armed); color: var(--rhm-armed-ink); border: none; border-radius: var(--rhm-radius-md);
+  padding: 8px 14px; cursor: pointer;
+}
+.radar-heat-map .rhm-start-btn:disabled { background: var(--rhm-waiting); color: var(--rhm-waiting-ink); cursor: not-allowed; }
+
+.radar-heat-map .rhm-observation-status {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  font-family: var(--rhm-font-ui);
+  font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; color: var(--rhm-armed);
+  background: color-mix(in srgb, var(--rhm-armed) 14%, var(--rhm-card)); border: 1px solid var(--rhm-armed);
+  border-radius: var(--rhm-radius-md); padding: 8px 14px; cursor: pointer;
+}
+.radar-heat-map .rhm-observation-status:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rhm-rejected) 14%, var(--rhm-card)); color: var(--rhm-rejected); border-color: var(--rhm-rejected);
+}
+.radar-heat-map .rhm-observation-status:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.radar-heat-map .rhm-refreshing { flex: 0 0 auto; font-size: 10px; color: var(--rhm-ink-muted); }
+
+.radar-heat-map .rhm-observation-error {
+  flex: 0 0 auto; font-size: 12px; color: var(--rhm-rejected);
+  background: color-mix(in srgb, var(--rhm-rejected) 10%, var(--rhm-surface)); border: 1px solid var(--rhm-rejected);
+  border-radius: var(--rhm-radius-md); padding: 6px 12px;
+}
+
+.radar-heat-map .rhm-theme-toggle {
+  margin-left: auto; order: 5; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--rhm-ink-muted); background: var(--rhm-card); border: 1px solid var(--rhm-border);
+  border-radius: var(--rhm-radius-md); padding: 6px 10px; cursor: pointer;
+}
+.radar-heat-map .rhm-theme-toggle:hover { color: var(--rhm-ink); }
+
+.radar-heat-map .rhm-search-wrap { position: relative; flex: 1 1 220px; max-width: 300px; }
+.radar-heat-map .rhm-search-input {
+  width: 100%; background: var(--rhm-card); border: 1px solid var(--rhm-border);
+  border-radius: var(--rhm-radius-md); color: var(--rhm-ink); font-size: 12px; font-family: var(--rhm-font-ui);
+  padding: 7px 10px 7px 26px; outline: none;
+}
+.radar-heat-map .rhm-search-input:focus { border-color: var(--rhm-focus); }
+.radar-heat-map .rhm-search-icon { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--rhm-ink-muted); }
+
+.radar-heat-map .rhm-sector-select {
+  background: var(--rhm-card); border: 1px solid var(--rhm-border); border-radius: var(--rhm-radius-md);
+  color: var(--rhm-ink); font-size: 11px; font-family: var(--rhm-font-ui); font-weight: 600;
+  padding: 6px 8px; outline: none; flex: 0 0 auto; max-width: 168px;
+}
+.radar-heat-map .rhm-sector-select:focus { border-color: var(--rhm-focus); }
+
+.radar-heat-map .rhm-filters { display: flex; gap: 6px; flex-wrap: wrap; flex: 2 1 auto; }
+.radar-heat-map .rhm-chip {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+  padding: 5px 9px; border-radius: 999px; cursor: pointer; user-select: none;
+  border: 1px solid var(--rhm-border); background: var(--rhm-card); color: var(--rhm-ink-muted);
+}
+.radar-heat-map .rhm-chip.active { color: var(--rhm-bg); border-color: transparent; }
+.radar-heat-map .rhm-chip[data-status="ALL"].active { background: var(--rhm-ink); color: var(--rhm-bg); }
+.radar-heat-map .rhm-chip[data-status="WAITING"].active { background: var(--rhm-waiting); color: var(--rhm-waiting-ink); }
+.radar-heat-map .rhm-chip[data-status="SPIKE"].active { background: var(--rhm-spike); color: var(--rhm-spike-ink); }
+.radar-heat-map .rhm-chip[data-status="SETUP_READY"].active { background: var(--rhm-setup); color: var(--rhm-setup-ink); }
+.radar-heat-map .rhm-chip[data-status="TRIGGERED"].active { background: var(--rhm-triggered); color: var(--rhm-triggered-ink); }
+.radar-heat-map .rhm-chip[data-status="REJECTED"].active { background: var(--rhm-rejected); color: var(--rhm-rejected-ink); }
+.radar-heat-map .rhm-chip[data-status="NEGATED"].active { background: var(--rhm-negated); color: var(--rhm-negated-ink); }
+
+.radar-heat-map .rhm-stats { display: flex; gap: 14px; flex: 0 0 auto; }
+.radar-heat-map .rhm-stat { text-align: right; }
+.radar-heat-map .rhm-stat-num { font-family: var(--rhm-font-mono); font-size: 15px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.radar-heat-map .rhm-stat-label { font-size: 8px; color: var(--rhm-ink-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-cyan); }
+.radar-heat-map .rhm-stat.rejected .rhm-stat-num { color: var(--rhm-rejected); }
+
+.radar-heat-map .rhm-grid-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; border-radius: var(--rhm-radius-md); }
+.radar-heat-map .rhm-grid {
+  display: grid;
+  height: 100%;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  /* Adjacent sector slots touch so their tint reads as one shared block. */
+  gap: 0;
+}
+
+.radar-heat-map .rhm-sector-slot {
+  display: flex;
+  min-width: 0; min-height: 0;
+  padding: 4px;
+  border-radius: 0;
+  transition: background 0.15s ease;
+}
+
+.radar-heat-map .rhm-card {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+  border-radius: var(--rhm-radius-sm);
+  border: 1px solid var(--rhm-border);
+  background: var(--rhm-card);
+  box-shadow: var(--rhm-shadow-card);
+  padding: 5px 7px;
+  cursor: pointer;
+  overflow: visible;
+  min-width: 0; min-height: 0;
+  transition: transform 0.08s ease;
+}
+.radar-heat-map .rhm-card:hover { transform: translateY(-1px) scale(1.03); z-index: 5; }
+.radar-heat-map .rhm-card:focus-visible { outline: 2px solid var(--rhm-focus); outline-offset: 1px; }
+.radar-heat-map .rhm-card.rhm-dim { opacity: 0.4; filter: grayscale(0.9) brightness(0.55); pointer-events: none; }
+
+.radar-heat-map .rhm-card-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
+.radar-heat-map .rhm-card-top-dots { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.radar-heat-map .rhm-symbol {
+  font-family: var(--rhm-font-mono); font-size: 13px; font-weight: 700; color: var(--rhm-ink);
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.radar-heat-map .rhm-dot { width: 7px; height: 7px; border-radius: 999px; flex: 0 0 auto; }
+
+.radar-heat-map .rhm-card-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 4px; min-width: 0; }
+.radar-heat-map .rhm-status-group { display: flex; align-items: baseline; gap: 3px; min-width: 0; overflow: hidden; }
+.radar-heat-map .rhm-status-label {
+  font-size: 7.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+/* Prices stay out of the scan view but remain available without a click. */
+.radar-heat-map .rhm-hover-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  padding: 5px 7px;
+  border: 1px solid var(--rhm-ink);
+  border-radius: var(--rhm-radius-sm);
+  background: var(--rhm-ink);
+  color: var(--rhm-ink-on-accent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  font-family: var(--rhm-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 3px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.radar-heat-map .rhm-card:hover .rhm-hover-tooltip,
+.radar-heat-map .rhm-card:focus-visible .rhm-hover-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.radar-heat-map .rhm-sector-slot:nth-child(-n + 10) .rhm-hover-tooltip {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translate(-50%, -3px);
+}
+.radar-heat-map .rhm-sector-slot:nth-child(-n + 10) .rhm-card:hover .rhm-hover-tooltip,
+.radar-heat-map .rhm-sector-slot:nth-child(-n + 10) .rhm-card:focus-visible .rhm-hover-tooltip {
+  transform: translate(-50%, 0);
+}
+
+/* Repeat-setup indicator: symbol has armed/triggered/rejected more than
+   once this session. Neutral color so it doesn't compete with the card's
+   own status color — it's a "there's history here" signal, not an outcome. */
+.radar-heat-map .rhm-setup-count {
+  font-size: 7px; font-family: var(--rhm-font-mono); font-weight: 700;
+  color: var(--rhm-ink-muted); background: var(--rhm-border);
+  border-radius: 999px; padding: 1px 4px; flex: 0 0 auto;
+}
+
+.radar-heat-map .rhm-card.WAITING .rhm-dot { background: var(--rhm-waiting); }
+.radar-heat-map .rhm-card.WAITING .rhm-status-label { color: var(--rhm-waiting-ink); }
+
+.radar-heat-map .rhm-card.SPIKE { background: color-mix(in srgb, var(--rhm-spike) 24%, var(--rhm-card)); border-color: var(--rhm-spike); }
+.radar-heat-map .rhm-card.SPIKE .rhm-dot { background: var(--rhm-spike); box-shadow: 0 0 6px var(--rhm-spike); }
+.radar-heat-map .rhm-card.SPIKE .rhm-status-label { color: var(--rhm-spike); }
+
+.radar-heat-map .rhm-card.SETUP_READY { background: color-mix(in srgb, var(--rhm-setup) 26%, var(--rhm-card)); border-color: var(--rhm-setup); }
+.radar-heat-map .rhm-card.SETUP_READY .rhm-dot { background: var(--rhm-setup); }
+.radar-heat-map .rhm-card.SETUP_READY .rhm-status-label { color: var(--rhm-setup); }
+
+.radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-cyan); box-shadow: 0 0 0 1px var(--rhm-cyan), 0 0 16px var(--rhm-triggered-glow); }
+.radar-heat-map .rhm-card.TRIGGERED .rhm-symbol { color: var(--rhm-triggered-ink); }
+.radar-heat-map .rhm-card.TRIGGERED .rhm-dot { background: var(--rhm-triggered-ink); }
+.radar-heat-map .rhm-card.TRIGGERED .rhm-status-label { color: var(--rhm-triggered-ink); }
+
+.radar-heat-map .rhm-card.REJECTED { background: color-mix(in srgb, var(--rhm-rejected) 22%, var(--rhm-card)); border-color: var(--rhm-rejected); }
+.radar-heat-map .rhm-card.REJECTED .rhm-dot { background: var(--rhm-rejected); }
+.radar-heat-map .rhm-card.REJECTED .rhm-status-label { color: var(--rhm-rejected); }
+
+.radar-heat-map .rhm-card.NEGATED { background: var(--rhm-negated); border-color: var(--rhm-negated); opacity: 0.75; }
+.radar-heat-map .rhm-card.NEGATED .rhm-symbol { color: var(--rhm-negated-ink); }
+.radar-heat-map .rhm-card.NEGATED .rhm-dot { background: var(--rhm-negated-ink); }
+.radar-heat-map .rhm-card.NEGATED .rhm-status-label { color: var(--rhm-negated-ink); }
+
+/* VWAP confirmation badge dot, shown on TRIGGERED cards */
+.radar-heat-map .rhm-vwap-dot { width: 6px; height: 6px; border-radius: 999px; flex: 0 0 auto; }
+.radar-heat-map .rhm-vwap-dot.ACCEPT { background: var(--rhm-vwap-accept); box-shadow: 0 0 6px var(--rhm-vwap-accept); }
+.radar-heat-map .rhm-vwap-dot.LIMITED { background: var(--rhm-vwap-limited); box-shadow: 0 0 6px var(--rhm-vwap-limited); }
+.radar-heat-map .rhm-vwap-dot.REJECT { background: var(--rhm-vwap-reject); box-shadow: 0 0 6px var(--rhm-vwap-reject); }
+.radar-heat-map .rhm-vwap-dot.UNAVAILABLE { background: var(--rhm-vwap-unavailable); }
+
+.radar-heat-map .rhm-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  z-index: 50;
+}
+.radar-heat-map .rhm-modal {
+  width: 460px; max-width: 100%; max-height: 82vh; overflow-y: auto; background: var(--rhm-surface);
+  border: 1px solid var(--rhm-border); border-radius: var(--rhm-radius-md);
+  box-shadow: var(--rhm-shadow-modal); padding: 20px;
+}
+.radar-heat-map .rhm-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.radar-heat-map .rhm-modal-symbol { font-family: var(--rhm-font-mono); font-size: 22px; font-weight: 700; color: var(--rhm-ink); }
+.radar-heat-map .rhm-modal-close { cursor: pointer; color: var(--rhm-ink-muted); font-size: 13px; border: 1px solid var(--rhm-border); border-radius: 999px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: none; }
+.radar-heat-map .rhm-modal-close:hover { color: var(--rhm-ink); }
+.radar-heat-map .rhm-modal-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+.radar-heat-map .rhm-metric-box { background: var(--rhm-card); border: 1px solid var(--rhm-border); border-radius: var(--rhm-radius-md); padding: 8px 10px; }
+.radar-heat-map .rhm-metric-box .rhm-stat-label { display: block; margin-bottom: 3px; }
+.radar-heat-map .rhm-metric-box .rhm-stat-num { font-size: 14px; }
+.radar-heat-map .rhm-timeline-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--rhm-ink-muted); margin-bottom: 8px; }
+
+@media (max-width: 700px) {
+  .radar-heat-map .rhm-header { gap: 10px; }
+  .radar-heat-map .rhm-filters { order: 4; flex-basis: 100%; }
+  .radar-heat-map .rhm-stats { flex-basis: 100%; justify-content: flex-start; order: 3; }
+  .radar-heat-map .rhm-grid { min-width: 760px; }
+}

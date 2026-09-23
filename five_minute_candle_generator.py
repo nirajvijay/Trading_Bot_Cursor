@@ -20,10 +20,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from api.config import HISTORICAL_DB_PATH
 from candle_aggregation import FiveMinuteCandle, OneMinuteCandle, aggregate_session
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_DB_PATH = ROOT / "data" / "nifty50_historical.db"
+DEFAULT_DB_PATH = HISTORICAL_DB_PATH
 
 CREATE_CANDLES_5M_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS candles_5m (
