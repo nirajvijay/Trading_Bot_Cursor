@@ -107,6 +107,13 @@ class StockDayTotalTests(unittest.TestCase):
     def test_an_unattributed_close_is_flagged_not_counted_as_zero_silently(self) -> None:
         desk = build_desk_pnl([row("a", realised=None)], {})
         self.assertTrue(desk.rows["a"].unattributed)
+        self.assertIsNone(desk.rows["a"].stock_day_total)
+
+    def test_an_unattributed_close_with_kites_figure_shows_kites_figure(self) -> None:
+        desk = build_desk_pnl([row("a", realised=None, kite_day=-240.0, ours=0.0, mismatch=True)], {})
+        self.assertTrue(desk.rows["a"].unattributed)
+        self.assertEqual(desk.rows["a"].stock_day_total, -240.0)
+        self.assertEqual(desk.total_realised, -240.0)
 
     def test_a_trade_not_yet_filled_has_no_numbers(self) -> None:
         desk = build_desk_pnl([row("a", state="entry_submitted")], {"a": 12.0})

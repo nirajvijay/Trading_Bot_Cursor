@@ -94,10 +94,17 @@ def build_desk_pnl(
                         "ours": float(stock_day.get("ours") or 0.0),
                         "diff": float(stock_day.get("diff") or 0.0),
                     }
+                unattributed = row.realised_pnl is None
                 out[row.trade_id] = RowPnl(
-                    stock_day_total=round(realised_so_far, 2),
+                    # An unattributed close with no Kite figure has no honest
+                    # total to show: blank, not a misleading running sum.
+                    stock_day_total=(
+                        None
+                        if unattributed and kite_pnl is None
+                        else round(realised_so_far, 2)
+                    ),
                     mismatch=mismatch,
-                    unattributed=row.realised_pnl is None,
+                    unattributed=unattributed,
                 )
                 continue
 
