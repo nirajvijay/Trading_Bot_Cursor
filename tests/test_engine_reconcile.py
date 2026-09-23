@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from engine_entry import broker_tag_for
 from engine_reconcile import (
+    ENTRY_PARTIAL_WAIT_REASON,
     BrokerTruth,
     ReconcileAction,
     fetch_broker_truth,
@@ -418,6 +419,98 @@ class EntryFillTests(unittest.TestCase):
             ),
         )
         self.assertTrue(decision.has(ReconcileAction.APPLY_ENTRY_FILL))
+
+    def test_a_fill_still_in_progress_waits_for_the_rest(self) -> None:
+        decision = reconcile(
+            position(state=ExecutionState.ENTRY_SUBMITTED),
+            truth(
+                orders=[
+                    order(
+                        order_id="eo1",
+                        order_type="MARKET",
+                        status="OPEN",
+                        avg=110.10,
+                        filled=120,
+                    )
+                ]
+            ),
+        )
+        self.assertTrue(decision.is_noop)
+        self.assertEqual(decision.reason, ENTRY_PARTIAL_WAIT_REASON)
+        self.assertEqual(decision.fill_qty, 120)
+
+    def test_a_fully_filled_entry_uses_the_final_average_price(self) -> None:
+        decision = reconcile(
+            position(state=ExecutionState.ENTRY_SUBMITTED),
+            truth(
+                orders=[
+                    order(
+                        order_id="eo1",
+                        order_type="MARKET",
+                        status="COMPLETE",
+                        avg=110.42,
+                        filled=300,
+                    )
+                ]
+            ),
+        )
+        self.assertTrue(decision.has(ReconcileAction.APPLY_ENTRY_FILL))
+        self.assertEqual((decision.fill_price, decision.fill_qty), (110.42, 300))
+
+    def test_partly_filled_then_cancelled_applies_the_partial_quantity(self) -> None:
+        decision = reconcile(
+            position(state=ExecutionState.ENTRY_SUBMITTED),
+            truth(
+                orders=[
+                    order(
+                        order_id="eo1",
+                        order_type="MARKET",
+                        status="CANCELLED",
+                        avg=110.20,
+                        filled=180,
+                    )
+                ]
+            ),
+        )
+        self.assertTrue(decision.has(ReconcileAction.APPLY_ENTRY_FILL))
+        self.assertFalse(decision.has(ReconcileAction.ENTRY_CANCELLED))
+        self.assertEqual((decision.fill_price, decision.fill_qty), (110.20, 180))
+
+    def test_partly_filled_then_rejected_applies_the_partial_quantity(self) -> None:
+        decision = reconcile(
+            position(state=ExecutionState.ENTRY_SUBMITTED),
+            truth(
+                orders=[
+                    order(
+                        order_id="eo1",
+                        order_type="MARKET",
+                        status="REJECTED",
+                        avg=110.20,
+                        filled=50,
+                    )
+                ]
+            ),
+        )
+        self.assertTrue(decision.has(ReconcileAction.APPLY_ENTRY_FILL))
+        self.assertEqual(decision.fill_qty, 50)
+
+    def test_held_shares_without_a_kite_price_wait_rather_than_cancel(self) -> None:
+        decision = reconcile(
+            position(state=ExecutionState.ENTRY_SUBMITTED),
+            truth(
+                orders=[
+                    order(
+                        order_id="eo1",
+                        order_type="MARKET",
+                        status="CANCELLED",
+                        avg=None,
+                        filled=180,
+                    )
+                ]
+            ),
+        )
+        self.assertTrue(decision.is_noop)
+        self.assertEqual(decision.reason, ENTRY_PARTIAL_WAIT_REASON)
 
     def test_a_stop_order_is_never_mistaken_for_the_entry(self) -> None:
         decision = reconcile(

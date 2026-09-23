@@ -460,6 +460,90 @@ BEFORE_RETRY_CUTOFF = datetime(2026, 9, 22, 9, 20, tzinfo=timezone.utc)  # 14:50
 AFTER_RETRY_CUTOFF = datetime(2026, 9, 22, 9, 35, tzinfo=timezone.utc)   # 15:05 IST
 
 
+class EntryFillFinalTests(LifecycleTestCase):
+    """Steps 7-8 run once, on the final fill, never on the first chunk."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.broker.auto_fill_entry = False
+
+    def _submit(self) -> ExecutionEngine:
+        self.candidates = [candidate("s1")]
+        engine = self.engine()
+        engine.tick()
+        self.candidates = []
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.ENTRY_SUBMITTED)
+        return engine
+
+    def _entry(self):
+        stored = self.store.get("s1")
+        assert stored is not None
+        return self.broker.orders[str(stored.entry_order_id)]
+
+    def _fill(self, filled: int, avg: float, status: str = "OPEN") -> None:
+        entry = self._entry()
+        entry.filled_quantity = filled
+        entry.pending_quantity = 0 if status != "OPEN" else int(entry.quantity) - filled
+        entry.average_price = avg
+        entry.status = status
+
+    def test_a_full_fill_in_one_tick_is_applied_and_protected(self) -> None:
+        engine = self._submit()
+        self._fill(295, 110.25, status="COMPLETE")
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.PROTECTED)
+        self.assertEqual((stored.qty, stored.entry_price), (295, 110.25))
+
+    def test_a_fill_in_chunks_is_judged_once_on_the_final_fill(self) -> None:
+        engine = self._submit()
+        self._fill(100, 110.00)
+        engine.tick()
+        self._fill(200, 110.10)
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.ENTRY_SUBMITTED)
+        self.assertNotIn("entry_filled", self.events("s1"))
+
+        self._fill(295, 110.20, status="COMPLETE")
+        engine.tick()
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(self.events("s1").count("entry_filled"), 1)
+        self.assertEqual((stored.qty, stored.entry_price), (295, 110.20))
+        self.assertAlmostEqual(stored.risk_taken_rupees, (110.20 - 106.95) * 295, places=4)
+        self.assertEqual(stored.state, ExecutionState.PROTECTED)
+        self.assertEqual(int(self.broker.orders[str(stored.stop_order_id)].quantity), 295)
+
+    def test_partly_filled_then_cancelled_protects_the_partial_quantity(self) -> None:
+        engine = self._submit()
+        self._fill(120, 110.10)
+        engine.tick()
+        self._fill(120, 110.10, status="CANCELLED")
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(self.events("s1").count("entry_filled"), 1)
+        self.assertEqual((stored.qty, stored.entry_price), (120, 110.10))
+        self.assertEqual(stored.state, ExecutionState.PROTECTED)
+        self.assertEqual(int(self.broker.orders[str(stored.stop_order_id)].quantity), 120)
+
+    def test_cancelled_with_nothing_filled_is_still_a_failed_entry(self) -> None:
+        engine = self._submit()
+        self._fill(0, 0.0, status="CANCELLED")
+        self._entry().average_price = None
+        engine.tick()
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.CANCELLED)
+        self.assertNotIn("entry_filled", self.events("s1"))
+
+
 class ProtectionRetryCutoffTests(LifecycleTestCase):
     def test_stop_replacement_gives_up_past_fifteen_oh_five(self) -> None:
         self.candidates = [candidate("s1")]

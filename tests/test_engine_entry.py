@@ -16,6 +16,7 @@ from engine_entry import (
     apply_entry_fill,
     broker_tag_for,
     compute_stop_price,
+    entry_fill_final,
     is_definite_rejection,
     place_entry,
     resolve_ambiguous_entry,
@@ -538,6 +539,51 @@ class SlippageTests(EntryTestCase):
         )
         apply_entry_fill(pos, fill_price=110.0, filled_qty=100, risk_cap_rupees=900.0)
         self.assertAlmostEqual(pos.risk_taken_rupees, 305.0, places=4)
+
+
+class PartialFillBroker(FakeBroker):
+    """A MARKET entry that comes back from placement only partly filled."""
+
+    def place_market_mis(self, **kwargs) -> BrokerOrder:  # type: ignore[override]
+        placed = super().place_market_mis(**kwargs)
+        placed.status = "OPEN"
+        placed.filled_quantity = 100
+        placed.pending_quantity = int(placed.quantity) - 100
+        placed.average_price = 110.0
+        return placed
+
+
+class EntryFillFinalTests(EntryTestCase):
+    def _order(self, *, status: str, filled: int, qty: int = 300) -> BrokerOrder:
+        placed = order(status=status, qty=qty)
+        placed.filled_quantity = filled
+        return placed
+
+    def test_a_fully_filled_order_is_final(self) -> None:
+        self.assertTrue(entry_fill_final(self._order(status="COMPLETE", filled=300)))
+
+    def test_a_complete_order_without_filled_quantity_is_final(self) -> None:
+        # Kite can report COMPLETE with filled_quantity unset; COMPLETE means all of it.
+        self.assertTrue(entry_fill_final(self._order(status="COMPLETE", filled=0)))
+
+    def test_a_working_order_part_way_filled_is_not_final(self) -> None:
+        self.assertFalse(entry_fill_final(self._order(status="OPEN", filled=120)))
+
+    def test_a_cancelled_order_with_some_fill_is_final(self) -> None:
+        self.assertTrue(entry_fill_final(self._order(status="CANCELLED", filled=120)))
+
+    def test_a_rejected_order_with_some_fill_is_final(self) -> None:
+        self.assertTrue(entry_fill_final(self._order(status="REJECTED", filled=50)))
+
+    def test_an_ended_order_with_nothing_filled_is_not_a_fill(self) -> None:
+        self.assertFalse(entry_fill_final(self._order(status="CANCELLED", filled=0)))
+
+    def test_submit_leaves_a_fill_in_progress_to_reconciliation(self) -> None:
+        outcome = self.run_entry(broker=PartialFillBroker(last_prices={"AAA": 110.0}))
+        assert outcome.position is not None
+        self.assertEqual(outcome.result, EntryResult.SUBMITTED)
+        self.assertEqual(outcome.position.state, ExecutionState.ENTRY_SUBMITTED)
+        self.assertNotIn("save:entry_filled", self.store.calls)
 
 
 if __name__ == "__main__":
