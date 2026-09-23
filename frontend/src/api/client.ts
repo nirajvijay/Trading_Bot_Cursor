@@ -1,8 +1,4 @@
 import type {
-  AdminActionResponse,
-  AdminAuditResponse,
-  AdminConfigPatchRequest,
-  AdminConfigResponse,
   AuthStatusResponse,
   CheckTokenResponse,
   KiteStartResponse,
@@ -275,39 +271,6 @@ export function postStopObservation(sessionDate?: string): Promise<ObservationSt
   return postJson<ObservationStopResponse>(`/observation/stop${query}`)
 }
 
-
-export function fetchAdminConfig(): Promise<AdminConfigResponse> {
-  return getJson('/admin/config')
-}
-
-export async function patchAdminConfig(body: AdminConfigPatchRequest): Promise<AdminConfigResponse> {
-  const res = await fetch(`${BASE}/admin/config`, {
-    method: 'PATCH',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...csrfHeaders(),
-    },
-    body: JSON.stringify(body),
-  })
-  return handleResponse(res, '/admin/config')
-}
-
-export function postAdminPause(): Promise<AdminActionResponse> {
-  return postJson('/admin/trading/pause')
-}
-
-export function postAdminResume(): Promise<AdminActionResponse> {
-  return postJson('/admin/trading/resume')
-}
-
-export function fetchAdminAudit(limit = 50, offset = 0): Promise<AdminAuditResponse> {
-  return getJson(`/admin/audit?limit=${limit}&offset=${offset}`)
-}
-
-export function postAdminRollback(targetVersionId: string): Promise<AdminConfigResponse> {
-  return postJson('/admin/config/rollback', { target_version_id: targetVersionId })
-}
 
 // --- Rebuilt execution engine (/execution) ---------------------------------
 

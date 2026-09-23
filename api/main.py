@@ -24,7 +24,6 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from api.auth.settings import cors_origins, validate_startup_settings
 from api.routers.account import router as account_router
-from api.routers.admin import router as admin_router
 from api.routers.auth import router as auth_router
 from api.routers.checklist import router as checklist_router
 from api.routers.execution import router as execution_router
@@ -70,4 +69,3 @@ app.include_router(account_router, prefix="/api/v1")
 app.include_router(checklist_router, prefix="/api/v1")
 app.include_router(observation_router, prefix="/api/v1")
 app.include_router(execution_router, prefix="/api/v1")
-app.include_router(admin_router, prefix="/api/v1")
