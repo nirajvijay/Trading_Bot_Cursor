@@ -237,10 +237,11 @@ def fill_price_of(order: BrokerOrder) -> Optional[float]:
 # fill, so whatever filled by then is final.
 ENTRY_ENDED_STATUSES = frozenset({"CANCELLED", "REJECTED"})
 
-# How long an entry may sit partly filled before it is escalated. Alert only:
-# the already-filled shares have no stop until the fill is applied, so a stall
-# must reach a human, but nothing is cancelled or placed early because of it.
-PARTIAL_FILL_ESCALATE_SECONDS = 10.0
+# How long an entry may keep waiting at the broker (still working with nothing
+# filled, or partly filled) before it is escalated. A MARKET order normally
+# completes within a second, so a stall must reach a human. Alert only: nothing
+# is cancelled or placed early because of it.
+ENTRY_STALL_ESCALATE_SECONDS = 10.0
 
 
 def entry_fill_final(order: BrokerOrder) -> bool:

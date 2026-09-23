@@ -551,7 +551,7 @@ class EntryFillFinalTests(PartialEntryTestCase):
 class PartialFillStallTests(PartialEntryTestCase):
     """An entry stuck partly filled past 10s is escalated once. Alert only."""
 
-    KEY = "entry_partial_fill:s1"
+    KEY = "entry_stalled:s1"
 
     def test_no_escalation_within_ten_seconds(self) -> None:
         engine = self._submit()
@@ -606,6 +606,78 @@ class PartialFillStallTests(PartialEntryTestCase):
         engine.tick()
         self.assertNotIn("entry_partial_fill_stalled", self.events("s1"))
         self.assertNotIn(self.KEY, engine.failures.escalated)
+
+
+class UnfilledEntryStallTests(PartialEntryTestCase):
+    """An entry still OPEN at Kite with 0 filled past 10s: escalated once, alert only."""
+
+    KEY = "entry_stalled:s1"
+
+    def test_no_escalation_within_ten_seconds(self) -> None:
+        engine = self._submit()
+        engine.tick()  # first sighting of the still-working entry
+        self.clock.advance(9.9)
+        engine.tick()
+        self.assertNotIn("entry_unfilled_stalled", self.events("s1"))
+        self.assertNotIn(self.KEY, engine.failures.escalated)
+
+    def test_escalates_exactly_once_and_cancels_nothing(self) -> None:
+        engine = self._submit()
+        for _ in range(15):
+            self.clock.advance(1.0)
+            engine.tick()
+        self.assertEqual(self.events("s1").count("entry_unfilled_stalled"), 1)
+        self.assertIn("0/295 filled", engine.failures.escalated[self.KEY])
+        entry = self._entry()
+        self.assertEqual(str(entry.status), "OPEN")
+        self.assertEqual(int(entry.filled_quantity or 0), 0)
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.ENTRY_SUBMITTED)
+        self.assertIsNone(stored.stop_order_id)
+
+    def test_a_partial_fill_after_the_alert_is_escalated_on_its_own_clock(self) -> None:
+        engine = self._submit()
+        engine.tick()  # first sighting starts the clock
+        self.clock.advance(11.0)
+        engine.tick()
+        self.assertEqual(self.events("s1").count("entry_unfilled_stalled"), 1)
+
+        self._fill(100, 110.00)
+        engine.tick()  # new reason: the clock restarts
+        self.clock.advance(5.0)
+        engine.tick()
+        self.assertNotIn("entry_partial_fill_stalled", self.events("s1"))
+        self.clock.advance(6.0)
+        engine.tick()
+        self.assertEqual(self.events("s1").count("entry_partial_fill_stalled"), 1)
+        self.assertIn("100/295", engine.failures.escalated[self.KEY])
+
+    def test_the_alert_clears_when_the_order_fills(self) -> None:
+        engine = self._submit()
+        engine.tick()  # first sighting starts the clock
+        self.clock.advance(11.0)
+        engine.tick()
+        self.assertIn(self.KEY, engine.failures.escalated)
+        self._fill(295, 110.05, status="COMPLETE")
+        engine.tick()
+        self.assertNotIn(self.KEY, engine.failures.escalated)
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.PROTECTED)
+
+    def test_the_alert_clears_when_kite_cancels_it_unfilled(self) -> None:
+        engine = self._submit()
+        engine.tick()  # first sighting starts the clock
+        self.clock.advance(11.0)
+        engine.tick()
+        self._fill(0, 0.0, status="CANCELLED")
+        self._entry().average_price = None
+        engine.tick()
+        self.assertNotIn(self.KEY, engine.failures.escalated)
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.assertEqual(stored.state, ExecutionState.CANCELLED)
 
 
 class ProtectionRetryCutoffTests(LifecycleTestCase):

@@ -58,9 +58,12 @@ HOLDING_STATES = (
 # States whose stop order should currently be live at the broker.
 STOP_EXPECTED_STATES = (ExecutionState.PROTECTED, ExecutionState.TRAILING)
 
-# An entry holding shares whose fill is not final yet. The engine watches this
-# reason to escalate a stall (engine_entry.PARTIAL_FILL_ESCALATE_SECONDS).
+# Entries still waiting at the broker. The engine watches both reasons to
+# escalate a stall (engine_entry.ENTRY_STALL_ESCALATE_SECONDS).
+# Holding shares whose fill is not final yet (those shares have no stop):
 ENTRY_PARTIAL_WAIT_REASON = "entry_partially_filled_waiting"
+# Still working at the broker with nothing filled:
+ENTRY_WORKING_WAIT_REASON = "entry_still_working"
 
 DEAD_ORDER_STATUSES = {"REJECTED", "CANCELLED"}
 
@@ -324,4 +327,4 @@ def _reconcile_entry(position: Position, truth: BrokerTruth) -> ReconcileDecisio
             order_id=str(order.order_id),
             reason="broker_cancelled",
         )
-    return ReconcileDecision(reason="entry_still_working")
+    return ReconcileDecision(order_id=str(order.order_id), reason=ENTRY_WORKING_WAIT_REASON)
