@@ -45,6 +45,7 @@ class SessionCoverage(BaseModel):
     continuation_decisions: int = 0
     continuation_successful: int = 0
     continuation_failed: int = 0
+    vwap_successful: int = 0
 
 
 class VwapQualifierStatus(BaseModel):
