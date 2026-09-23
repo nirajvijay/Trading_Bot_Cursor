@@ -98,6 +98,7 @@ def fetch_coverage(
     decisions = 0
     continuation_successful = 0
     continuation_failed = 0
+    vwap_successful = 0
     try:
         conn = open_readonly(live_db)
         try:
@@ -170,6 +171,26 @@ def fetch_coverage(
                 """,
                 (session_date,),
             )
+            vwap_successful = _count(
+                conn,
+                """
+                SELECT COUNT(*)
+                FROM live_continuation_decisions d
+                JOIN live_continuation_arms a
+                  ON d.setup_id = a.setup_id
+                 AND d.continuation_rule_version = a.continuation_rule_version
+                WHERE a.session_date = ?
+                  AND d.decision_type = 'TRIGGERED'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM live_vwap_qualifications v
+                    WHERE v.setup_id = a.setup_id
+                      AND v.continuation_rule_version = a.continuation_rule_version
+                      AND v.classification IN ('ACCEPT', 'LIMITED')
+                  )
+                """,
+                (session_date,),
+            )
         finally:
             conn.close()
     except FileNotFoundError:
@@ -187,6 +208,7 @@ def fetch_coverage(
         "continuation_decisions": decisions,
         "continuation_successful": continuation_successful,
         "continuation_failed": continuation_failed,
+        "vwap_successful": vwap_successful,
     }
 
 

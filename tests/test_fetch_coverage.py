@@ -54,6 +54,15 @@ def _create_live_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             PRIMARY KEY (setup_id, continuation_rule_version)
         );
+
+        CREATE TABLE live_vwap_qualifications (
+            setup_id TEXT NOT NULL,
+            continuation_rule_version TEXT NOT NULL,
+            vwap_rule_version TEXT NOT NULL,
+            session_date TEXT NOT NULL,
+            classification TEXT NOT NULL,
+            PRIMARY KEY (session_date, setup_id, continuation_rule_version, vwap_rule_version)
+        );
         """
     )
 
@@ -89,6 +98,17 @@ def _insert_arm_and_decision(
     )
 
 
+def _insert_vwap(conn: sqlite3.Connection, setup_id: str, classification: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO live_vwap_qualifications (
+            setup_id, continuation_rule_version, vwap_rule_version, session_date, classification
+        ) VALUES (?, ?, 'vwap-v1', ?, ?)
+        """,
+        (setup_id, RULE_VERSION, SESSION_DATE, classification),
+    )
+
+
 class FetchCoverageContinuationTests(unittest.TestCase):
     def test_continuation_successful_and_failed_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,6 +121,9 @@ class FetchCoverageContinuationTests(unittest.TestCase):
                 _insert_arm_and_decision(conn, "setup-2", "BAJAJ-AUTO", "REJECTED")
                 _insert_arm_and_decision(conn, "setup-3", "RELIANCE", "TRIGGERED")
                 _insert_arm_and_decision(conn, "setup-4", "OTHER", "DISARMED")
+                _insert_vwap(conn, "setup-1", "ACCEPT")
+                _insert_vwap(conn, "setup-3", "LIMITED")
+                _insert_vwap(conn, "setup-2", "REJECT")
                 _insert_arm_and_decision(
                     conn, "setup-5", "TCS", "TRIGGERED", session_date="2026-08-03"
                 )
@@ -113,6 +136,7 @@ class FetchCoverageContinuationTests(unittest.TestCase):
         self.assertEqual(coverage["continuation_successful"], 2)
         self.assertEqual(coverage["continuation_failed"], 1)
         self.assertEqual(coverage["continuation_decisions"], 4)
+        self.assertEqual(coverage["vwap_successful"], 2)
 
 
 if __name__ == "__main__":

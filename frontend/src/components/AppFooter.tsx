@@ -1,4 +1,3 @@
-import { formatTimeIst } from '../lib/format'
 import { resolveFeedStatus, type RunnerPresence } from '../lib/feedStatus'
 import type { RadarRow, RunnerStatus } from '../api/types'
 import type { AppTab } from './TopAppBar'
@@ -16,7 +15,6 @@ export function AppFooter({
   runnerPresence = 'stopped',
   rows = [],
 }: Props) {
-  const now = formatTimeIst(new Date().toISOString())
   const feed = resolveFeedStatus(status, runnerPresence)
 
   const vwapCounts = rows.reduce(
@@ -38,10 +36,6 @@ export function AppFooter({
           </span>
         </div>
         <span className="label-caps tracking-wider">Demo 5x unless Live Kite orders is checked</span>
-        <div className="flex items-center gap-1.5 font-data">
-          <span className="material-symbols-outlined text-[14px]">schedule</span>
-          <span>{now} IST</span>
-        </div>
       </footer>
     )
   }
@@ -56,10 +50,6 @@ export function AppFooter({
           </span>
         </div>
         <span className="label-caps tracking-wider">Read-only pipeline check · runs independently of the trading engine</span>
-        <div className="flex items-center gap-1.5 font-data">
-          <span className="material-symbols-outlined text-[14px]">schedule</span>
-          <span>{now} IST</span>
-        </div>
       </footer>
     )
   }
@@ -74,10 +64,6 @@ export function AppFooter({
           </span>
         </div>
         <span className="label-caps tracking-wider">Copy commands to run locally</span>
-        <div className="flex items-center gap-1.5 font-data">
-          <span className="material-symbols-outlined text-[14px]">schedule</span>
-          <span>{now} IST</span>
-        </div>
       </footer>
     )
   }
@@ -99,10 +85,6 @@ export function AppFooter({
           </>
         )}
       </span>
-      <div className="flex items-center gap-1.5 font-data">
-        <span className="material-symbols-outlined text-[14px]">schedule</span>
-        <span>{now} IST</span>
-      </div>
     </footer>
   )
 }

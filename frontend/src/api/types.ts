@@ -85,6 +85,7 @@ export interface SessionCoverage {
   continuation_decisions: number
   continuation_successful: number
   continuation_failed: number
+  vwap_successful: number
 }
 
 export interface VwapQualifierStatus {

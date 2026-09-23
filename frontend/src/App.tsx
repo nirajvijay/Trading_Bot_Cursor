@@ -259,6 +259,8 @@ export default function App() {
             <RadarHeatMap
               rows={filteredRows}
               sessionTriggered={coverage?.continuation_successful}
+              sessionVwapSuccessful={coverage?.vwap_successful}
+              sessionRejected={coverage?.continuation_failed}
               loading={loading}
               sessionDate={sessionDate}
               search=""

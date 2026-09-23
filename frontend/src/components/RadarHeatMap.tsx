@@ -85,6 +85,8 @@ function DetailModal({ symbol, sessionDate, onClose }: { symbol: string; session
 export function RadarHeatMap({
   rows,
   sessionTriggered,
+  sessionVwapSuccessful,
+  sessionRejected,
   loading,
   search,
   sessionDate,
@@ -98,6 +100,8 @@ export function RadarHeatMap({
 }: {
   rows: RadarRow[]
   sessionTriggered?: number | null
+  sessionVwapSuccessful?: number | null
+  sessionRejected?: number | null
   loading: boolean
   search: string
   sessionDate: string
@@ -218,9 +222,13 @@ export function RadarHeatMap({
             <div className="rhm-stat-num">{sessionTriggered ?? counts.TRIGGERED}</div>
             <div className="rhm-stat-label">Triggered (session)</div>
           </div>
+          <div className="rhm-stat vwap-successful">
+            <div className="rhm-stat-num">{sessionVwapSuccessful ?? 0}</div>
+            <div className="rhm-stat-label">VWAP success (session)</div>
+          </div>
           <div className="rhm-stat rejected">
-            <div className="rhm-stat-num">{counts.REJECTED}</div>
-            <div className="rhm-stat-label">Rejected (current)</div>
+            <div className="rhm-stat-num">{sessionRejected ?? 0}</div>
+            <div className="rhm-stat-label">Rejected (session)</div>
           </div>
         </div>
       </div>
