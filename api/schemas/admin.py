@@ -32,7 +32,7 @@ class AdminConfigValues(BaseModel):
     protection_confirm_deadline_seconds: float = Field(5, ge=1, le=120)
     entry_remainder_cancel_seconds: float = Field(5, ge=1, le=120)
     entry_cutoff_ist: float = 1445
-    square_off_ist: float = 1515
+    square_off_ist: float = 1450
     setup_expiry_seconds: float = Field(30, gt=0, le=300)
     max_quote_age_seconds: float = Field(2, gt=0, le=30)
     max_entry_drift_r: float = Field(.1, gt=0, le=1)

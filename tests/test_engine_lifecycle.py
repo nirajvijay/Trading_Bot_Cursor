@@ -2,8 +2,8 @@
 
 Covers the paths no single-module test can: trigger to protected in one tick,
 a stop firing at the broker and being noticed, a breach closing everything and
-auto-stopping, the 15:15 cutoff, and a step failing without silencing the rest
-of the tick.
+auto-stopping, the 14:50 EOD square-off cutoff, and a step failing without
+silencing the rest of the tick.
 """
 
 from __future__ import annotations
@@ -454,6 +454,42 @@ class StepIsolationTests(LifecycleTestCase):
         assert stored is not None
         self.assertEqual(stored.state, ExecutionState.PROTECTED)
         self.assertIsNone(stored.realised_pnl)
+
+
+BEFORE_RETRY_CUTOFF = datetime(2026, 9, 22, 9, 20, tzinfo=timezone.utc)  # 14:50 IST
+AFTER_RETRY_CUTOFF = datetime(2026, 9, 22, 9, 35, tzinfo=timezone.utc)   # 15:05 IST
+
+
+class ProtectionRetryCutoffTests(LifecycleTestCase):
+    def test_stop_replacement_gives_up_past_fifteen_oh_five(self) -> None:
+        self.candidates = [candidate("s1")]
+        engine = self.engine()
+        engine.tick()  # s1 is now protected
+        stored = self.store.get("s1")
+        assert stored is not None
+        self.broker.cancel_order(stored.stop_order_id)  # stop lost at the broker
+        self.broker.place_slm = lambda **_: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            RuntimeError("Intraday orders (MIS) are allowed only till 3:12 PM")
+        )
+
+        self.clock.now = BEFORE_RETRY_CUTOFF
+        engine.tick()  # reconciliation notices the missing stop
+        engine.tick()  # a retry is attempted and fails, before the cutoff
+        before_failures = len(
+            [e for e in self.events("s1") if e == "stop_place_failed"]
+        )
+        self.assertGreaterEqual(before_failures, 1)
+
+        self.clock.now = AFTER_RETRY_CUTOFF
+        engine.tick()
+        engine.tick()
+        after_failures = len(
+            [e for e in self.events("s1") if e == "stop_place_failed"]
+        )
+        # No new attempts, and so no new failures, once past the cutoff.
+        # (By 15:05 the 14:50 square-off has already flattened the position
+        # anyway — this asserts the retry itself stopped, independent of that.)
+        self.assertEqual(after_failures, before_failures)
 
 
 class VwapWaitTests(LifecycleTestCase):
