@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Iterable, List, Optional
 
-from engine_entry import exit_transaction_type_for
+from engine_entry import broker_tag_for, exit_transaction_type_for
 from engine_orders import transition
 from engine_types import ExecutionState, Position
 from trading_engine_broker import parse_timestamp_text
@@ -109,8 +109,13 @@ def realised_pnl(
 
 def flatten_tag_for(position: Position) -> str:
     """A tag distinct from the entry's, so entry reconciliation can never
-    mistake our exit order for the entry (a BrokerPort contract requirement)."""
-    return f"{position.trade_id}{FLATTEN_TAG_SUFFIX}"
+    mistake our exit order for the entry (a BrokerPort contract requirement).
+
+    Built from broker_tag_for's bounded, Kite-safe form (not the raw
+    trade_id, which can run well past the 20-char tag limit) plus the
+    distinguishing suffix.
+    """
+    return f"{broker_tag_for(position.trade_id)}{FLATTEN_TAG_SUFFIX}"
 
 
 def exit_side_orders(
@@ -157,7 +162,7 @@ def attribute(position: Position, order: BrokerOrder) -> CloseReason:
                 return CloseReason(str(recorded))
             except ValueError:
                 return CloseReason.UNATTRIBUTED
-    if str(order.order_type) in STOP_ORDER_TYPES and str(order.tag or "") == position.trade_id:
+    if str(order.order_type) in STOP_ORDER_TYPES and str(order.tag or "") == broker_tag_for(position.trade_id):
         # Our own stop, found by tag after its id was lost.
         return CloseReason.STOP_HIT
     # Nothing we recognize at all.

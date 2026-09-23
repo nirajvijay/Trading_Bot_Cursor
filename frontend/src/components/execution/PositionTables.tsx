@@ -2,6 +2,7 @@ import type { ExecutionPosition } from '../../api/types'
 import {
   STALE_MARK_SECONDS,
   inr,
+  isStuckPendingEntry,
   isUnprotected,
   num,
   pnlClass,
@@ -136,12 +137,13 @@ export function OpenPositionsTable({
         )}
         {rows.map((row) => {
           const unprotected = isUnprotected(row.state)
+          const stuck = isStuckPendingEntry(row.state, row.updated_at)
           return (
             <tr
               key={row.trade_id}
               onClick={() => onInspect(row.trade_id)}
               className={`terminal-row border-t border-outline-variant cursor-pointer hover:bg-surface-container-low ${
-                unprotected ? '!bg-red-50' : ''
+                unprotected || stuck ? '!bg-red-50' : ''
               }`}
             >
               <td className="px-3 py-2 font-data font-semibold whitespace-nowrap">
@@ -181,8 +183,8 @@ export function OpenPositionsTable({
                 {inr(row.live_pnl)}
               </td>
               <td className="px-3 py-2 whitespace-nowrap">
-                <span className={unprotected ? 'text-negative font-semibold' : ''}>
-                  {stateLabel(row.state)}
+                <span className={unprotected || stuck ? 'text-negative font-semibold' : ''}>
+                  {stuck ? 'Stuck — never reached broker' : stateLabel(row.state)}
                 </span>
                 {row.manual_review && (
                   <span className="ml-1.5 label-caps text-negative">review</span>

@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from engine_entry import broker_tag_for
 from engine_types import ExecutionState, Position
 from trading_engine_types import (
     STOP_ORDER_TYPES,
@@ -105,7 +106,7 @@ class BrokerTruth:
         direct = self.order(position.stop_order_id)
         if direct is not None and _is_live_stop(direct):
             return direct
-        for candidate in self.orders_by_tag.get(position.trade_id, []):
+        for candidate in self.orders_by_tag.get(broker_tag_for(position.trade_id), []):
             if _is_live_stop(candidate):
                 return candidate
         return None
@@ -278,7 +279,7 @@ def _reconcile_entry(position: Position, truth: BrokerTruth) -> ReconcileDecisio
     """An entry we submitted: did it fill, die, or is it still working?"""
     order = truth.order(position.entry_order_id)
     if order is None:
-        for candidate in truth.orders_by_tag.get(position.trade_id, []):
+        for candidate in truth.orders_by_tag.get(broker_tag_for(position.trade_id), []):
             if str(candidate.order_type) not in STOP_ORDER_TYPES:
                 order = candidate
                 break

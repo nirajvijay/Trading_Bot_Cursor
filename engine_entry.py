@@ -22,6 +22,7 @@ Deliberately not implemented, each rejected during design:
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, List, Optional, Protocol
@@ -50,6 +51,7 @@ DEFINITE_REJECTION_MARKERS = (
     "margin",
     "invalid quantity",
     "invalid order",
+    "invalid tag",
     "quantity",
     "rms",
     "blocked",
@@ -57,6 +59,23 @@ DEFINITE_REJECTION_MARKERS = (
     "freeze",
     LIVE_ORDERS_DISABLED_REASON,
 )
+
+
+def broker_tag_for(trade_id: str) -> str:
+    """A short, stable, alphanumeric order tag Kite will accept for any trade
+    identity, however long.
+
+    Trade ids are built from setup_id (instrument|timestamp|strategy|
+    substrategy) and routinely run past Kite's 20-char tag limit, so every
+    call site that talks to the broker goes through this rather than sending
+    trade_id raw. Deterministic — the same trade_id always yields the same
+    tag — because orders_by_tag() lookups and post-hoc order attribution both
+    depend on recomputing the identical value later. Capped at 18, not 20, so
+    flatten_tag_for (engine_exit.py) can append its 2-char suffix and still
+    stay inside the limit.
+    """
+    digest = hashlib.sha1(trade_id.encode("utf-8")).hexdigest()
+    return ("te" + digest)[:18]
 
 
 class ResponseKind(str, Enum):
@@ -83,10 +102,10 @@ class FillVerdict(str, Enum):
 
 class EntryResult(str, Enum):
     SKIPPED = "skipped"            # a gate or sizing refused; nothing sent
-    REJECTED = "rejected"          # broker definitively refused
+    REJECTED = "rejected"          # broker definitively refused, or ambiguous
+                                    # and then confirmed absent from the book
     SUBMITTED = "submitted"        # sent, fill not visible yet
     FILLED = "filled"              # sent and filled; see outcome.verdict
-    RETRY_NEXT_TICK = "retry"      # ambiguous, resolved to "never reached broker"
 
 
 @dataclass(frozen=True)
@@ -271,12 +290,17 @@ def submit_entry(
     so a filled-but-unprotected position is always visible in the store as
     ENTERED even if the process dies between the two.
     """
-    tag = trade_id or candidate.setup_id
+    # trade_id_value is the store identity (positions/events primary key, can
+    # be arbitrarily long). broker_tag is the short, bounded value actually
+    # sent to Kite as the order tag — never the raw trade id, which routinely
+    # exceeds Kite's 20-char limit.
+    trade_id_value = trade_id or candidate.setup_id
+    broker_tag = broker_tag_for(trade_id_value)
 
     # Step 1 - the stop, from market structure, computed once.
     stop_price = compute_stop_price(candidate)
     if stop_price is None:
-        return _skip(store, candidate, "no_structural_stop", is_live, run_id, tag)
+        return _skip(store, candidate, "no_structural_stop", is_live, run_id, trade_id_value)
 
     # Step 2 - quantity, from this tier's risk cap.
     decision: SizeDecision = sizing_policy.decide(
@@ -287,24 +311,24 @@ def submit_entry(
         leverage_factor=float(leverage_factor),
     )
     if decision.qty <= 0:
-        return _skip(store, candidate, "sized_to_zero", is_live, run_id, tag)
+        return _skip(store, candidate, "sized_to_zero", is_live, run_id, trade_id_value)
 
     # Step 3 - recheck the gates right before sending, since time has passed
     # since the trigger fired.
     if gate is not None:
         refusal = gate(candidate)
         if refusal:
-            return _skip(store, candidate, refusal, is_live, run_id, tag)
+            return _skip(store, candidate, refusal, is_live, run_id, trade_id_value)
     if margin_preflight is not None:
         refusal = margin_preflight(candidate, decision.qty)
         if refusal:
-            return _skip(store, candidate, refusal, is_live, run_id, tag)
+            return _skip(store, candidate, refusal, is_live, run_id, trade_id_value)
 
     # Step 4 - durable intent BEFORE calling the broker. Non-negotiable: this
     # is what turns a crash mid-submission into reconciliation instead of a
     # silent double-order or a silently lost position.
     position = Position(
-        trade_id=tag,
+        trade_id=trade_id_value,
         candidate=candidate,
         state=ExecutionState.PENDING_ENTRY,
         qty=decision.qty,
@@ -330,8 +354,8 @@ def submit_entry(
         },
     )
 
-    # Step 5 - MARKET order, tagged with the trade's id.
-    response = place_entry(broker, candidate=candidate, quantity=decision.qty, tag=tag)
+    # Step 5 - MARKET order, tagged with the trade's (bounded) broker tag.
+    response = place_entry(broker, candidate=candidate, quantity=decision.qty, tag=broker_tag)
 
     # Step 6 - exactly one of three buckets.
     order = response.order
@@ -344,16 +368,25 @@ def submit_entry(
         return EntryOutcome(EntryResult.REJECTED, position, response.reason)
 
     if response.kind is ResponseKind.AMBIGUOUS:
-        store.append_event(tag, "entry_ambiguous", {"reason": response.reason})
-        order = resolve_ambiguous_entry(broker, tag=tag)
+        store.append_event(trade_id_value, "entry_ambiguous", {"reason": response.reason})
+        order = resolve_ambiguous_entry(broker, tag=broker_tag)
         if order is None:
-            # Never reached the broker. Leave the intent row in PENDING_ENTRY
-            # so the next tick retries this one fresh, with nothing orphaned at
-            # the broker.
-            store.append_event(tag, "entry_unreached", {"reason": response.reason})
-            return EntryOutcome(
-                EntryResult.RETRY_NEXT_TICK, position, response.reason
+            # resolve_ambiguous_entry's contract guarantees this means the
+            # order never reached the broker, not merely "not visible yet" --
+            # so this is as final as the definite-rejection branch above.
+            # Finalize here rather than leaving PENDING_ENTRY for a "next
+            # tick" retry that nothing in the tick loop actually performs:
+            # ingest_triggers() never revisits a setup_id once a row for it
+            # exists, and reconciliation treats PENDING_ENTRY as momentary by
+            # construction. Leaving it pending only made a failed entry look
+            # identical to a healthy in-flight one, open-desk table included.
+            store.append_event(trade_id_value, "entry_unreached", {"reason": response.reason})
+            position.extra["reject_reason"] = response.reason
+            transition(position, ExecutionState.REJECTED)
+            store.save_with_event(
+                position, "entry_rejected", {"reason": response.reason}
             )
+            return EntryOutcome(EntryResult.REJECTED, position, response.reason)
 
     assert order is not None
     position.entry_order_id = str(order.order_id)

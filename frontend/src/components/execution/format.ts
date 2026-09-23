@@ -71,6 +71,22 @@ export function stateLabel(state: string): string {
   return STATE_LABELS[state] ?? state
 }
 
+/** How long PENDING_ENTRY may sit before it's treated as broken rather than
+ * in flight. A market order settles in well under a second (see
+ * engine_entry.py's step 5), so anything still pending past a few ticks
+ * didn't just get delayed — it never reached the broker and, under the
+ * current reconciliation design, is never coming back on its own. */
+export const STUCK_PENDING_ENTRY_SECONDS = 5
+
+export function isStuckPendingEntry(
+  state: string,
+  updatedAt: string | null | undefined,
+): boolean {
+  if (state !== 'pending_entry') return false
+  const age = secondsSince(updatedAt)
+  return age !== null && age > STUCK_PENDING_ENTRY_SECONDS
+}
+
 /** Filled with no confirmed stop: the most dangerous state in the system. */
 export function isUnprotected(state: string): boolean {
   return state === 'entered' || state === 'entry_submitted'

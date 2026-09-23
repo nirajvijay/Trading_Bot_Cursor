@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from engine_entry import exit_transaction_type_for
+from engine_entry import broker_tag_for, exit_transaction_type_for
 from engine_orders import transition
 from engine_types import ExecutionState, Position
 from trading_engine_broker import SlPlaceAcceptedVisibilityUnknown
@@ -54,7 +54,7 @@ def ensure_protected(position: Position, *, broker, store) -> ProtectionOutcome:
             transaction_type=exit_transaction_type_for(candidate.direction),
             quantity=int(position.qty),
             trigger_price=float(position.stop_price),
-            tag=position.trade_id,
+            tag=broker_tag_for(position.trade_id),
             tick_size=float(candidate.tick_size or 0.05),
         )
     except SlPlaceAcceptedVisibilityUnknown as exc:

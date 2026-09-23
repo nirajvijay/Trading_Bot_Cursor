@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Optional
 
+from engine_entry import broker_tag_for
 from engine_exit import CloseReason
 from engine_risk import RiskPolicy
 from engine_squareoff import check_daily_loss, realised_loss_today, squareoff_all
@@ -234,7 +235,7 @@ class IdempotenceTests(SquareoffTestCase):
             squareoff_all(
                 [pos], reason=CloseReason.KILL_ALL, broker=self.broker, store=self.store
             )
-        exits = [o for o in self.broker.orders.values() if o.tag == "a-x"]
+        exits = [o for o in self.broker.orders.values() if o.tag == f"{broker_tag_for('a')}-x"]
         self.assertEqual(len(exits), 1)
 
     def test_an_already_closed_position_is_not_considered_at_all(self) -> None:
