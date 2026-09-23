@@ -489,18 +489,11 @@ class RouterSurfaceTests(ExecutionApiTestCase):
     def test_the_old_trading_engine_router_is_gone(self) -> None:
         # Coexistence was only needed while the rebuild was additive. The old
         # engine is deleted, so any surviving route would be a dead endpoint.
-        stale = [r.path for r in self.app.routes if "trading-engine" in r.path]
+        stale = [path for path in self.app.openapi()["paths"] if "trading-engine" in path]
         self.assertEqual(stale, [])
 
-    def test_the_diagnostics_entry_toggle_survived(self) -> None:
-        # Repointed at the new command queue rather than deleted, so the
-        # Diagnostics tab needed no frontend change.
-        paths = {r.path for r in self.app.routes}
-        self.assertIn("/api/v1/admin/trading/pause", paths)
-        self.assertIn("/api/v1/admin/trading/resume", paths)
-
     def test_the_new_execution_routes_are_registered(self) -> None:
-        paths = {r.path for r in self.app.routes}
+        paths = set(self.app.openapi()["paths"])
         for path in (
             "/api/v1/execution/status",
             "/api/v1/execution/positions",

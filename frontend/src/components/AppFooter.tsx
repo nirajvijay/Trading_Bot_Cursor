@@ -28,24 +28,6 @@ export function AppFooter({
   )
   const vwapTotal = Object.values(vwapCounts).reduce((sum, n) => sum + n, 0)
 
-  if (activeTab === 'admin') {
-    return (
-      <footer className="h-8 px-4 flex items-center justify-between border-t border-outline-variant bg-white text-[10px] text-on-surface-variant shrink-0">
-        <div className="flex items-center gap-4 font-data">
-          <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-            ADMIN CONSOLE V1
-          </span>
-        </div>
-        <span className="label-caps tracking-wider">Forward-only thresholds · canonical pause state</span>
-        <div className="flex items-center gap-1.5 font-data">
-          <span className="material-symbols-outlined text-[14px]">schedule</span>
-          <span>{now} IST</span>
-        </div>
-      </footer>
-    )
-  }
-
   if (activeTab === 'trading') {
     return (
       <footer className="h-8 px-4 flex items-center justify-between border-t border-outline-variant bg-white text-[10px] text-on-surface-variant shrink-0">
