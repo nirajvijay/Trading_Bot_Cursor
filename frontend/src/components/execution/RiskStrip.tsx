@@ -7,21 +7,27 @@ import {
   pnlClass,
   secondsSince,
 } from './format'
+import { LivePnlBadge } from './LivePnlBadge'
 
 function Metric({
   label,
   value,
   tone,
   note,
+  badge,
 }: {
   label: string
   value: string
   tone?: string
   note?: string
+  badge?: React.ReactNode
 }) {
   return (
     <div className="bg-surface border border-outline-variant rounded-sm px-3 py-2">
-      <p className="label-caps text-on-surface-variant">{label}</p>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <p className="label-caps text-on-surface-variant">{label}</p>
+        {badge}
+      </div>
       <p className={`font-data text-[15px] tabular-nums leading-tight ${tone ?? ''}`}>
         {value}
       </p>
@@ -39,6 +45,9 @@ export function RiskStrip({ status }: { status: ExecutionStatus | null }) {
   const markAge = secondsSince(status?.live_pnl_as_of)
   const markStale = markAge === null || markAge > STALE_MARK_SECONDS
   const capital = status?.capital ?? null
+  // Older APIs send only total_live_pnl; the ongoing total is the same figure.
+  const ongoingPnl = status?.total_ongoing_pnl ?? status?.total_live_pnl ?? null
+  const dayPnl = status?.total_day_pnl ?? null
 
   return (
     <section className="flex flex-col gap-2">
@@ -78,16 +87,34 @@ export function RiskStrip({ status }: { status: ExecutionStatus | null }) {
         )}
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
         <Metric
-          label="Open P&L"
-          value={inr(status?.total_live_pnl)}
-          tone={markStale ? 'text-on-surface-variant' : pnlClass(status?.total_live_pnl)}
+          label="Total Day P&L"
+          value={inr(dayPnl)}
+          tone={markStale ? 'text-on-surface-variant' : pnlClass(dayPnl)}
+          note="realised + ongoing"
+        />
+        <Metric
+          label="Total Realised P&L"
+          value={inr(status?.total_realised_pnl)}
+          tone={pnlClass(status?.total_realised_pnl)}
+          note="closed trades"
+        />
+        <Metric
+          label="Total Ongoing P&L"
+          value={inr(ongoingPnl)}
+          tone={markStale ? 'text-on-surface-variant' : pnlClass(ongoingPnl)}
+          badge={
+            <LivePnlBadge
+              state={status?.live_pnl_feed_state}
+              reason={status?.live_pnl_feed_reason}
+            />
+          }
           note={
             markStale
               ? `stale · ${ageLabel(markAge)}`
               : status?.live_pnl_complete
-                ? ageLabel(markAge)
+                ? `open trades · ${ageLabel(markAge)}`
                 : 'partial marks'
           }
         />

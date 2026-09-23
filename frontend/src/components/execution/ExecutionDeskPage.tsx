@@ -37,7 +37,7 @@ export function ExecutionDeskPage({ sessionDate }: { sessionDate: string }) {
             Execution Desk
           </h1>
           <p className="text-[11px] text-on-surface-variant">
-            Entries stop at 14:00 · every position is squared off at 15:15 IST
+            Entries stop at 14:00 · every position is squared off at 14:50 IST
           </p>
         </div>
 
@@ -79,12 +79,15 @@ export function ExecutionDeskPage({ sessionDate }: { sessionDate: string }) {
         <OpenPositionsTable
           rows={positions?.open ?? []}
           markStale={markStale}
+          feedState={positions?.live_pnl_feed_state}
+          feedReason={positions?.live_pnl_feed_reason}
           busy={engine.busy}
           onClose={engine.closePosition}
           onInspect={setInspecting}
         />
         <ClosedPositionsTable
           rows={positions?.closed ?? []}
+          totalRealised={positions?.total_realised_pnl}
           onInspect={setInspecting}
         />
         <SkippedPositionsTable
