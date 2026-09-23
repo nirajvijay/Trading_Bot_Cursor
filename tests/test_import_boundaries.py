@@ -64,6 +64,16 @@ STRATEGY_MODULES = {
     "intraday_continuation_rules",
     "intraday_continuation_engine",
     "intraday_continuation_writer",
+    "vwap_qualifier_v2_types",
+    "vwap_qualifier_v2_config",
+    "vwap_qualifier_v2_features",
+    "vwap_session_cache",
+    "vwap_snapshot",
+    "vwap_arm_registry",
+    "vwap_historical_scheduler",
+    "vwap_qualifier_v2",
+    "vwap_qualifier_v2_writer",
+    "vwap_qualifier_writer",
 }
 
 

@@ -16,7 +16,9 @@ class IntradaySpikeRuleConfig:
 
     # Detection window (IST minute_of_day), inclusive.
     detection_window_start_minute: int = 570  # 09:30
-    detection_window_end_minute: int = 840  # 14:00
+    # TEMPORARY: extended to 15:00 for 2026-09-21 testing only.
+    # Revert to 840 (14:00) after today.
+    detection_window_end_minute: int = 900  # 15:00 (normally 840 / 14:00)
 
     min_relative_volume_median: float = 2.0
     min_relative_volume_trimmed: float = 2.0
