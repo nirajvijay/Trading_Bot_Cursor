@@ -29,6 +29,7 @@ from api.routers.checklist import router as checklist_router
 from api.routers.execution import router as execution_router
 from api.routers.observation import router as observation_router
 from api.routers.sessions import router
+from api.services.execution_autostart import start_background as start_execution_autostart
 from api.services.observation_autostart import start_background as start_observation_autostart
 
 ALLOWED_HOSTS = [
@@ -44,6 +45,7 @@ async def lifespan(_app: FastAPI):
     validate_startup_settings()
     stop = threading.Event()
     start_observation_autostart(stop)
+    start_execution_autostart(stop)
     try:
         yield
     finally:
