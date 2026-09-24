@@ -1468,11 +1468,21 @@ class KiteBroker:
         )
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
-        raw = self._read.orders()  # type: ignore[attr-defined]
-        for item in raw:
-            if str(item.get("order_id")) == str(order_id):
-                return _kite_order_to_broker(item)
-        return None
+        """One order's current state, without downloading the whole book.
+
+        Verified against live Kite (2026-09-25): order_history's last row
+        equals the order-book row on every field BrokerOrder reads, rows are
+        oldest-first, and an unknown well-formed id returns an empty list --
+        mapped to None ("not visible yet"), exactly what the book scan gave.
+        Any error still raises, so an unreadable order stays ambiguous.
+        """
+        history = self._read.order_history(str(order_id))  # type: ignore[attr-defined]
+        if not isinstance(history, list) or not history:
+            return None
+        last = history[-1]
+        if not isinstance(last, dict):
+            return None
+        return _kite_order_to_broker(last)
 
     def net_position_qty(self, tradingsymbol: str) -> Optional[int]:
         quote = self.position_quote(tradingsymbol)

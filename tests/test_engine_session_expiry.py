@@ -180,6 +180,9 @@ class FakeKite:
             self._refuse()
         return []
 
+    def order_history(self, order_id):
+        return [o for o in self.orders() if o.get("order_id") == order_id]
+
     def place_order(self, **_):
         if self.token_dead:
             self._refuse()

@@ -52,6 +52,8 @@ class SplitClientTests(unittest.TestCase):
         self.broker.touch_quote("AAA")
         self.broker.check_session()
         self.read.profile.assert_called_once()
+        self.read.order_history.assert_called_once_with("o1")
+        self.write.order_history.assert_not_called()
         self.assert_write_did_not_read()
 
     def test_writes_use_the_write_client(self) -> None:

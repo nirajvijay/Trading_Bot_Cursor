@@ -83,6 +83,10 @@ class FakeKite:
     def cancel_order(self, **_):
         return {"order_id": "sl1"}
 
+    def order_history(self, order_id):
+        # As verified live: the order's rows, the last one matching the book.
+        return [o for o in self.orders() if o["order_id"] == order_id]
+
     def orders(self):
         self.reads += 1
         status = self.statuses[min(self.reads, len(self.statuses)) - 1]
