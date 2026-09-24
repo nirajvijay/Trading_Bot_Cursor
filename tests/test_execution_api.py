@@ -648,6 +648,83 @@ class CommandTests(ExecutionApiTestCase):
         self.assertEqual(self.client.get(f"{BASE}/commands/99999").status_code, 404)
 
 
+class StopControlTests(ExecutionApiTestCase):
+    def queued_payload(self, command_id: int) -> dict:
+        import sqlite3
+
+        conn = sqlite3.connect(self.db)
+        try:
+            row = conn.execute(
+                "SELECT payload_json FROM engine_commands WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return json.loads(row[0])
+
+    def test_a_nudge_and_a_toggle_are_queued_with_their_payloads(self) -> None:
+        self.write_heartbeat()
+        self.seed_store()
+        for body, payload in (
+            ({"kind": "move_stop", "trade_id": "s1", "ticks": 1}, {"ticks": 1}),
+            ({"kind": "move_stop", "trade_id": "s1", "ticks": -1}, {"ticks": -1}),
+            ({"kind": "set_trail", "trade_id": "s1", "enabled": False}, {"enabled": False}),
+        ):
+            with self.subTest(body=body):
+                response = self.client.post(f"{BASE}/commands", json=body)
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(
+                    self.queued_payload(response.json()["command_id"]), payload
+                )
+
+    def test_malformed_stop_commands_are_refused_before_queueing(self) -> None:
+        self.write_heartbeat()
+        for body, detail in (
+            ({"kind": "move_stop", "ticks": 1}, "trade_id_required"),
+            ({"kind": "move_stop", "trade_id": "s1", "ticks": 3}, "ticks_must_be_plus_or_minus_one"),
+            ({"kind": "move_stop", "trade_id": "s1"}, "ticks_must_be_plus_or_minus_one"),
+            ({"kind": "set_trail", "trade_id": "s1"}, "enabled_required"),
+        ):
+            with self.subTest(body=body):
+                response = self.client.post(f"{BASE}/commands", json=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["detail"], detail)
+
+    def test_positions_carry_the_initial_stop_and_trail_state(self) -> None:
+        from engine_store import SqlitePositionStore
+
+        self.write_heartbeat()
+        self.seed_store()
+        store = SqlitePositionStore(self.db)
+        try:
+            pos = store.get("s1")
+            pos.stop_price = 110.0
+            pos.extra.update(
+                {
+                    "initial_stop_price": 106.95,
+                    "trail_enabled": True,
+                    "stop_mods": {"so1": 3},
+                }
+            )
+            store.save(pos)
+            closed = store.get("s2")
+            closed.stop_price = 111.5
+            store.save(closed)
+            store.append_event("s2", "protected", {"stop_price": 106.9})
+        finally:
+            store.close()
+        body = self.client.get(f"{BASE}/positions?session_date=2026-09-22").json()
+        [open_row] = body["open"]
+        self.assertEqual(open_row["initial_stop_price"], 106.95)
+        self.assertEqual(open_row["stop_price"], 110.0)
+        self.assertTrue(open_row["trail_enabled"])
+        self.assertEqual(open_row["stop_mod_count"], 3)
+        [closed_row] = body["closed"]
+        # From before trailing: the protection event supplies the initial stop.
+        self.assertEqual(closed_row["initial_stop_price"], 106.9)
+        self.assertEqual(closed_row["stop_price"], 111.5)
+
+
 class RouterSurfaceTests(ExecutionApiTestCase):
     def test_the_old_trading_engine_router_is_gone(self) -> None:
         # Coexistence was only needed while the rebuild was additive. The old

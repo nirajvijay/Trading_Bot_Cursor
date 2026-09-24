@@ -40,10 +40,11 @@ from api.services.execution_engine_runner import (
     preflight,
     start_engine,
 )
-from engine_commands import CommandKind, CommandQueue
+from engine_commands import POSITION_SCOPED, CommandKind, CommandQueue
 from engine_config import SessionRiskConfig, margin_used_rupees
 from engine_status import heartbeat_age_seconds
 from engine_store import SqlitePositionStore
+from engine_trailing import INITIAL_STOP_KEY, STOP_MODS_KEY, TRAIL_ENABLED_KEY
 
 router = APIRouter(prefix="/execution", tags=["execution"])
 
@@ -128,7 +129,7 @@ def _total_fields(desk: Optional[DeskPnl]) -> dict:
 
 
 # Diary events that tell a closed row's own story (see _closed_row_facts).
-_CLOSED_ROW_EVENTS = ("entry_filled", "over_exit_detected")
+_CLOSED_ROW_EVENTS = ("entry_filled", "over_exit_detected", "protected")
 
 
 def _closed_row_facts(view: PositionView, facts: Dict) -> PositionView:
@@ -143,6 +144,12 @@ def _closed_row_facts(view: PositionView, facts: Dict) -> PositionView:
     filled = (facts.get((view.trade_id, "entry_filled")) or {}).get("filled_qty")
     if filled:
         updates["qty"] = int(filled)
+    if view.initial_stop_price is None:
+        # Trades from before trailing existed never moved their stop, so any
+        # protection's stop price is the initial one.
+        protected_at = (facts.get((view.trade_id, "protected")) or {}).get("stop_price")
+        if protected_at is not None:
+            updates["initial_stop_price"] = float(protected_at)
     if view.pnl_mismatch is not None and "over_exit_qty" not in view.pnl_mismatch:
         over = (facts.get((view.trade_id, "over_exit_detected")) or {}).get("over_exit_qty")
         if over:
@@ -187,6 +194,11 @@ def _to_view(
         close_reason=extra.get("close_reason"),
         skip_reason=extra.get("skip_reason") or extra.get("reject_reason"),
         stop_adopted_from_broker="stop_adopted_from_broker" in extra,
+        initial_stop_price=extra.get(INITIAL_STOP_KEY),
+        trail_enabled=bool(extra.get(TRAIL_ENABLED_KEY)),
+        stop_mod_count=int(
+            (extra.get(STOP_MODS_KEY) or {}).get(str(row["stop_order_id"] or ""), 0)
+        ),
         exiting=bool(
             extra.get("exit_pending")
             or extra.get("safety_exit")
@@ -421,8 +433,17 @@ def execution_command(
     except ValueError:
         raise HTTPException(status_code=400, detail="unknown_command_kind")
 
-    if kind is CommandKind.CLOSE_POSITION and not body.trade_id:
+    if kind in POSITION_SCOPED and not body.trade_id:
         raise HTTPException(status_code=400, detail="trade_id_required")
+    payload: Dict[str, object] = {}
+    if kind is CommandKind.MOVE_STOP:
+        if body.ticks not in (-1, 1):
+            raise HTTPException(status_code=400, detail="ticks_must_be_plus_or_minus_one")
+        payload["ticks"] = int(body.ticks)
+    elif kind is CommandKind.SET_TRAIL:
+        if body.enabled is None:
+            raise HTTPException(status_code=400, detail="enabled_required")
+        payload["enabled"] = bool(body.enabled)
 
     if not engine_is_running():
         # Every command here assumes a live loop to read it; queueing one for a
@@ -434,6 +455,7 @@ def execution_command(
         command_id = queue.enqueue(
             kind,
             trade_id=body.trade_id,
+            payload=payload,
             actor=(ctx.session.username if ctx and ctx.session else None) or "owner",
         )
         record = queue.record(command_id) or {}
