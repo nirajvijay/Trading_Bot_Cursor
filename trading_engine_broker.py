@@ -172,6 +172,10 @@ class BrokerPort(Protocol):
         """
         ...
 
+    def order_modification_count(self, order_id: str) -> Optional[int]:
+        """Modifications Kite has recorded on this order (cap: 25), or None."""
+        ...
+
     def cancel_order(self, order_id: str) -> Optional[BrokerOrder]: ...
 
     def flatten_mis(
@@ -313,6 +317,8 @@ class FakeBroker:
     market_place_count: int = 0
     slm_place_count: int = 0
     modify_count: int = 0
+    # Per order id, as Kite's order history would count them.
+    modifications_by_order: Dict[str, int] = field(default_factory=dict)
     live_orders_enabled: bool = False
     reject_equal_sl_price: bool = False
     position_quotes: Dict[str, PositionQuote] = field(default_factory=dict)
@@ -659,7 +665,13 @@ class FakeBroker:
             filled_quantity=filled,
         )
         self.orders[order_id] = updated
+        self.modifications_by_order[order_id] = self.modifications_by_order.get(order_id, 0) + 1
         return updated
+
+    def order_modification_count(self, order_id: str) -> Optional[int]:
+        if order_id not in self.orders:
+            return None
+        return self.modifications_by_order.get(order_id, 0)
 
     def cancel_order(self, order_id: str) -> Optional[BrokerOrder]:
         order = self.orders.get(order_id)
@@ -1112,6 +1124,9 @@ def _find_mis_position(data: dict, tradingsymbol: str) -> Optional[dict]:
 CANCEL_CONFIRM_POLL_SECONDS = 0.25
 CANCEL_CONFIRM_TIMEOUT_SECONDS = 1.5
 FINAL_ORDER_STATUSES = frozenset({"CANCELLED", "REJECTED", "COMPLETE"})
+# Order-history statuses Kite's documented order lifecycle uses for a modify.
+# To be confirmed against a real modified order's history before relying on it.
+MODIFY_HISTORY_STATUSES = frozenset({"MODIFY VALIDATION PENDING", "MODIFY PENDING", "MODIFIED"})
 
 
 class KiteBroker:
@@ -1444,6 +1459,26 @@ class KiteBroker:
         if polled is None:
             raise RuntimeError("modify_slm_unconfirmed_after_write")
         return polled
+
+    def order_modification_count(self, order_id: str) -> Optional[int]:
+        """Count modify requests in the order's history.
+
+        One modify can leave more than one row (validation, then the
+        modification itself), so each status is counted separately and the
+        largest count is taken. Only ever used to raise the engine's own count,
+        never to lower it, so an unexpected history shape errs safe.
+        """
+        history = self._read.order_history(str(order_id))  # type: ignore[attr-defined]
+        if not isinstance(history, list):
+            return None
+        counts: Dict[str, int] = {}
+        for row in history:
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("status") or "").upper()
+            if status in MODIFY_HISTORY_STATUSES:
+                counts[status] = counts.get(status, 0) + 1
+        return max(counts.values(), default=0)
 
     def cancel_order(self, order_id: str) -> Optional[BrokerOrder]:
         self._require_live()

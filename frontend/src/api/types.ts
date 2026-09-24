@@ -486,6 +486,13 @@ export interface ExecutionPosition {
   close_reason: string | null
   skip_reason: string | null
   stop_adopted_from_broker: boolean
+  /** The structural stop the trade was first protected with: the trailing floor.
+   *  stop_price is the current stop while open, the final one once closed. */
+  initial_stop_price?: number | null
+  /** Auto-trail on/off for this position. */
+  trail_enabled?: boolean
+  /** Kite modifications counted on the live stop order (Kite allows 25). */
+  stop_mod_count?: number
   /** An exit is under way: waiting on the stop cancel, or a safety exit. */
   exiting?: boolean
   manual_review: string | null
@@ -525,7 +532,19 @@ export interface ExecutionEvents {
   events: ExecutionEvent[]
 }
 
-export type ExecutionCommandKind = 'stop' | 'start' | 'close_position' | 'kill_all'
+export type ExecutionCommandKind =
+  | 'stop'
+  | 'start'
+  | 'close_position'
+  | 'kill_all'
+  | 'move_stop'
+  | 'set_trail'
+
+/** move_stop: ticks = +1 / -1 in price terms. set_trail: enabled. */
+export interface ExecutionCommandPayload {
+  ticks?: 1 | -1
+  enabled?: boolean
+}
 
 export interface ExecutionCommand {
   command_id: number

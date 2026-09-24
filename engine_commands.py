@@ -22,6 +22,9 @@ this module assumes the engine is already alive and ticking.
   redundant with this.
 * ``CLOSE_POSITION`` closes one position and nothing else changes — no
   implication that trading is done for the day.
+* ``MOVE_STOP`` (payload ``{"ticks": +1 | -1}``, in price terms) and
+  ``SET_TRAIL`` (payload ``{"enabled": bool}``) act on one position's stop;
+  the rules live in engine_trailing.
 * ``KILL_ALL`` is the third trigger for the shared close-everything sequence,
   after which the session is permanently over.
 
@@ -45,6 +48,8 @@ class CommandKind(str, Enum):
     START = "start"                    # re-enable new entries
     CLOSE_POSITION = "close_position"  # one position, via the active exit path
     KILL_ALL = "kill_all"              # close everything, then terminate
+    MOVE_STOP = "move_stop"            # nudge one position's stop by one tick
+    SET_TRAIL = "set_trail"            # switch one position's auto-trail on/off
 
 
 class CommandStatus(str, Enum):
@@ -73,7 +78,11 @@ CREATE_COMMANDS_INDEX_SQL = (
 )
 
 # Commands that need a specific position to act on.
-POSITION_SCOPED = (CommandKind.CLOSE_POSITION,)
+POSITION_SCOPED = (
+    CommandKind.CLOSE_POSITION,
+    CommandKind.MOVE_STOP,
+    CommandKind.SET_TRAIL,
+)
 
 
 @dataclass(frozen=True)

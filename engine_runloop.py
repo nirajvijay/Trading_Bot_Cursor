@@ -50,6 +50,7 @@ STEP_PROTECTION = "ensure_protection"
 STEP_INGEST = "ingest_triggers"
 STEP_COMMANDS = "handle_commands"
 STEP_SQUAREOFF = "squareoff"
+STEP_TRAIL = "trail_stops"
 
 # Consecutive-failure thresholds, tiered by how much real exposure builds up
 # per second the step stays broken -- not one flat number for everything.
@@ -66,6 +67,9 @@ FAILURE_THRESHOLDS: Dict[str, int] = {
     # A broken ingest risks a missed trade, not open risk.
     STEP_INGEST: 10,
     STEP_COMMANDS: 10,
+    # A broken trail leaves every stop where it last was -- still protecting,
+    # just not advancing. Loud, but it never pauses entries.
+    STEP_TRAIL: 10,
 }
 
 # Escalating these two suggests something is wrong with our ability to protect

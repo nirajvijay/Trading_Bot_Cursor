@@ -116,6 +116,8 @@ export function ExecutionDeskPage({ sessionDate }: { sessionDate: string }) {
               feedReason={positions?.live_pnl_feed_reason}
               busy={engine.busy}
               onClose={engine.closePosition}
+              onNudge={engine.nudgeStop}
+              onTrail={engine.setTrail}
               onInspect={(row, kind) => setInspecting({ row, kind })}
             />
           </div>

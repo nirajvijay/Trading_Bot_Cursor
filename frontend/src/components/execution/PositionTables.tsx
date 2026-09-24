@@ -125,12 +125,100 @@ function RestFallback({ reason }: { reason: string | null | undefined }) {
   )
 }
 
+/** A stop that may be moved right now: live at Kite and not being exited. */
+function stopMovable(row: ExecutionPosition): boolean {
+  return row.state === 'protected' && !row.exiting
+}
+
+/** One press moves the stop one tick of this instrument, up or down in price. */
+function NudgeButton({
+  row,
+  ticks,
+  busy,
+  onNudge,
+}: {
+  row: ExecutionPosition
+  ticks: 1 | -1
+  busy: string | null
+  onNudge: (tradeId: string, ticks: 1 | -1) => void
+}) {
+  const long = row.direction === 'UP'
+  const loosens = long ? ticks === -1 : ticks === 1
+  const atFloor =
+    row.stop_price != null &&
+    row.initial_stop_price != null &&
+    (long ? row.stop_price <= row.initial_stop_price : row.stop_price >= row.initial_stop_price)
+  let blocked: string | null = null
+  if (!stopMovable(row)) blocked = 'The stop can only be moved while it is live at Kite'
+  else if (loosens && row.trail_enabled)
+    blocked = 'Auto-trail is on, so the stop only tightens. Switch it off to loosen.'
+  else if (loosens && atFloor) blocked = 'Already at the initial stop'
+  const title =
+    blocked ?? `Move the stop one tick ${ticks === 1 ? 'up' : 'down'} (${loosens ? 'looser' : 'tighter'})`
+  return (
+    <button
+      type="button"
+      aria-label={title}
+      title={title}
+      disabled={blocked !== null || busy === `move_stop:${row.trade_id}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        onNudge(row.trade_id, ticks)
+      }}
+      className="size-5 inline-flex items-center justify-center rounded border border-outline-variant bg-surface text-[9px] leading-none hover:bg-surface-container-low hover:border-[#c4c7cf] disabled:opacity-35 disabled:hover:bg-surface"
+    >
+      {ticks === 1 ? '▲' : '▼'}
+    </button>
+  )
+}
+
+function TrailToggle({
+  row,
+  busy,
+  onTrail,
+}: {
+  row: ExecutionPosition
+  busy: string | null
+  onTrail: (tradeId: string, enabled: boolean) => void
+}) {
+  const on = !!row.trail_enabled
+  const toggling = busy === `set_trail:${row.trade_id}`
+  const disabled = toggling || !(stopMovable(row) || row.state === 'entered')
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
+      title={
+        on
+          ? 'Auto-trail on: 0.5R of profit moves the stop to breakeven, then it follows 0.5R behind. Click to switch off.'
+          : 'Auto-trail off: the stop only moves when you nudge it. Click to switch on.'
+      }
+      onClick={(e) => {
+        e.stopPropagation()
+        onTrail(row.trade_id, !on)
+      }}
+      className={`label-caps inline-flex items-center gap-1.5 px-2 py-[3px] rounded border disabled:opacity-50 ${
+        on
+          ? 'text-positive border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
+          : 'text-on-surface-variant border-outline-variant bg-surface hover:bg-surface-container-low'
+      }`}
+    >
+      <span className={`size-1.5 rounded-full ${on ? 'bg-positive' : 'bg-[#c4c7cf]'}`} />
+      {on ? 'Auto' : 'Off'}
+    </button>
+  )
+}
+
 function OpenRows({
   rows,
   markStale,
   feedState,
   busy,
   onClose,
+  onNudge,
+  onTrail,
   onInspect,
 }: {
   rows: ExecutionPosition[]
@@ -138,6 +226,8 @@ function OpenRows({
   feedState?: LivePnlFeedState | null
   busy: string | null
   onClose: (tradeId: string) => void
+  onNudge: (tradeId: string, ticks: 1 | -1) => void
+  onTrail: (tradeId: string, enabled: boolean) => void
   onInspect: (row: ExecutionPosition, kind: PositionKind) => void
 }) {
   return (
@@ -147,7 +237,9 @@ function OpenRows({
           <Th edge>Instrument</Th>
           <Th align="right">Qty</Th>
           <Th align="right">Entry</Th>
-          <Th align="right">Stop</Th>
+          <Th align="right">Initial Stop</Th>
+          <Th align="right">Current Stop</Th>
+          <Th>Trail</Th>
           <Th align="right">Risk taken</Th>
           <Th align="right" divider>
             Ongoing P&L (live)
@@ -158,7 +250,7 @@ function OpenRows({
         </tr>
       </thead>
       <tbody>
-        {rows.length === 0 && <Empty cols={9}>No open positions.</Empty>}
+        {rows.length === 0 && <Empty cols={11}>No open positions.</Empty>}
         {rows.map((row) => {
           const stuck = isStuckPendingEntry(row.state, row.updated_at)
           const alarm = isUnprotected(row.state) || stuck
@@ -176,16 +268,26 @@ function OpenRows({
               </Instrument>
               <td className={NUM}>{row.qty || '—'}</td>
               <td className={NUM}>{num(row.entry_price)}</td>
+              <td className={`${NUM} text-on-surface-variant`}>
+                {num(row.initial_stop_price)}
+              </td>
               <td className={`${NUM} whitespace-nowrap`}>
-                {num(row.stop_price)}
-                {row.stop_adopted_from_broker && (
-                  <span
-                    title="Adopted from a change made directly in Kite"
-                    className="ml-1 text-primary font-bold"
-                  >
-                    ↺
-                  </span>
-                )}
+                <span className="inline-flex items-center justify-end gap-1.5">
+                  <NudgeButton row={row} ticks={-1} busy={busy} onNudge={onNudge} />
+                  <span>{num(row.stop_price)}</span>
+                  {row.stop_adopted_from_broker && (
+                    <span
+                      title="Adopted from a change made directly in Kite"
+                      className="text-primary font-bold"
+                    >
+                      ↺
+                    </span>
+                  )}
+                  <NudgeButton row={row} ticks={1} busy={busy} onNudge={onNudge} />
+                </span>
+              </td>
+              <td className={`${CELL} whitespace-nowrap`}>
+                <TrailToggle row={row} busy={busy} onTrail={onTrail} />
               </td>
               <td className={`${NUM} text-on-surface-variant`}>{inr(row.risk_taken_rupees)}</td>
               <td
@@ -271,6 +373,8 @@ function ClosedRows({
           <Th edge>Instrument</Th>
           <Th align="right">Qty</Th>
           <Th align="right">Entry fill</Th>
+          <Th align="right">Initial Stop</Th>
+          <Th align="right">Final Stop</Th>
           <Th>Closed by</Th>
           <Th align="right" divider>
             Realised P&L
@@ -282,7 +386,7 @@ function ClosedRows({
         </tr>
       </thead>
       <tbody>
-        {rows.length === 0 && <Empty cols={7}>Nothing closed yet.</Empty>}
+        {rows.length === 0 && <Empty cols={9}>Nothing closed yet.</Empty>}
         {rows.map((row) => {
           const surprising = SURPRISING_CLOSE.has(row.close_reason ?? '')
           return (
@@ -296,6 +400,10 @@ function ClosedRows({
               </Instrument>
               <td className={NUM}>{row.qty}</td>
               <td className={NUM}>{num(row.entry_price)}</td>
+              <td className={`${NUM} text-on-surface-variant`}>
+                {num(row.initial_stop_price)}
+              </td>
+              <td className={NUM}>{num(row.stop_price)}</td>
               <td className={`${CELL} whitespace-nowrap`}>
                 <span className={surprising ? 'text-negative font-bold' : ''}>
                   {reasonLabel(row.close_reason)}
@@ -385,6 +493,8 @@ export function PositionsCard({
   feedReason,
   busy,
   onClose,
+  onNudge,
+  onTrail,
   onInspect,
 }: {
   open: ExecutionPosition[]
@@ -397,6 +507,8 @@ export function PositionsCard({
   feedReason?: string | null
   busy: string | null
   onClose: (tradeId: string) => void
+  onNudge: (tradeId: string, ticks: 1 | -1) => void
+  onTrail: (tradeId: string, enabled: boolean) => void
   onInspect: (row: ExecutionPosition, kind: PositionKind) => void
 }) {
   const [tab, setTab] = useState<PositionKind>('open')
@@ -461,6 +573,8 @@ export function PositionsCard({
             feedState={feedState}
             busy={busy}
             onClose={onClose}
+            onNudge={onNudge}
+            onTrail={onTrail}
             onInspect={onInspect}
           />
         )}

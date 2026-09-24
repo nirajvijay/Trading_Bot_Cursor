@@ -17,6 +17,7 @@ from typing import Optional
 
 from engine_entry import broker_tag_for, exit_transaction_type_for
 from engine_orders import transition
+from engine_trailing import INITIAL_STOP_KEY, TRAIL_ENABLED_KEY
 from engine_types import ExecutionState, Position
 from trading_engine_broker import SlPlaceAcceptedVisibilityUnknown
 
@@ -91,6 +92,11 @@ def ensure_protected(position: Position, *, broker, store) -> ProtectionOutcome:
         return ProtectionOutcome(False, reason=f"stop_{status.lower()}")
 
     transition(position, ExecutionState.PROTECTED)
+    # First protection only: the structural stop becomes the trailing floor,
+    # and auto-trail starts on. A re-protection (a replaced stop) keeps both,
+    # including a human's choice to switch auto-trail off.
+    position.extra.setdefault(INITIAL_STOP_KEY, position.stop_price)
+    position.extra.setdefault(TRAIL_ENABLED_KEY, True)
     store.save_with_event(
         position,
         "protected",

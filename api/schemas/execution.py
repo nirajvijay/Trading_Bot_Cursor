@@ -135,6 +135,12 @@ class PositionView(BaseModel):
     close_reason: Optional[str] = None
     skip_reason: Optional[str] = None
     stop_adopted_from_broker: bool = False
+    # The structural stop the trade was first protected with (the trailing
+    # floor). stop_price is the current stop while open, the final one once closed.
+    initial_stop_price: Optional[float] = None
+    # Auto-trail on/off, and Kite modifications counted on the live stop order.
+    trail_enabled: bool = False
+    stop_mod_count: int = 0
     # An exit is under way (waiting on its stop cancel, or a safety exit).
     exiting: bool = False
     manual_review: Optional[str] = None
@@ -177,9 +183,12 @@ class EventsResponse(BaseModel):
 
 
 class ExecutionCommandRequest(BaseModel):
-    # "stop" | "start" | "close_position" | "kill_all"
+    # "stop" | "start" | "close_position" | "kill_all" | "move_stop" | "set_trail"
     kind: str
     trade_id: Optional[str] = None
+    # move_stop: ticks = +1 / -1 (price terms). set_trail: enabled = true / false.
+    ticks: Optional[int] = None
+    enabled: Optional[bool] = None
 
 
 class ExecutionCommandResponse(BaseModel):
