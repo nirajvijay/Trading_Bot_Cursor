@@ -9,7 +9,7 @@ string-matching inference. This module only owns loss arithmetic.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Dict, List, Sequence
 
 from engine_types import Position, RiskLimits
 
@@ -46,26 +46,34 @@ class RiskPolicy:
 STOCK_DAY_KEY = "stock_day"
 
 
-def trade_loss_rupees(position: Position) -> float:
-    """What one closed trade adds to the day's realised loss, as a positive number.
-
-    Our per-trade loss, plus any loss Kite shows for the stock beyond our
-    per-trade sum. Kite is the source of truth for money actually lost: when
-    its day figure is worse than ours (an engine order sold more than the
-    trade held, say), the difference is real and counts toward the cap. When
-    Kite's figure is better, nothing is subtracted -- the cap never loosens
-    on a number we cannot explain.
-    """
-    loss = 0.0
-    if position.realised_pnl is not None and position.realised_pnl < 0:
-        loss = -float(position.realised_pnl)
-    stock_day = position.extra.get(STOCK_DAY_KEY) or {}
-    diff = stock_day.get("diff")
-    if stock_day.get("mismatch") and diff is not None and float(diff) < 0:
-        loss += -float(diff)
-    return loss
-
-
 def realised_loss_rupees(positions: Sequence[Position]) -> float:
-    """Total realised loss as a positive number. Profits do not offset."""
-    return round(sum(trade_loss_rupees(p) for p in positions), 2)
+    """The day's realised loss, as a positive number: Kite's figure.
+
+    Kite is the source of truth for money actually lost. For each stock, the
+    day's realised P&L is Kite's own figure, pinned on the closed row that
+    left the stock flat (it already covers every trade in that stock up to
+    then), and its loss counts as Kite reports it.
+
+    Only a close with no Kite figure falls back to our per-trade number, and
+    then only its loss counts: a profit never buys back room under the cap.
+    Gains in one stock never offset losses in another.
+    """
+    by_symbol: Dict[str, List[Position]] = {}
+    for position in positions:
+        by_symbol.setdefault(position.candidate.tradingsymbol, []).append(position)
+
+    total = 0.0
+    for rows in by_symbol.values():
+        rows.sort(key=lambda p: (str(p.candidate.created_at or ""), p.trade_id))
+        kite_pnl: float = 0.0
+        unpinned_loss = 0.0
+        for position in rows:
+            pinned = (position.extra.get(STOCK_DAY_KEY) or {}).get("kite_pnl")
+            if pinned is not None:
+                # Kite's figure covers every trade in this stock so far.
+                kite_pnl = float(pinned)
+                unpinned_loss = 0.0
+            elif position.realised_pnl is not None and position.realised_pnl < 0:
+                unpinned_loss += -float(position.realised_pnl)
+        total += max(0.0, -kite_pnl) + unpinned_loss
+    return round(total, 2)

@@ -520,27 +520,29 @@ class UnprotectedTimeoutTests(SafetyExitTestCase):
 
 
 class RealisedLossTests(SafetyExitTestCase):
-    def closed(self, pnl, *, stock_day=None):
+    def closed(self, pnl, *, symbol="AAA", stock_day=None, at="2026-09-22T10:00:00+00:00"):
         from tests.test_engine_exit import position
 
         p = position(state=ExecutionState.CLOSED)
+        p.trade_id = f"{symbol}-{at}"
+        p.candidate = dataclasses.replace(p.candidate, tradingsymbol=symbol, created_at=at)
         p.realised_pnl = pnl
         if stock_day is not None:
             p.extra["stock_day"] = stock_day
         return p
 
-    def test_todays_numbers_count_kite_s_drreddy_loss(self) -> None:
-        """2026-09-24: CIPLA -19.8, DMART -24.6, DRREDDY booked -23.4 while
-        Kite showed -133.5 for the stock. The cap must see 177.9, not 67.8."""
+    def kite(self, pnl, ours):
+        return {"kite_pnl": pnl, "ours": ours, "diff": round(pnl - ours, 2), "mismatch": abs(pnl - ours) > 1}
+
+    def test_todays_numbers_are_kite_s(self) -> None:
+        """2026-09-24: Kite's day P&L per stock, whatever the engine booked.
+        DRREDDY booked -23.4, Kite -133.5. The cap must see 177.9, not 67.8."""
         day = [
-            self.closed(-19.8),
-            self.closed(-24.6),
-            self.closed(
-                -23.4,
-                stock_day={"kite_pnl": -133.5, "ours": -23.4, "diff": -110.1, "mismatch": True},
-            ),
-            self.closed(14.0),
-            self.closed(6.1),
+            self.closed(-19.8, symbol="CIPLA", stock_day=self.kite(-19.8, -19.8)),
+            self.closed(-24.6, symbol="DMART", stock_day=self.kite(-24.6, -24.6)),
+            self.closed(-23.4, symbol="DRREDDY", stock_day=self.kite(-133.5, -23.4)),
+            self.closed(14.0, symbol="HYUNDAI", stock_day=self.kite(14.0, 14.0)),
+            self.closed(6.1, symbol="LODHA", stock_day=self.kite(6.1, 6.1)),
         ]
         self.assertAlmostEqual(realised_loss_rupees(day), 177.9, places=2)
         check = RiskPolicy(
@@ -550,16 +552,24 @@ class RealisedLossTests(SafetyExitTestCase):
                 daily_loss_cap_rupees=150.0,
             )
         ).check_daily_loss(day)
+        self.assertAlmostEqual(check.closed_loss_rupees, 177.9, places=2)
         self.assertTrue(check.breached)
 
-    def test_kite_better_than_ours_never_loosens_the_cap(self) -> None:
+    def test_kite_is_used_even_when_it_is_better_than_ours(self) -> None:
+        day = [self.closed(-40.0, stock_day=self.kite(-30.0, -40.0))]
+        self.assertAlmostEqual(realised_loss_rupees(day), 30.0, places=2)
+
+    def test_kite_s_figure_for_a_stock_covers_its_earlier_trades(self) -> None:
+        # Two trades in one stock: -50 then +20. Kite pins -30 on the second.
         day = [
-            self.closed(
-                -40.0,
-                stock_day={"kite_pnl": -30.0, "ours": -40.0, "diff": 10.0, "mismatch": True},
-            )
+            self.closed(-50.0, at="2026-09-22T09:00:00+00:00"),
+            self.closed(20.0, stock_day=self.kite(-30.0, -30.0), at="2026-09-22T10:00:00+00:00"),
         ]
-        self.assertAlmostEqual(realised_loss_rupees(day), 40.0, places=2)
+        self.assertAlmostEqual(realised_loss_rupees(day), 30.0, places=2)
+
+    def test_without_a_kite_figure_our_number_is_the_fallback(self) -> None:
+        day = [self.closed(-12.5)]
+        self.assertAlmostEqual(realised_loss_rupees(day), 12.5, places=2)
 
     def test_an_engine_over_sell_is_booked_to_the_trade(self) -> None:
         engine, stored = self.open_one()
