@@ -82,11 +82,29 @@ from engine_runloop import (
     STEP_PROTECTION,
     STEP_RECONCILE,
     STEP_SQUAREOFF,
+    STEP_TRAIL,
     StepFailureTracker,
     run_step,
 )
 from engine_sizing import SizingPolicy
 from engine_squareoff import SquareoffProgress, squareoff_all
+from engine_trailing import (
+    EVENT_STOP_ADOPTED,
+    EVENT_TRAIL_TOGGLED,
+    SOURCE_AUTO,
+    SOURCE_KITE,
+    SOURCE_MANUAL,
+    STOP_MOVE_PENDING_KEY,
+    TRAIL_ENABLED_KEY,
+    adopted_source,
+    auto_target,
+    bump_mod_count,
+    initial_stop_of,
+    move_stop,
+    nudge_target,
+    resolve_stop,
+    tick_size_of,
+)
 from engine_types import ExecutionState, Position, TriggerCandidate
 from trading_engine_broker import (
     KITE_SESSION_EXPIRED_REASON,
@@ -204,6 +222,9 @@ class ExecutionEngine:
         self.live_pnl_reason: Dict[str, Optional[str]] = {}
         self.live_feed_health: TickFeedHealth = self.tick_feed.health()
         self.last_truth: Optional[BrokerTruth] = None
+        # The tick whose REST read last succeeded. Trailing acts only on a
+        # price read this very tick, never a stale one.
+        self.truth_tick: Optional[int] = None
         self.escalation_notices: List[str] = []
         self.realised_loss_today = 0.0
         # Set by a safety exit. Like a breach, it keeps entries paused until a
@@ -290,9 +311,14 @@ class ExecutionEngine:
             tracker=self.failures,
             on_escalate=self._on_escalate,
         )
-        # Trailing intentionally removed for now -- being rebuilt from scratch.
-        # See Reference/execution_engine_rebuild_notes.md. Positions stay in
-        # PROTECTED with a static stop until trailing is redesigned.
+        # Last, and after the shutdown return: once square-off has begun
+        # nothing trails, so square-off (like Close) always wins.
+        run_step(
+            STEP_TRAIL,
+            lambda: self._advance_trailing(self.store.open_positions()),
+            tracker=self.failures,
+            on_escalate=self._on_escalate,
+        )
 
     @property
     def entries_allowed(self) -> bool:
@@ -541,6 +567,7 @@ class ExecutionEngine:
                 "__engine__", "broker_truth_unavailable", {"reason": truth.reason}
             )
             return
+        self.truth_tick = self.tick_count
 
         self._update_live_marks(positions, truth)
 
@@ -549,6 +576,15 @@ class ExecutionEngine:
             self._watch_waiting_entry(position, decision)
             if not decision.has(ReconcileAction.DIRECTION_MISMATCH):
                 self._clear_mismatch_blip(position)
+            if (
+                STOP_MOVE_PENDING_KEY in position.extra
+                and not decision.has(ReconcileAction.ADOPT_STOP_PRICE)
+                and position.state == ExecutionState.PROTECTED
+            ):
+                # Kite still shows the stop we have on record, so a write
+                # that was in doubt did not land. Nothing left to attribute.
+                position.extra.pop(STOP_MOVE_PENDING_KEY, None)
+                self.store.save(position)
             if decision.is_noop:
                 continue
             self._apply_reconciliation(position, decision, truth)
@@ -854,10 +890,28 @@ class ExecutionEngine:
             changed = True
 
         if decision.has(ReconcileAction.ADOPT_STOP_PRICE):
-            position.extra["stop_adopted_from_broker"] = {
-                "was": position.stop_price,
-                "now": decision.broker_stop_price,
-            }
+            # Either our own modify whose confirmation was unclear, or a
+            # human editing the stop in Kite. Both count against Kite's
+            # per-order modification cap; only the second earns the marker.
+            source = adopted_source(position, float(decision.broker_stop_price))
+            position.extra.pop(STOP_MOVE_PENDING_KEY, None)
+            if source == SOURCE_KITE:
+                position.extra["stop_adopted_from_broker"] = {
+                    "was": position.stop_price,
+                    "now": decision.broker_stop_price,
+                }
+            mods = bump_mod_count(position)
+            self.store.append_event(
+                position.trade_id,
+                EVENT_STOP_ADOPTED,
+                {
+                    "from": position.stop_price,
+                    "to": decision.broker_stop_price,
+                    "source": source,
+                    "order_id": position.stop_order_id,
+                    "mods": mods,
+                },
+            )
             position.stop_price = decision.broker_stop_price
             changed = True
 
@@ -1290,6 +1344,134 @@ class ExecutionEngine:
     # Commands
     # ------------------------------------------------------------------
 
+    def _stop_movable(self, position: Position) -> Optional[str]:
+        """Why this position's stop must not be moved now, or None if it may."""
+        if position.state != ExecutionState.PROTECTED or not position.stop_order_id:
+            return "not_protected"
+        if self.shutdown_reason is not None:
+            return "shutting_down"
+        if (
+            position.extra.get(EXIT_PENDING_KEY)
+            or position.extra.get(SAFETY_EXIT_KEY)
+            or (position.extra.get(MISMATCH_KEY) or {}).get("confirmed")
+        ):
+            return "exiting"
+        if position.extra.get(STOP_TRIGGERED_KEY):
+            # A triggered stop is already selling; Kite only allows a
+            # quantity change on it, and the trigger watch owns it now.
+            return "stop_triggered"
+        if tick_size_of(position) is None:
+            return "tick_size_unavailable"
+        if initial_stop_of(position) is None:
+            return "initial_stop_unknown"
+        return None
+
+    def _fresh_ltp(self, position: Position) -> Optional[float]:
+        """Last price from this tick's REST read, or None if that read did not
+        happen or did not succeed this tick."""
+        truth = self.last_truth
+        if truth is None or not truth.ok or self.truth_tick != self.tick_count:
+            return None
+        return truth.last_price.get(position.candidate.tradingsymbol)
+
+    def _advance_trailing(self, positions: List[Position]) -> None:
+        """The 0.5R schedule, for every position with auto-trail on.
+
+        Fails safe and loud: a broker failure leaves that stop where it was,
+        the other positions are still tried, and the step then raises so the
+        failure tracker counts it.
+        """
+        failures: List[str] = []
+        for position in positions:
+            if not position.extra.get(TRAIL_ENABLED_KEY):
+                continue
+            if self._stop_movable(position) is not None:
+                continue
+            ltp = self._fresh_ltp(position)
+            candidate = auto_target(position, ltp)
+            if candidate is None or position.stop_price is None:
+                continue
+            decision = resolve_stop(
+                direction=position.candidate.direction,
+                current=float(position.stop_price),
+                candidate=candidate,
+                floor=float(initial_stop_of(position)),
+                tick_size=float(tick_size_of(position)),
+                auto_on=True,
+                ltp=ltp,
+            )
+            if not decision.ok:
+                continue
+            outcome = move_stop(
+                position,
+                float(decision.target),
+                source=SOURCE_AUTO,
+                broker=self.broker,
+                store=self.store,
+                detail={"ltp": ltp},
+            )
+            if outcome.failed:
+                failures.append(f"{position.trade_id}: {outcome.reason}")
+        if failures:
+            raise RuntimeError("trail failed: " + "; ".join(failures))
+
+    def _apply_move_stop(self, command, position: Position) -> None:
+        blocked = self._stop_movable(position)
+        if blocked is not None:
+            command.rejected(blocked)
+            return
+        try:
+            ticks = int((command.payload or {}).get("ticks"))
+        except (TypeError, ValueError):
+            command.rejected("ticks_required")
+            return
+        if ticks not in (-1, 1):
+            command.rejected("one_tick_per_nudge")
+            return
+        tick = float(tick_size_of(position))
+        current = float(position.stop_price)
+        auto_on = bool(position.extra.get(TRAIL_ENABLED_KEY))
+        ltp = self._fresh_ltp(position)
+        decision = resolve_stop(
+            direction=position.candidate.direction,
+            current=current,
+            candidate=nudge_target(current, ticks, tick),
+            floor=float(initial_stop_of(position)),
+            tick_size=tick,
+            auto_on=auto_on,
+            ltp=ltp,
+        )
+        if not decision.ok:
+            command.rejected(str(decision.reason))
+            return
+        outcome = move_stop(
+            position,
+            float(decision.target),
+            source=SOURCE_MANUAL,
+            broker=self.broker,
+            store=self.store,
+            detail={"ticks": ticks, "ltp": ltp, "auto_on": auto_on},
+        )
+        if outcome.moved:
+            command.applied({"stop_price": outcome.stop_price})
+        else:
+            command.rejected(str(outcome.reason))
+
+    def _apply_set_trail(self, command, position: Position) -> None:
+        enabled = (command.payload or {}).get("enabled")
+        if not isinstance(enabled, bool):
+            command.rejected("enabled_required")
+            return
+        if position.state not in (ExecutionState.ENTERED, ExecutionState.PROTECTED):
+            command.rejected("not_protected")
+            return
+        was = bool(position.extra.get(TRAIL_ENABLED_KEY))
+        position.extra[TRAIL_ENABLED_KEY] = enabled
+        self.store.save_with_event(
+            position, EVENT_TRAIL_TOGGLED, {"from": was, "to": enabled}
+        )
+        command.applied({"trail_enabled": enabled})
+
     def _handle_commands(self) -> None:
         if self.command_source is None:
             return
@@ -1335,6 +1517,17 @@ class ExecutionEngine:
                 command.applied({"exit_pending": True, "detail": outcome.reason})
             else:
                 command.rejected(str(outcome.reason))
+            return
+
+        if kind in (CommandKind.MOVE_STOP, CommandKind.SET_TRAIL):
+            position = self._find_open(command.trade_id)
+            if position is None:
+                command.rejected("position_not_open")
+                return
+            if kind is CommandKind.MOVE_STOP:
+                self._apply_move_stop(command, position)
+            else:
+                self._apply_set_trail(command, position)
             return
 
         if kind is CommandKind.KILL_ALL:
