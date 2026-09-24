@@ -15,7 +15,6 @@ from api.admin_config.defaults import DEFAULT_ADMIN_CONFIG_VALUES
 from api.admin_config.migrations import run_migrations
 from api.admin_config.snapshot import AdminConfigSnapshot
 from nse_trading_calendar import parse_hhmm, validate_session_gate_hhmm_pair
-from admin_trail_profile import validate_trail_profile
 
 _CONFIG_KEYS = tuple(DEFAULT_ADMIN_CONFIG_VALUES.keys())
 
@@ -146,8 +145,6 @@ def validate_config_values(
 
     if any(not math.isfinite(float(value)) for key,value in merged.items() if key != "preferred_execution_mode"):
         raise ValueError("configuration must contain finite values")
-    if merged["auto_trail_default_enabled"] not in (0.0, 1.0):
-        raise ValueError("auto_trail_default_enabled must be 0 or 1")
     for key in ("max_concurrent_positions", "max_filled_setups_per_day"):
         if not float(merged[key]).is_integer():
             raise ValueError(f"{key} must be an integer")
@@ -214,8 +211,6 @@ def validate_config_values(
 
     normalized = {
         "preferred_execution_mode": merged["preferred_execution_mode"],
-        **validate_trail_profile(merged),
-        "auto_trail_default_enabled": float(merged["auto_trail_default_enabled"]),
         "setup_expiry_seconds": float(merged["setup_expiry_seconds"]),
         "max_quote_age_seconds": float(merged["max_quote_age_seconds"]),
         "max_entry_drift_r": float(merged["max_entry_drift_r"]),
