@@ -53,6 +53,11 @@ from trading_engine_handoff import fetch_triggered_with_vwap_since
 # could be refused.
 FEED_STALE_SECONDS = 5.0
 
+# Kite reads (positions, orders, margins, profile) answer in well under a
+# second when healthy. 3s bounds a hung read, so one tick's two reads stall at
+# most ~6s instead of ~14s at the SDK's 7s default.
+KITE_READ_TIMEOUT_SECONDS = 3.0
+
 _STOP_REQUESTED = False
 
 
@@ -114,7 +119,11 @@ def build_broker(*, live_orders: bool):
     from login import _get_kite
     from trading_engine_broker import KiteBroker
 
-    return KiteBroker(_get_kite(), live_orders_enabled=True)
+    return KiteBroker(
+        _get_kite(),  # writes: SDK default timeout
+        live_orders_enabled=True,
+        read_kite=_get_kite(timeout=KITE_READ_TIMEOUT_SECONDS),
+    )
 
 
 def build_tick_feed(*, live_orders: bool):

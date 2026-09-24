@@ -1115,10 +1115,25 @@ FINAL_ORDER_STATUSES = frozenset({"CANCELLED", "REJECTED", "COMPLETE"})
 
 
 class KiteBroker:
-    """Live Kite Connect adapter. Must not run unless live_orders_enabled."""
+    """Live Kite Connect adapter. Must not run unless live_orders_enabled.
 
-    def __init__(self, kite: object, *, live_orders_enabled: bool) -> None:
+    Two clients: ``kite`` for writes (place / modify / cancel) and
+    ``read_kite`` for every read. Reads get a short timeout so a hung Kite
+    response cannot stall the 1s engine loop -- and with it the gap between a
+    fill and its stop -- for the SDK's 7s default, twice per tick. Writes keep
+    the longer timeout: cutting a placement short only turns more of them into
+    "did it go through?" outcomes. ``read_kite`` defaults to ``kite``.
+    """
+
+    def __init__(
+        self,
+        kite: object,
+        *,
+        live_orders_enabled: bool,
+        read_kite: Optional[object] = None,
+    ) -> None:
         self._kite = kite
+        self._read = read_kite if read_kite is not None else kite
         self.live_orders_enabled = live_orders_enabled
         self._positions_payload: Optional[object] = None
         self._positions_failed = False
@@ -1126,9 +1141,10 @@ class KiteBroker:
         # The SDK calls this on any 403 TokenException, from every REST call,
         # so one hook covers reads the engine swallows (positions, orders,
         # margins) as well as writes.
-        register = getattr(kite, "set_session_expiry_hook", None)
-        if callable(register):
-            register(self._on_session_expired)
+        for client in {id(kite): kite, id(self._read): self._read}.values():
+            register = getattr(client, "set_session_expiry_hook", None)
+            if callable(register):
+                register(self._on_session_expired)
         # Injectable so tests never really sleep.
         self._sleep = time.sleep
         self._monotonic = time.monotonic
@@ -1141,7 +1157,7 @@ class KiteBroker:
     def check_session(self) -> Optional[bool]:
         """One cheap authenticated read (profile). Never raises."""
         try:
-            self._kite.profile()  # type: ignore[attr-defined]
+            self._read.profile()  # type: ignore[attr-defined]
         except _KiteTokenException:
             self._on_session_expired()
             return False
@@ -1150,7 +1166,7 @@ class KiteBroker:
         return True
 
     def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
-        raw = self._kite.quote([f"NSE:{tradingsymbol}"])
+        raw = self._read.quote([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
         item = raw.get(f"NSE:{tradingsymbol}") if isinstance(raw, dict) else None
         if not isinstance(item, dict):
             return None
@@ -1194,11 +1210,11 @@ class KiteBroker:
             raise RuntimeError(LIVE_ORDERS_DISABLED_REASON)
 
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
+        raw = self._read.orders()  # type: ignore[attr-defined]
         return [_kite_order_to_broker(o) for o in raw if str(o.get("tag") or "") == tag]
 
     def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
+        raw = self._read.orders()  # type: ignore[attr-defined]
         return [
             _kite_order_to_broker(o)
             for o in raw
@@ -1206,7 +1222,7 @@ class KiteBroker:
         ]
 
     def list_orders(self) -> List[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
+        raw = self._read.orders()  # type: ignore[attr-defined]
         return [_kite_order_to_broker(o) for o in raw]
 
     def list_net_positions(self) -> Dict[str, int]:
@@ -1452,7 +1468,7 @@ class KiteBroker:
         )
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
+        raw = self._read.orders()  # type: ignore[attr-defined]
         for item in raw:
             if str(item.get("order_id")) == str(order_id):
                 return _kite_order_to_broker(item)
@@ -1492,7 +1508,7 @@ class KiteBroker:
         if self._positions_payload is not None:
             return self._positions_payload if isinstance(self._positions_payload, dict) else None
         try:
-            data = self._kite.positions()  # type: ignore[attr-defined]
+            data = self._read.positions()  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             self._positions_failed = True
             return None
@@ -1519,7 +1535,7 @@ class KiteBroker:
                     "quantity": quantity,
                 }
             ]
-            result = self._kite.order_margins(params)  # type: ignore[attr-defined]
+            result = self._read.order_margins(params)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             return MarginQuote(ok=False, required=0.0, reason=f"margin_unavailable:{exc}")
         if isinstance(result, list) and result:
@@ -1543,7 +1559,7 @@ class KiteBroker:
         """Read verified equity available margin from Kite; None if unavailable."""
         self._require_live()
         try:
-            data = self._kite.margins()  # type: ignore[attr-defined]
+            data = self._read.margins()  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             return None
         if not isinstance(data, dict):
@@ -1569,7 +1585,7 @@ class KiteBroker:
         return None
 
     def ltp(self, tradingsymbol: str) -> Optional[float]:
-        data = self._kite.ltp([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
+        data = self._read.ltp([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
         key = f"NSE:{tradingsymbol}"
         if isinstance(data, dict) and key in data:
             last = data[key].get("last_price")

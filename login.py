@@ -167,13 +167,19 @@ def _save_env_vars(updates: dict[str, str]) -> None:
         set_key(str(path), key, value)
 
 
-def _get_kite(api_key: str | None = None, access_token: str | None = None) -> KiteConnect:
+def _get_kite(
+    api_key: str | None = None,
+    access_token: str | None = None,
+    *,
+    timeout: float | None = None,
+) -> KiteConnect:
+    """A Kite client. ``timeout`` (seconds) of None keeps the SDK default (7s)."""
     env = _read_env_merged()
     key = api_key or env.get("KITE_API_KEY")
     if not key:
         raise ValueError("KITE_API_KEY is not set")
 
-    kite = KiteConnect(api_key=key)
+    kite = KiteConnect(api_key=key, timeout=timeout)
     token = access_token or env.get("KITE_ACCESS_TOKEN")
     if token:
         kite.set_access_token(token)
