@@ -1,5 +1,9 @@
 """The execution engine's own live price feed, for the desk's Open P&L only.
 
+It also carries Kite's order-update pushes, which may only wake the engine's
+loop early (see engine_runloop.LoopWake). Nothing from a push -- or a tick --
+is ever read by stops, reconciliation, the risk cap or square-off.
+
 Kite's REST positions `pnl` only moves when Kite refreshes it internally, so
 the desk could look frozen for 15s+ while Kite's own terminal ticked. This is
 one dedicated KiteTicker connection inside the engine process, subscribed only
@@ -27,6 +31,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
+from host_clock import REASON_HOST_NOT_IST, host_is_ist
+
 logger = logging.getLogger(__name__)
 
 # Health reasons, surfaced on the desk's fallback badge.
@@ -53,6 +59,8 @@ class TickFeedHealth:
     connected: bool
     last_tick_at: Optional[datetime] = None
     reason: Optional[str] = None
+    # Kite order-update pushes received since start (each one woke the loop).
+    order_updates: int = 0
 
 
 class NullTickFeed:
@@ -96,12 +104,17 @@ class LiveTickFeed:
         ticker_factory: Optional[Callable[[str, str], Any]] = None,
         call_in_io_thread: Optional[Callable[..., None]] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        host_clock_ok: Callable[[], bool] = host_is_ist,
+        on_order_update: Optional[Callable[[], None]] = None,
     ) -> None:
         self._api_key = api_key
         self._access_token = access_token
         self._ticker_factory = ticker_factory
         self._call = call_in_io_thread or _twisted_call_from_thread
         self._now = now_fn
+        self._host_clock_ok = host_clock_ok
+        self._wake = on_order_update
+        self._order_updates = 0
         self._lock = threading.Lock()
         self._ticker: Any = None
         self._connected = False
@@ -122,12 +135,18 @@ class LiveTickFeed:
         running and every mark falls back to Kite REST."""
         if self._started:
             return True
+        if not self._host_clock_ok():
+            # Same recorded-not-raised rule as any other start failure: the
+            # desk shows why and every mark stays on Kite REST.
+            logger.error("Live P&L feed not started: host clock is not IST.")
+            self._set_reason(REASON_HOST_NOT_IST)
+            return False
         try:
             factory = self._ticker_factory
             if factory is None:
-                from kiteconnect import KiteTicker
+                from kite_ticker_factory import make_kite_ticker
 
-                factory = KiteTicker
+                factory = make_kite_ticker
             ticker = factory(self._api_key, self._access_token)
             ticker.on_ticks = self._on_ticks
             ticker.on_connect = self._on_connect
@@ -135,6 +154,7 @@ class LiveTickFeed:
             ticker.on_error = self._on_error
             ticker.on_reconnect = self._on_reconnect
             ticker.on_noreconnect = self._on_noreconnect
+            ticker.on_order_update = self._on_order_update
             self._ticker = ticker
             self._started = True
             self._set_reason(REASON_CONNECTING)
@@ -198,6 +218,7 @@ class LiveTickFeed:
                 connected=self._connected,
                 last_tick_at=self._last_tick_at,
                 reason=None if self._connected else self._reason,
+                order_updates=self._order_updates,
             )
 
     # ------------------------------------------------------------------
@@ -211,6 +232,15 @@ class LiveTickFeed:
             wanted = sorted(self._desired)
             self._subscribed = set(wanted)
         logger.info("Live P&L feed connected; subscribing to %d tokens.", len(wanted))
+        # On a reconnect KiteTicker re-subscribes its own record of tokens right
+        # after this callback (in onOpen). That record still holds anything that
+        # was dropped by sync() while disconnected, so trim it to what is wanted
+        # now. Safe here: we are on the reactor thread, before the resubscribe.
+        record = getattr(ws, "subscribed_tokens", None)
+        if isinstance(record, dict):
+            keep = set(wanted)
+            for token in [t for t in record if t not in keep]:
+                del record[token]
         if wanted:
             try:
                 # Already on the reactor thread: call directly.
@@ -234,6 +264,19 @@ class LiveTickFeed:
                     self._last_tick_at = received_at
                 except (TypeError, ValueError):
                     continue
+
+    def _on_order_update(self, ws: Any, data: Any = None) -> None:
+        """A wake-up call only. ``data`` is deliberately never read: the
+        engine's next tick reads broker truth over REST as always."""
+        with self._lock:
+            self._order_updates += 1
+        wake = self._wake
+        if wake is None:
+            return
+        try:
+            wake()
+        except Exception:  # noqa: BLE001 - never raise into KiteTicker
+            logger.exception("Order-update wake failed.")
 
     def _on_close(self, ws: Any, code: Any = None, reason: Any = None) -> None:
         logger.warning("Live P&L feed closed (code=%s reason=%s).", code, reason)

@@ -449,6 +449,8 @@ export interface ExecutionStatus {
   live_pnl_feed_state?: LivePnlFeedState | null
   live_pnl_feed_reason?: string | null
   live_pnl_last_tick_at?: string | null
+  /** Kite order-update pushes received this engine run (each wakes the loop). */
+  live_pnl_order_updates?: number | null
   last_error: string | null
   escalations: Record<string, string>
 }
@@ -506,6 +508,8 @@ export interface ExecutionPositions {
   live_pnl_feed_state?: LivePnlFeedState | null
   live_pnl_feed_reason?: string | null
   live_pnl_last_tick_at?: string | null
+  /** Kite order-update pushes received this engine run (each wakes the loop). */
+  live_pnl_order_updates?: number | null
 }
 
 export interface ExecutionEvent {

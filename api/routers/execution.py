@@ -113,6 +113,7 @@ def _feed_fields(marks: dict) -> dict:
         "live_pnl_feed_state": feed.get("state"),
         "live_pnl_feed_reason": feed.get("reason"),
         "live_pnl_last_tick_at": feed.get("last_tick_at"),
+        "live_pnl_order_updates": feed.get("order_updates"),
     }
 
 

@@ -1,2 +1,5 @@
-kiteconnect>=5.0.0
-python-dotenv>=1.0.0
+# Exact pins: deploy.sh reinstalls this file on every release, so a range here
+# can silently change the broker SDK under a live engine. These match what the
+# Lightsail venv runs; bump deliberately, after reading the changelog.
+kiteconnect==5.2.1
+python-dotenv==1.2.2

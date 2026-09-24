@@ -25,13 +25,24 @@ so every step is wrapped on its own rather than the whole tick being wrapped
 once. A malformed trigger row breaking ingestion must not also skip protection
 for a real, filled position on that tick: the least dangerous part of the loop
 should never be able to silence the most dangerous part.
+
+**Woken early by Kite, never faster than 0.5s.** Kite pushes order updates
+(fills, a stop triggering, a cancel landing, a manual close) over the engine's
+WebSocket. A push only ends the wait before the next tick early -- the tick
+itself still reads REST truth exactly as always; the push's contents are never
+used. MIN_TICK_GAP_SECONDS bounds a burst of pushes to at most two ticks a
+second, i.e. about four positions/orders reads a second, well inside Kite's
+10/second for those endpoints. With the WebSocket down, nothing ever wakes the
+loop and it runs at the plain 1-second interval.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 TICK_INTERVAL_SECONDS = 1.0
+MIN_TICK_GAP_SECONDS = 0.5
 
 # Step names, used as keys for failure counting and escalation.
 STEP_RECONCILE = "drive_open_orders"
@@ -81,12 +92,59 @@ def next_sleep_seconds(
     return max(0.0, float(interval) - elapsed)
 
 
+class LoopWake:
+    """Lets a pushed Kite order update end the between-tick wait early.
+
+    notify() may be called from any thread (KiteTicker's reactor thread in
+    practice). The loop clears it at the *start* of each tick, before the REST
+    reads, so a push landing mid-tick is not lost: it re-arms the next wait.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def notify(self) -> None:
+        self._event.set()
+
+    def clear(self) -> None:
+        self._event.clear()
+
+    def wait(self, timeout: float) -> bool:
+        return self._event.wait(timeout)
+
+
+def wait_for_next_tick(
+    *,
+    sleep_for: float,
+    tick_started_at: float,
+    wait_for_wake: Callable[[float], bool],
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+    min_gap: float = MIN_TICK_GAP_SECONDS,
+) -> bool:
+    """Wait out the rest of the interval, or less if woken. Returns whether woken.
+
+    A wake never starts the next tick sooner than ``min_gap`` after this tick
+    started. An overrun tick (sleep_for == 0) starts the next one immediately,
+    exactly as before.
+    """
+    if sleep_for <= 0:
+        return False
+    woke = bool(wait_for_wake(float(sleep_for)))
+    if woke:
+        remaining = float(min_gap) - (float(monotonic()) - float(tick_started_at))
+        if remaining > 0:
+            sleep(remaining)
+    return woke
+
+
 def accumulated_drift_seconds(
     *, started_at: float, now: float, ticks_completed: int, interval: float = TICK_INTERVAL_SECONDS
 ) -> float:
     """How far behind clock-aligned scheduling the loop has slid.
 
     Reported for observability only; nothing corrects for it, by design.
+    Woken ticks come early, so on a busy day this reads low (floored at 0).
     """
     if ticks_completed <= 0:
         return 0.0

@@ -31,6 +31,8 @@ from engine_orders import transition
 from engine_sizing import SizingPolicy
 from engine_types import ExecutionState, Position, SizeDecision, TriggerCandidate
 from trading_engine_broker import (
+    KITE_SESSION_EXPIRED_REASON,
+    BrokerSessionExpired,
     EntryAcceptedVisibilityUnknown,
     LIVE_ORDERS_DISABLED_REASON,
 )
@@ -184,6 +186,13 @@ def place_entry(
         # The broker accepted it but the row is not poll-visible yet. We know
         # an order exists; we just cannot see it. Ambiguous by construction.
         return PlaceResponse(ResponseKind.AMBIGUOUS, reason=str(exc))
+    except BrokerSessionExpired as exc:
+        # Kite refused the token before processing anything: definitely not
+        # placed. Treating it as ambiguous would only re-ask the order book
+        # with the same dead token.
+        return PlaceResponse(
+            ResponseKind.REJECTED, reason=f"{KITE_SESSION_EXPIRED_REASON}: {exc}"
+        )
     except Exception as exc:  # noqa: BLE001 - every failure must be classified
         message = str(exc) or exc.__class__.__name__
         if is_definite_rejection(message):

@@ -15,6 +15,15 @@ from trading_engine_broker import (
 )
 
 
+def _model_order_history(kite) -> None:
+    """Kite's order_history as verified live (2026-09-25): the order's rows
+    ending in its book row; an unknown id returns []. Derived from the fake's
+    orders() so each test keeps one source of order state."""
+    kite.order_history.side_effect = lambda oid: [
+        dict(row) for row in kite.orders() if str(row.get("order_id")) == str(oid)
+    ]
+
+
 class FakeBrokerTests(unittest.TestCase):
     def test_does_not_resubmit_market_for_same_tag(self) -> None:
         broker = FakeBroker(last_prices={"AAA": 110})
@@ -124,6 +133,7 @@ class KiteBrokerTests(unittest.TestCase):
     def test_order_margins_reject(self) -> None:
         kite = MagicMock()
         kite.order_margins.return_value = [{"status": "error", "error": "MIS not allowed"}]
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         quote = broker.order_margins(
             tradingsymbol="AAA", transaction_type="BUY", quantity=10
@@ -145,6 +155,7 @@ class KiteBrokerTests(unittest.TestCase):
                 "average_price": 110,
             }
         ]
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         order = broker.place_market_mis(
             tradingsymbol="AAA", transaction_type="BUY", quantity=10, tag="teabc"
@@ -168,6 +179,7 @@ class KiteBrokerTests(unittest.TestCase):
             "pending_quantity": 0,
         }
         kite.orders.side_effect = [[], [placed], [placed]]
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         order = broker.flatten_mis(
             tradingsymbol="AAA",
@@ -200,6 +212,7 @@ class KiteBrokerTests(unittest.TestCase):
         }
         # Empty until after place — otherwise idempotent tag reuse skips place_order.
         kite.orders.side_effect = [[], [order_row], [order_row]]
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         broker.place_slm(
             tradingsymbol="AAA",
@@ -218,6 +231,7 @@ class KiteBrokerTests(unittest.TestCase):
     def test_place_sl_no_worse_price_retry_on_exception(self) -> None:
         kite = MagicMock()
         kite.place_order.side_effect = RuntimeError("transport_glitch")
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         with self.assertRaises(RuntimeError):
             broker.place_slm(
@@ -236,6 +250,7 @@ class KiteBrokerTests(unittest.TestCase):
         kite = MagicMock()
         kite.place_order.return_value = {"order_id": "sl-accepted"}
         kite.orders.return_value = []  # accept, then poll miss
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         with self.assertRaises(SlPlaceAcceptedVisibilityUnknown) as ctx:
             broker.place_slm(
@@ -266,6 +281,7 @@ class KiteBrokerTests(unittest.TestCase):
             ],
             "day": [],
         }
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         quote = broker.position_quote("AAA")
         assert quote is not None
@@ -302,6 +318,7 @@ class KiteBrokerTests(unittest.TestCase):
 
         kite.orders.side_effect = orders
         kite.modify_order.side_effect = modify_order
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         # Port contract: quantity=8 means desired remaining cover.
         # Triggered OPEN remainder → quantity-only request (no order_type/price/trigger).
@@ -319,6 +336,7 @@ class KiteBrokerTests(unittest.TestCase):
     def test_modify_slm_requires_confirmed_order_state(self) -> None:
         kite = MagicMock()
         kite.orders.return_value = []
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         with self.assertRaises(RuntimeError) as ctx:
             broker.modify_slm("missing", 99.0, quantity=5, transaction_type="SELL")
@@ -355,6 +373,7 @@ class KiteBrokerTests(unittest.TestCase):
 
         kite.orders.side_effect = orders
         kite.modify_order.side_effect = modify_order
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         broker.modify_slm("slw", 97.0, quantity=10, transaction_type="SELL", tick_size=1)
         sent = kite.modify_order.call_args.kwargs
@@ -381,6 +400,7 @@ class KiteBrokerTests(unittest.TestCase):
             "price": 100.0,
         }
         kite.orders.side_effect = lambda: [dict(order_state)]
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         with self.assertRaises(RuntimeError) as ctx:
             broker.modify_slm("sl0", 97.0, quantity=10, transaction_type="SELL", tick_size=1)
@@ -404,6 +424,7 @@ class KiteBrokerTests(unittest.TestCase):
             "price": 99.0,
         }
         kite.orders.side_effect = lambda: [dict(order_state)]
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         with self.assertRaises(RuntimeError) as ctx:
             broker.modify_slm("sl1", 98.0, transaction_type="SELL")
@@ -432,6 +453,7 @@ class KiteBrokerTests(unittest.TestCase):
 
         kite.orders.side_effect = orders
         kite.modify_order.side_effect = RuntimeError("transient")
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         result = broker.modify_slm("slx", 99.0, quantity=10, transaction_type="SELL")
         self.assertEqual(kite.modify_order.call_count, 1)
@@ -441,6 +463,7 @@ class KiteBrokerTests(unittest.TestCase):
     def test_position_quote_failure_is_unknown_not_zero(self) -> None:
         kite = MagicMock()
         kite.positions.side_effect = RuntimeError("down")
+        _model_order_history(kite)
         broker = KiteBroker(kite, live_orders_enabled=True)
         self.assertIsNone(broker.position_quote("AAA"))
         self.assertIsNone(broker.net_position_qty("AAA"))
@@ -472,3 +495,54 @@ class KiteBrokerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KitePollOrderHistoryTests(unittest.TestCase):
+    """poll_order reads one order's history, never the whole book."""
+
+    ROW = {
+        "order_id": "o1",
+        "tag": "te1",
+        "tradingsymbol": "AAA",
+        "transaction_type": "BUY",
+        "order_type": "LIMIT",
+        "quantity": 10,
+        "product": "MIS",
+    }
+
+    def broker(self, history):
+        kite = MagicMock()
+        if isinstance(history, Exception):
+            kite.order_history.side_effect = history
+        else:
+            kite.order_history.return_value = history
+        return KiteBroker(kite, live_orders_enabled=True), kite
+
+    def test_the_last_history_row_is_the_current_state(self) -> None:
+        rows = [
+            dict(self.ROW, status="OPEN PENDING", filled_quantity=0),
+            dict(self.ROW, status="OPEN", filled_quantity=4, average_price=100.0),
+            dict(self.ROW, status="COMPLETE", filled_quantity=10, average_price=100.5),
+        ]
+        broker, kite = self.broker(rows)
+        order = broker.poll_order("o1")
+        self.assertEqual(order.status, "COMPLETE")
+        self.assertEqual(order.filled_quantity, 10)
+        self.assertEqual(order.average_price, 100.5)
+        kite.order_history.assert_called_once_with("o1")
+        kite.orders.assert_not_called()
+
+    def test_an_unknown_order_is_not_visible_yet(self) -> None:
+        broker, _ = self.broker([])
+        self.assertIsNone(broker.poll_order("o404"))
+
+    def test_an_unreadable_order_still_raises(self) -> None:
+        from kiteconnect.exceptions import DataException
+
+        broker, _ = self.broker(DataException("Couldn't parse the JSON response", code=502))
+        with self.assertRaises(DataException):
+            broker.poll_order("0")
+
+    def test_an_unexpected_shape_is_not_visible(self) -> None:
+        broker, _ = self.broker({"unexpected": True})
+        self.assertIsNone(broker.poll_order("o1"))

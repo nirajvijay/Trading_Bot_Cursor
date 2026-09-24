@@ -5,6 +5,7 @@ KiteBroker never logs tokens. FakeBroker never calls kiteconnect.place_order.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from dataclasses import dataclass, field
@@ -25,7 +26,18 @@ from trading_engine_types import (
     broker_order_pending_qty,
 )
 
+try:  # FakeBroker and the tests must not need the SDK to import this module.
+    from kiteconnect.exceptions import TokenException as _KiteTokenException
+except ImportError:  # pragma: no cover - kiteconnect is pinned in requirements
+    class _KiteTokenException(Exception):  # type: ignore[no-redef]
+        pass
+
+logger = logging.getLogger(__name__)
+
 LIVE_ORDERS_DISABLED_REASON = "live_orders_disabled"
+# The access token is dead (Kite answered 403 TokenException). Also the engine's
+# pause reason, so the desk names the real cause.
+KITE_SESSION_EXPIRED_REASON = "kite_session_expired"
 SL_CANCELLED = {"CANCELLED", "REJECTED"}
 # Verified Kite/NSE convention: timezone-less order/exchange timestamps are IST.
 KITE_EXCHANGE_TZ = ZoneInfo("Asia/Kolkata")
@@ -46,6 +58,15 @@ class SlPlaceAcceptedVisibilityUnknown(RuntimeError):
     ) -> None:
         self.order_id = str(order_id)
         super().__init__(message)
+
+
+class BrokerSessionExpired(RuntimeError):
+    """Kite refused the call itself: the access token is expired or invalid.
+
+    A 403 TokenException is an authentication refusal, so the request was never
+    processed. Raised only around calls where that proves nothing was placed --
+    never after an order has been accepted.
+    """
 
 
 class EntryAcceptedVisibilityUnknown(RuntimeError):
@@ -192,6 +213,14 @@ class BrokerPort(Protocol):
 
     def ltp(self, tradingsymbol: str) -> Optional[float]: ...
 
+    # True once the broker has refused a call for a dead access token. Sticky
+    # for the process: the token is only read at start, so it cannot recover.
+    session_expired: bool
+
+    def check_session(self) -> Optional[bool]:
+        """True = token works, False = token dead, None = could not tell."""
+        ...
+
 
 def _new_order_id() -> str:
     return uuid4().hex[:16]
@@ -323,6 +352,21 @@ class FakeBroker:
     margins_unavailable: bool = False
     touch_quotes: Dict[str, TouchQuote] = field(default_factory=dict)
     limit_place_count: int = 0
+    # Dead-token simulation, mirroring KiteBroker: while token_dead, calls that
+    # reach "Kite" are refused and flip session_expired, which stays set.
+    token_dead: bool = False
+    session_expired: bool = False
+
+    def _refuse_if_token_dead(self) -> None:
+        if self.token_dead:
+            self.session_expired = True
+            raise BrokerSessionExpired("Incorrect `api_key` or `access_token`.")
+
+    def check_session(self) -> Optional[bool]:
+        if self.token_dead:
+            self.session_expired = True
+            return False
+        return True
 
     def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
         # No synthetic fresh timestamp or LTP-as-touch in the execution adapter.
@@ -424,6 +468,7 @@ class FakeBroker:
         return out
 
     def list_net_positions(self) -> Dict[str, int]:
+        self._refuse_if_token_dead()
         if self.positions_error:
             raise RuntimeError("positions_down")
         symbols = set(self.position_quotes.keys())
@@ -456,6 +501,7 @@ class FakeBroker:
     def _place_entry_mis(self, *, tradingsymbol: str, transaction_type: str,
                          quantity: int, tag: str, order_type: str,
                          price: Optional[float]) -> BrokerOrder:
+        self._refuse_if_token_dead()
         existing = [
             o
             for o in self.orders.values()
@@ -729,6 +775,10 @@ class FakeBroker:
         transaction_type: str,
         quantity: int,
     ) -> MarginQuote:
+        if self.token_dead:
+            # KiteBroker swallows the read failure into a not-ok quote.
+            self.session_expired = True
+            return MarginQuote(ok=False, required=0.0, reason="margin_unavailable:token")
         px = self.last_prices.get(tradingsymbol, 0.0)
         required = (quantity * px) / self.demo_leverage if px else 0.0
         if required > self.remaining_capital:
@@ -1065,19 +1115,58 @@ FINAL_ORDER_STATUSES = frozenset({"CANCELLED", "REJECTED", "COMPLETE"})
 
 
 class KiteBroker:
-    """Live Kite Connect adapter. Must not run unless live_orders_enabled."""
+    """Live Kite Connect adapter. Must not run unless live_orders_enabled.
 
-    def __init__(self, kite: object, *, live_orders_enabled: bool) -> None:
+    Two clients: ``kite`` for writes (place / modify / cancel) and
+    ``read_kite`` for every read. Reads get a short timeout so a hung Kite
+    response cannot stall the 1s engine loop -- and with it the gap between a
+    fill and its stop -- for the SDK's 7s default, twice per tick. Writes keep
+    the longer timeout: cutting a placement short only turns more of them into
+    "did it go through?" outcomes. ``read_kite`` defaults to ``kite``.
+    """
+
+    def __init__(
+        self,
+        kite: object,
+        *,
+        live_orders_enabled: bool,
+        read_kite: Optional[object] = None,
+    ) -> None:
         self._kite = kite
+        self._read = read_kite if read_kite is not None else kite
         self.live_orders_enabled = live_orders_enabled
         self._positions_payload: Optional[object] = None
         self._positions_failed = False
+        self.session_expired = False
+        # The SDK calls this on any 403 TokenException, from every REST call,
+        # so one hook covers reads the engine swallows (positions, orders,
+        # margins) as well as writes.
+        for client in {id(kite): kite, id(self._read): self._read}.values():
+            register = getattr(client, "set_session_expiry_hook", None)
+            if callable(register):
+                register(self._on_session_expired)
         # Injectable so tests never really sleep.
         self._sleep = time.sleep
         self._monotonic = time.monotonic
 
+    def _on_session_expired(self) -> None:
+        if not self.session_expired:
+            logger.critical("Kite rejected the access token; new entries must stop.")
+        self.session_expired = True
+
+    def check_session(self) -> Optional[bool]:
+        """One cheap authenticated read (profile). Never raises."""
+        try:
+            self._read.profile()  # type: ignore[attr-defined]
+        except _KiteTokenException:
+            self._on_session_expired()
+            return False
+        except Exception:  # noqa: BLE001 - a network hiccup is not a dead token
+            return None
+        return True
+
     def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
-        raw = self._kite.quote([f"NSE:{tradingsymbol}"])
+        raw = self._read.quote([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
         item = raw.get(f"NSE:{tradingsymbol}") if isinstance(raw, dict) else None
         if not isinstance(item, dict):
             return None
@@ -1121,11 +1210,11 @@ class KiteBroker:
             raise RuntimeError(LIVE_ORDERS_DISABLED_REASON)
 
     def orders_by_tag(self, tag: str) -> List[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
+        raw = self._read.orders()  # type: ignore[attr-defined]
         return [_kite_order_to_broker(o) for o in raw if str(o.get("tag") or "") == tag]
 
     def orders_for_symbol(self, tradingsymbol: str) -> List[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
+        raw = self._read.orders()  # type: ignore[attr-defined]
         return [
             _kite_order_to_broker(o)
             for o in raw
@@ -1133,7 +1222,7 @@ class KiteBroker:
         ]
 
     def list_orders(self) -> List[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
+        raw = self._read.orders()  # type: ignore[attr-defined]
         return [_kite_order_to_broker(o) for o in raw]
 
     def list_net_positions(self) -> Dict[str, int]:
@@ -1177,31 +1266,39 @@ class KiteBroker:
         tag: str,
     ) -> BrokerOrder:
         self._require_live()
-        # Not `order_type == "MARKET"`: with market_protection Kite books and
-        # reports our MARKET orders as LIMIT (verified live 2026-09-25, every
-        # engine entry and exit). Filtering on MARKET never matched, so a
-        # flatten retried after an accepted-but-unconfirmed exit placed a
-        # second exit. Same rule as FakeBroker: any live non-stop order under
-        # this tag is the one already placed.
-        existing = [
-            o
-            for o in self.orders_by_tag(tag)
-            if not _is_stop_order(o) and str(o.status).upper() not in SL_CANCELLED
-        ]
-        if existing:
-            return existing[0]
-        result = self._kite.place_order(  # type: ignore[attr-defined]
-            variety="regular",
-            exchange="NSE",
-            tradingsymbol=tradingsymbol,
-            transaction_type=transaction_type,
-            quantity=quantity,
-            product="MIS",
-            order_type="MARKET",
-            validity="DAY",
-            tag=tag,
-            market_protection=-1,
-        )
+        # Only the idempotency read and the placement itself are translated: a
+        # token refusal there proves no order exists. The poll below is not --
+        # by then the order may have been accepted.
+        try:
+            # Not `order_type == "MARKET"`: with market_protection Kite books
+            # and reports our MARKET orders as LIMIT (verified live 2026-09-25,
+            # every engine entry and exit). Filtering on MARKET never matched,
+            # so a flatten retried after an accepted-but-unconfirmed exit
+            # placed a second exit. Same rule as FakeBroker: any live non-stop
+            # order under this tag is the one already placed.
+            existing = [
+                o
+                for o in self.orders_by_tag(tag)
+                if not _is_stop_order(o)
+                and str(o.status).upper() not in SL_CANCELLED
+            ]
+            if existing:
+                return existing[0]
+            result = self._kite.place_order(  # type: ignore[attr-defined]
+                variety="regular",
+                exchange="NSE",
+                tradingsymbol=tradingsymbol,
+                transaction_type=transaction_type,
+                quantity=quantity,
+                product="MIS",
+                order_type="MARKET",
+                validity="DAY",
+                tag=tag,
+                market_protection=-1,
+            )
+        except _KiteTokenException as exc:
+            self._on_session_expired()
+            raise BrokerSessionExpired(str(exc) or exc.__class__.__name__) from exc
         order_id = result["order_id"] if isinstance(result, dict) else str(result)
         polled = self.poll_order(str(order_id))
         if polled is not None:
@@ -1382,11 +1479,21 @@ class KiteBroker:
         )
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
-        raw = self._kite.orders()  # type: ignore[attr-defined]
-        for item in raw:
-            if str(item.get("order_id")) == str(order_id):
-                return _kite_order_to_broker(item)
-        return None
+        """One order's current state, without downloading the whole book.
+
+        Verified against live Kite (2026-09-25): order_history's last row
+        equals the order-book row on every field BrokerOrder reads, rows are
+        oldest-first, and an unknown well-formed id returns an empty list --
+        mapped to None ("not visible yet"), exactly what the book scan gave.
+        Any error still raises, so an unreadable order stays ambiguous.
+        """
+        history = self._read.order_history(str(order_id))  # type: ignore[attr-defined]
+        if not isinstance(history, list) or not history:
+            return None
+        last = history[-1]
+        if not isinstance(last, dict):
+            return None
+        return _kite_order_to_broker(last)
 
     def net_position_qty(self, tradingsymbol: str) -> Optional[int]:
         quote = self.position_quote(tradingsymbol)
@@ -1422,7 +1529,7 @@ class KiteBroker:
         if self._positions_payload is not None:
             return self._positions_payload if isinstance(self._positions_payload, dict) else None
         try:
-            data = self._kite.positions()  # type: ignore[attr-defined]
+            data = self._read.positions()  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             self._positions_failed = True
             return None
@@ -1449,7 +1556,7 @@ class KiteBroker:
                     "quantity": quantity,
                 }
             ]
-            result = self._kite.order_margins(params)  # type: ignore[attr-defined]
+            result = self._read.order_margins(params)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             return MarginQuote(ok=False, required=0.0, reason=f"margin_unavailable:{exc}")
         if isinstance(result, list) and result:
@@ -1473,7 +1580,7 @@ class KiteBroker:
         """Read verified equity available margin from Kite; None if unavailable."""
         self._require_live()
         try:
-            data = self._kite.margins()  # type: ignore[attr-defined]
+            data = self._read.margins()  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             return None
         if not isinstance(data, dict):
@@ -1499,7 +1606,7 @@ class KiteBroker:
         return None
 
     def ltp(self, tradingsymbol: str) -> Optional[float]:
-        data = self._kite.ltp([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
+        data = self._read.ltp([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
         key = f"NSE:{tradingsymbol}"
         if isinstance(data, dict) and key in data:
             last = data[key].get("last_price")

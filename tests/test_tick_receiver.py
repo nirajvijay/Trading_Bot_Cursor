@@ -110,6 +110,7 @@ class ReceiverTestMixin:
             worker_poll_seconds=worker_poll_seconds,
             health_interval=health_interval,
             ticker_factory=ticker_factory or MagicMock(),
+            host_clock_ok=lambda: True,
         )
 
 

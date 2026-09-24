@@ -19,12 +19,14 @@ import time
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from kiteconnect import KiteTicker
 
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
+from host_clock import host_is_ist, host_not_ist_message
+from kite_ticker_factory import make_kite_ticker
 from kite_tick_normalizer import normalize_kite_tick, to_tick_event
 from login import _get_kite, _require_env, check_access_token
 from candle_emission import CandleEmissionError
@@ -70,7 +72,12 @@ class TickReceiver:
         api_key: Optional[str] = None,
         access_token: Optional[str] = None,
         ticker_factory: Any = None,
+        host_clock_ok: Callable[[], bool] = host_is_ist,
     ) -> None:
+        # Refuse before anything else: wrong candle times are worse than none.
+        if not host_clock_ok():
+            raise RuntimeError(host_not_ist_message())
+
         self._on_tick = on_tick
         self._on_feed_ready = on_feed_ready
         self._on_feed_interrupted = on_feed_interrupted
@@ -79,7 +86,7 @@ class TickReceiver:
         self._stale_seconds = stale_seconds
         self._health_interval = health_interval
         self._worker_poll_seconds = worker_poll_seconds
-        self._ticker_factory = ticker_factory or KiteTicker
+        self._ticker_factory = ticker_factory or make_kite_ticker
 
         valid, message = check_access_token(access_token)
         if not valid:

@@ -28,11 +28,13 @@ class ProtectedMarketKite:
         pass
 
     def orders(self):
-        # The read that confirms an accepted order (poll_order) can fail.
-        if self.history_failures and self.placed:
+        return [dict(o) for o in self.book]
+
+    def order_history(self, order_id):
+        if self.history_failures:
             self.history_failures -= 1
             raise NetworkException("Read timed out", code=503)
-        return [dict(o) for o in self.book]
+        return [dict(o) for o in self.book if o["order_id"] == order_id]
 
     def place_order(self, **kw):
         self.placed += 1

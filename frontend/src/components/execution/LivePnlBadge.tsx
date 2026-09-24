@@ -11,14 +11,21 @@ import { reasonLabel } from './format'
 export function LivePnlBadge({
   state,
   reason,
+  orderUpdates,
 }: {
   state: LivePnlFeedState | null | undefined
   reason?: string | null
+  /** Kite order-update pushes this engine run; shown only where passed. */
+  orderUpdates?: number | null
 }) {
+  const pushes =
+    orderUpdates === undefined || orderUpdates === null
+      ? ''
+      : `\nKite order updates received this run: ${orderUpdates}`
   if (state === 'live') {
     return (
       <span
-        title="Ongoing P&L is live from the Kite WebSocket"
+        title={`Ongoing P&L is live from the Kite WebSocket${pushes}`}
         className="label-caps px-1.5 py-0.5 rounded-sm border text-positive border-emerald-200 bg-emerald-50"
       >
         Live
@@ -33,7 +40,7 @@ export function LivePnlBadge({
         title={`WebSocket feed is stale or down${why ? ` (${why})` : ''}. Ongoing P&L falls back to Kite REST pnl, which is not live and is per stock for the day.${
           // Only the raw text when it adds detail, e.g. "ws_start_failed: <error>".
           reason && reason.includes(':') ? `\n${reason}` : ''
-        }`}
+        }${pushes}`}
         className="label-caps px-1.5 py-0.5 rounded-sm border text-amber-800 border-amber-300 bg-amber-50 whitespace-nowrap"
       >
         Fallback: Kite REST · feed stale

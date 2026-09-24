@@ -88,7 +88,12 @@ from engine_runloop import (
 from engine_sizing import SizingPolicy
 from engine_squareoff import SquareoffProgress, squareoff_all
 from engine_types import ExecutionState, Position, TriggerCandidate
-from trading_engine_broker import BrokerPort, parse_timestamp_text
+from trading_engine_broker import (
+    KITE_SESSION_EXPIRED_REASON,
+    BrokerPort,
+    BrokerSessionExpired,
+    parse_timestamp_text,
+)
 from trading_engine_types import STOP_ORDER_TYPES, broker_order_filled_qty
 
 # Kite's own day P&L for a stock, pinned on the closed row that made it flat.
@@ -204,6 +209,7 @@ class ExecutionEngine:
         # Set by a safety exit. Like a breach, it keeps entries paused until a
         # human restarts the engine, whatever the feed does.
         self.safety_hold: Optional[str] = None
+        self._session_expiry_escalated = False
 
     # ------------------------------------------------------------------
     # Tick
@@ -212,6 +218,8 @@ class ExecutionEngine:
     def tick(self) -> None:
         self.tick_count += 1
         now = self.now_fn()
+        if self.tick_count == 1:
+            self._startup_session_check()
 
         health = self.feed_monitor.check()
         if not health.healthy:
@@ -220,6 +228,8 @@ class ExecutionEngine:
             self._pause("feed_stale")
         elif not self.failures.should_auto_pause():
             self._resume()
+        # After the feed check, so a dead token always wins the pause reason.
+        self._hold_for_dead_session()
 
         positions = self.store.open_positions()
 
@@ -333,6 +343,9 @@ class ExecutionEngine:
             self.handle_trigger(candidate)
 
     def handle_trigger(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
+        # The token can die mid-tick (a reconcile read found it): re-check here
+        # so the trigger is held, not routed into a doomed entry.
+        self._hold_for_dead_session()
         if self.entries_paused or self.entries_stopped or self.shutdown_reason is not None:
             return None
 
@@ -353,7 +366,59 @@ class ExecutionEngine:
         risk_cap = self.risk_policy.per_trade_cap(
             vwap_limited=VWAP_ENTRY_CLASSES[classification] == "vwap_limited"
         )
-        return self._enter(candidate, risk_cap_rupees=risk_cap)
+        try:
+            return self._enter(candidate, risk_cap_rupees=risk_cap)
+        except BrokerSessionExpired:
+            # Raised by the margin preflight, before any intent is written, so
+            # nothing is stored and the trigger is not consumed. Entries pause
+            # with the real reason instead of a false "insufficient margin".
+            self._hold_for_dead_session()
+            return None
+
+    # ------------------------------------------------------------------
+    # Kite session
+    # ------------------------------------------------------------------
+
+    def _broker_session_expired(self) -> bool:
+        return bool(getattr(self.broker, "session_expired", False))
+
+    def _startup_session_check(self) -> None:
+        """One authenticated read on the first tick, so a stale token is known
+        before the first trigger rather than discovered by it. Afterwards the
+        broker's own calls are the detector; there is no periodic re-check."""
+        check = getattr(self.broker, "check_session", None)
+        if check is None:
+            return
+        try:
+            result = check()
+        except Exception:  # noqa: BLE001 - a check must never end a tick
+            result = None
+        self.store.append_event(
+            "__engine__", "broker_session_checked", {"valid": result}
+        )
+
+    def _hold_for_dead_session(self) -> bool:
+        """Pause entries for the session once Kite has rejected the token.
+
+        A session-long hold (like a breach): the engine reads its token only at
+        start, so a fresh login needs an engine restart anyway. Stops, exits
+        and square-off keep being attempted as usual. Re-asserted every call so
+        the desk keeps showing this reason even after another pause resumes.
+        """
+        if not self._broker_session_expired():
+            return False
+        if not self._session_expiry_escalated:
+            self._session_expiry_escalated = True
+            self._safety_escalate(
+                KITE_SESSION_EXPIRED_REASON,
+                "Kite rejected the access token. New entries are paused for "
+                "this session; log in again, then restart the engine.",
+                pause_reason=KITE_SESSION_EXPIRED_REASON,
+            )
+        else:
+            self.safety_hold = KITE_SESSION_EXPIRED_REASON
+            self._pause(KITE_SESSION_EXPIRED_REASON)
+        return True
 
     def _enter(
         self, candidate: TriggerCandidate, *, risk_cap_rupees: float
@@ -439,6 +504,13 @@ class ExecutionEngine:
                 quantity=int(qty),
             )
         except Exception:  # noqa: BLE001 - an unreadable margin is not a refusal
+            quote = None
+        # A dead token is not a margin verdict. Returning a refusal here would
+        # record the trigger as skipped for "insufficient margin" and consume
+        # it; raising lets handle_trigger pause entries with the real reason.
+        if self._broker_session_expired():
+            raise BrokerSessionExpired(KITE_SESSION_EXPIRED_REASON)
+        if quote is None:
             return None
         if quote is not None and not quote.ok:
             return "insufficient_margin_preflight"
