@@ -27,20 +27,15 @@ export function DangerZone({
   const entriesOn = !status.entries_stopped && status.entries_allowed
 
   return (
-    <section className="border border-red-200 rounded-sm bg-red-50/40">
-      <header className="px-4 py-2.5 border-b border-red-200">
-        <h2 className="text-[12px] font-extrabold uppercase tracking-tight text-negative">
-          Session controls
-        </h2>
-      </header>
-
-      <div className="px-4 py-3 flex flex-wrap items-center gap-3">
+    <section className="border border-red-200 rounded-md bg-[#fffafa] px-3 py-2.5 flex flex-col gap-2">
+      <h2 className="label-caps text-negative">Session controls</h2>
+      <div className="grid grid-cols-2 gap-2">
         {entriesOn ? (
           <button
             type="button"
             disabled={busy === 'stop'}
             onClick={onStopEntries}
-            className="label-caps px-3 py-2 rounded-sm border border-outline-variant bg-surface hover:bg-surface-container-low"
+            className="label-caps px-2.5 py-2 rounded border border-outline-variant bg-surface hover:border-[#c4c7cf] whitespace-nowrap"
           >
             {busy === 'stop' ? 'Stopping entries…' : 'Stop new entries'}
           </button>
@@ -49,21 +44,12 @@ export function DangerZone({
             type="button"
             disabled={busy === 'start' || startBlocked}
             onClick={onStartEntries}
-            className="label-caps px-3 py-2 rounded-sm border border-outline-variant bg-surface hover:bg-surface-container-low disabled:text-on-surface-variant disabled:bg-surface-container"
+            className="label-caps px-2.5 py-2 rounded border border-outline-variant bg-surface hover:border-[#c4c7cf] whitespace-nowrap disabled:text-on-surface-variant disabled:bg-surface-container"
             title={startBlocked ? 'Past the 14:00 cutoff' : undefined}
           >
             {busy === 'start' ? 'Resuming…' : 'Resume new entries'}
           </button>
         )}
-
-        <p className="text-[11px] text-on-surface-variant max-w-md">
-          {entriesOn
-            ? 'Stopping entries does not stop the engine — it keeps watching, reconciling and protecting open positions.'
-            : startBlocked
-              ? 'Entries cannot be resumed after 14:00. The engine keeps managing open positions.'
-              : 'Entries are off. The engine is still running and still reconciling.'}
-        </p>
-
         <button
           type="button"
           disabled={busy === 'kill_all'}
@@ -71,15 +57,22 @@ export function DangerZone({
             setTyped('')
             setConfirming(true)
           }}
-          className="ml-auto label-caps px-3 py-2 rounded-sm bg-negative text-white hover:opacity-90"
+          className="label-caps px-2.5 py-2 rounded bg-negative text-white hover:opacity-90 whitespace-nowrap"
         >
           {busy === 'kill_all' ? 'Killing…' : 'Kill it all now'}
         </button>
       </div>
+      <p className="text-[10px] leading-snug text-on-surface-variant text-pretty">
+        {entriesOn
+          ? 'Stopping entries does not stop the engine — it keeps watching, reconciling and protecting open positions.'
+          : startBlocked
+            ? 'Entries cannot be resumed after 14:00. The engine keeps managing open positions.'
+            : 'Entries are off. The engine is still running and still reconciling.'}
+      </p>
 
       {confirming && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-surface border-2 border-negative rounded-sm max-w-md w-full shadow-xl">
+          <div className="bg-surface border-2 border-negative rounded-md max-w-md w-full shadow-xl">
             <h3 className="px-4 py-3 border-b border-negative text-[13px] font-extrabold uppercase tracking-tight text-negative">
               Kill it all now
             </h3>
@@ -101,7 +94,7 @@ export function DangerZone({
                 </span>
                 <input
                   autoFocus
-                  className="mt-1 w-full font-data bg-surface-container-low border border-outline-variant rounded-sm px-2 py-1.5 focus:outline-none focus:border-negative"
+                  className="mt-1 w-full font-data bg-surface-container-low border border-outline-variant rounded px-2 py-1.5 focus:outline-none focus:border-negative"
                   value={typed}
                   onChange={(e) => setTyped(e.target.value.toUpperCase())}
                 />
@@ -110,7 +103,7 @@ export function DangerZone({
             <div className="px-4 py-3 border-t border-outline-variant flex justify-end gap-2">
               <button
                 type="button"
-                className="label-caps px-3 py-2 rounded-sm border border-outline-variant"
+                className="label-caps px-3 py-2 rounded border border-outline-variant"
                 onClick={() => setConfirming(false)}
               >
                 Cancel
@@ -118,7 +111,7 @@ export function DangerZone({
               <button
                 type="button"
                 disabled={typed !== KILL_PHRASE}
-                className="label-caps px-3 py-2 rounded-sm bg-negative text-white disabled:bg-surface-container disabled:text-on-surface-variant"
+                className="label-caps px-3 py-2 rounded bg-negative text-white disabled:bg-surface-container disabled:text-on-surface-variant"
                 onClick={() => {
                   setConfirming(false)
                   onKillAll()
