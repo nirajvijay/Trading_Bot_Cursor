@@ -26,6 +26,7 @@ import type {
   ExecutionSessionCaps,
   ExecutionStartResponse,
   ExecutionStatus,
+  TradeChargesDay,
 } from './types'
 
 const BASE = '/api/v1'
@@ -285,6 +286,11 @@ export function fetchExecutionPreflight(): Promise<ExecutionPreflight> {
 export function fetchExecutionPositions(sessionDate?: string): Promise<ExecutionPositions> {
   const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
   return getJson(`/execution/positions${query}`)
+}
+
+export function fetchTradeCharges(sessionDate?: string): Promise<TradeChargesDay> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson(`/charges${query}`)
 }
 
 export function fetchExecutionEvents(tradeId: string): Promise<ExecutionEvents> {

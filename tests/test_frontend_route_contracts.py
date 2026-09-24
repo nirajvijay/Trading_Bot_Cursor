@@ -53,6 +53,9 @@ class FrontendRouteContracts(unittest.TestCase):
             with self.subTest(route=route):
                 self.assertIn(route, self.routes)
 
+    def test_charges_tab_endpoint_is_registered(self):
+        self._assert_calls('fetchTradeCharges', '/charges')
+
     def test_observation_endpoints_are_unchanged(self):
         # fetchSessionClock is deliberately not asserted: the client has never
         # had that function, which is why the previous version of this test was
