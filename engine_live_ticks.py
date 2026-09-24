@@ -232,6 +232,15 @@ class LiveTickFeed:
             wanted = sorted(self._desired)
             self._subscribed = set(wanted)
         logger.info("Live P&L feed connected; subscribing to %d tokens.", len(wanted))
+        # On a reconnect KiteTicker re-subscribes its own record of tokens right
+        # after this callback (in onOpen). That record still holds anything that
+        # was dropped by sync() while disconnected, so trim it to what is wanted
+        # now. Safe here: we are on the reactor thread, before the resubscribe.
+        record = getattr(ws, "subscribed_tokens", None)
+        if isinstance(record, dict):
+            keep = set(wanted)
+            for token in [t for t in record if t not in keep]:
+                del record[token]
         if wanted:
             try:
                 # Already on the reactor thread: call directly.

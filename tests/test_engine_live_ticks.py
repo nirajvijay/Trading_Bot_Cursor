@@ -225,3 +225,49 @@ class NullFeedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealSdkResubscribeTests(unittest.TestCase):
+    """Drives the real kiteconnect.KiteTicker bookkeeping, socket mocked."""
+
+    def test_a_token_dropped_while_disconnected_is_not_resubscribed(self) -> None:
+        import json
+        from unittest.mock import MagicMock
+
+        from kiteconnect import KiteTicker
+
+        def factory(key, token):
+            ticker = KiteTicker(key, token)
+            ticker.connect = lambda **_: None  # never open a real socket
+            ticker.ws = MagicMock()
+            return ticker
+
+        feed = LiveTickFeed(
+            api_key="k",
+            access_token="t",
+            ticker_factory=factory,
+            call_in_io_thread=lambda fn, *args: fn(*args),
+            host_clock_ok=lambda: True,
+        )
+        feed.sync([111, 222])
+        feed.start()
+        ticker = feed._ticker
+        feed._on_connect(ticker)
+        self.assertEqual(set(ticker.subscribed_tokens), {111, 222})
+
+        feed._on_close(ticker, 1006, "network")
+        feed.sync([111])  # 222 closed while the socket was down
+        ticker.ws.sendMessage.reset_mock()
+
+        # Reconnect: our on_connect, then what KiteTicker's _on_open does.
+        feed._on_connect(ticker)
+        ticker.resubscribe()
+
+        sent = [json.loads(c.args[0]) for c in ticker.ws.sendMessage.call_args_list]
+        tokens_sent = set()
+        for msg in sent:
+            value = msg["v"]
+            tokens_sent.update(value[1] if msg["a"] == "mode" else value)
+        self.assertEqual(tokens_sent, {111})
+        self.assertEqual(set(ticker.subscribed_tokens), {111})
+        self.assertTrue(all(m == "ltp" for m in ticker.subscribed_tokens.values()))
