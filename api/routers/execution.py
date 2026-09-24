@@ -126,6 +126,29 @@ def _total_fields(desk: Optional[DeskPnl]) -> dict:
     }
 
 
+# Diary events that tell a closed row's own story (see _closed_row_facts).
+_CLOSED_ROW_EVENTS = ("entry_filled", "over_exit_detected")
+
+
+def _closed_row_facts(view: PositionView, facts: Dict) -> PositionView:
+    """A closed row reports the engine's own trade.
+
+    Qty is what the entry filled, not a size later adopted from the broker
+    (DRREDDY 2026-09-24: bought 6, adopted 381 from a runaway short). And the
+    Stock Day Total warning carries how many shares the trade's own orders
+    sold beyond what it held, when that happened.
+    """
+    updates: Dict[str, object] = {}
+    filled = (facts.get((view.trade_id, "entry_filled")) or {}).get("filled_qty")
+    if filled:
+        updates["qty"] = int(filled)
+    if view.pnl_mismatch is not None and "over_exit_qty" not in view.pnl_mismatch:
+        over = (facts.get((view.trade_id, "over_exit_detected")) or {}).get("over_exit_qty")
+        if over:
+            updates["pnl_mismatch"] = {**view.pnl_mismatch, "over_exit_qty": float(over)}
+    return view.model_copy(update=updates) if updates else view
+
+
 def _to_view(
     row,
     live_pnl: Dict[str, Optional[float]],
@@ -289,6 +312,8 @@ def execution_positions(
         return PositionsResponse(session_date=day)
     try:
         rows = store.list_positions(day)
+        closed_ids = [str(r["trade_id"]) for r in rows if str(r["state"]) == "closed"]
+        facts = store.latest_event_payloads(closed_ids, _CLOSED_ROW_EVENTS)
     finally:
         store.close()
 
@@ -299,6 +324,8 @@ def execution_positions(
     for row in rows:
         view = _to_view(row, pnl, marks, desk)
         state = str(row["state"])
+        if state == "closed":
+            view = _closed_row_facts(view, facts)
         if state in _OPEN_STATES:
             open_rows.append(view)
         elif state == "closed":

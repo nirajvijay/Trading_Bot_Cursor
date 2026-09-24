@@ -473,7 +473,7 @@ export interface ExecutionPosition {
   /** This trade's P&L plus earlier closed trades in the same stock today. */
   stock_day_total?: number | null
   /** Kite's day figure for the stock vs our per-trade sum, when over ₹1 apart. */
-  pnl_mismatch?: { kite_pnl: number; ours: number; diff: number } | null
+  pnl_mismatch?: { kite_pnl: number; ours: number; diff: number; over_exit_qty?: number } | null
   /** Closed, but no closing order was found at Kite. */
   realised_unattributed?: boolean
   entry_order_id: string | null

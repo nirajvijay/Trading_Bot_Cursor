@@ -150,9 +150,19 @@ export function pnlClass(n: number | null | undefined): string {
   return n < 0 ? 'text-negative' : 'text-positive'
 }
 
-/** Hover text for a stock whose Kite day P&L differs from our trades' sum. */
-export function mismatchTitle(m: { kite_pnl: number; ours: number; diff: number }): string {
-  return `Kite: ${inr(m.kite_pnl)} · Our trades: ${inr(m.ours)} · Difference ${inr(
-    Math.abs(m.diff),
-  )} — possibly a trade made outside the engine.`
+/** Hover text for a stock whose Kite day P&L differs from our trades' sum.
+ *  Kite's figure is the truth; this names the likely cause of the gap. */
+export function mismatchTitle(m: {
+  kite_pnl: number
+  ours: number
+  diff: number
+  over_exit_qty?: number
+}): string {
+  const gap = `Kite's day P&L for this stock (${inr(m.kite_pnl)}) differs from this engine's trades (${inr(
+    m.ours,
+  )}) by ${inr(Math.abs(m.diff))}`
+  if (m.over_exit_qty) {
+    return `${gap}: the engine's own orders sold ${m.over_exit_qty} more shares than the trade held. Kite's figure is what counts toward the daily loss.`
+  }
+  return `${gap}: an order the engine did not mean to place, or a trade made outside the engine. Kite's figure is what counts toward the daily loss.`
 }

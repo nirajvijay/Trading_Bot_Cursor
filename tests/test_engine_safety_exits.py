@@ -571,7 +571,7 @@ class RealisedLossTests(SafetyExitTestCase):
         day = [self.closed(-12.5)]
         self.assertAlmostEqual(realised_loss_rupees(day), 12.5, places=2)
 
-    def test_an_engine_over_sell_is_booked_to_the_trade(self) -> None:
+    def test_an_engine_over_sell_stays_on_stock_day_not_on_the_trade(self) -> None:
         engine, stored = self.open_one()
         tag = broker_tag_for("s1")
         # The stop sells the 295 held, then a second stop of ours sells 10
@@ -588,11 +588,14 @@ class RealisedLossTests(SafetyExitTestCase):
         closed = self.store.get("s1")
         assert closed is not None
         self.assertEqual(closed.state, ExecutionState.CLOSED)
-        kite_pnl = closed.extra["stock_day"]["kite_pnl"]
-        self.assertAlmostEqual(closed.realised_pnl, kite_pnl, places=2)
-        self.assertFalse(closed.extra["stock_day"]["mismatch"])
-        self.assertIn("over_exit_loss_booked", self.events("s1"))
-        self.assertAlmostEqual(engine.realised_loss_today, -kite_pnl, places=2)
+        # The trade keeps its own result: 295 shares, 110 -> 106.95.
+        self.assertAlmostEqual(closed.realised_pnl, 295 * (106.95 - 110.0), places=2)
+        stock_day = closed.extra["stock_day"]
+        self.assertTrue(stock_day["mismatch"])
+        self.assertEqual(stock_day["over_exit_qty"], 10)
+        # The day's realised loss is still Kite's.
+        self.assertAlmostEqual(engine.realised_loss_today, -stock_day["kite_pnl"], places=2)
+        self.assertNotIn("over_exit_loss_booked", self.events("s1"))
 
 
 if __name__ == "__main__":

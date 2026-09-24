@@ -612,7 +612,7 @@ class ExecutionEngine:
         self._on_escalate(key, detail)
 
     def _record_stock_day(
-        self, position: Position, truth: BrokerTruth, *, over_exit: bool = False
+        self, position: Position, truth: BrokerTruth, *, over_exit_qty: int = 0
     ) -> None:
         """When a stock goes fully flat, pin Kite's own day P&L for it here.
 
@@ -639,20 +639,6 @@ class ExecutionEngine:
         ours = round(sum(v for v in ours_values if v is not None), 2)
         diff = round(float(kite_pnl) - ours, 2)
         mismatch = abs(diff) > PNL_MISMATCH_TOLERANCE_RUPEES
-        if mismatch and over_exit and position.realised_pnl is not None:
-            # This trade's own orders sold more than it held (DRREDDY): the
-            # difference Kite shows is this trade's loss, not someone else's
-            # trade. Book it here so the row, the total and the cap agree.
-            absorbed = diff
-            position.realised_pnl = round(float(position.realised_pnl) + absorbed, 2)
-            ours = round(ours + absorbed, 2)
-            diff = round(float(kite_pnl) - ours, 2)
-            mismatch = abs(diff) > PNL_MISMATCH_TOLERANCE_RUPEES
-            self.store.append_event(
-                position.trade_id,
-                "over_exit_loss_booked",
-                {"absorbed": absorbed, "realised_pnl": position.realised_pnl, "kite_pnl": kite_pnl},
-            )
         position.extra[STOCK_DAY_KEY] = {
             "kite_pnl": round(float(kite_pnl), 2),
             "ours": ours,
@@ -660,6 +646,10 @@ class ExecutionEngine:
             "mismatch": mismatch,
             "unattributed_trades": sum(1 for v in ours_values if v is None),
         }
+        if over_exit_qty > 0:
+            # This trade's own orders sold more than it held: the likely cause
+            # of any difference, named on the desk's warning.
+            position.extra[STOCK_DAY_KEY]["over_exit_qty"] = int(over_exit_qty)
         if mismatch:
             self.store.save_with_event(
                 position,
@@ -713,7 +703,7 @@ class ExecutionEngine:
             )
             try:
                 self._record_stock_day(
-                    position, truth, over_exit=realised.over_exit_qty > 0
+                    position, truth, over_exit_qty=realised.over_exit_qty
                 )
             except Exception as exc:  # noqa: BLE001 - information only; the close is already booked
                 self.store.append_event(
