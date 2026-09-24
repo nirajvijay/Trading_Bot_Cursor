@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
+from host_clock import REASON_HOST_NOT_IST, host_is_ist
+
 logger = logging.getLogger(__name__)
 
 # Health reasons, surfaced on the desk's fallback badge.
@@ -96,12 +98,14 @@ class LiveTickFeed:
         ticker_factory: Optional[Callable[[str, str], Any]] = None,
         call_in_io_thread: Optional[Callable[..., None]] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        host_clock_ok: Callable[[], bool] = host_is_ist,
     ) -> None:
         self._api_key = api_key
         self._access_token = access_token
         self._ticker_factory = ticker_factory
         self._call = call_in_io_thread or _twisted_call_from_thread
         self._now = now_fn
+        self._host_clock_ok = host_clock_ok
         self._lock = threading.Lock()
         self._ticker: Any = None
         self._connected = False
@@ -122,6 +126,12 @@ class LiveTickFeed:
         running and every mark falls back to Kite REST."""
         if self._started:
             return True
+        if not self._host_clock_ok():
+            # Same recorded-not-raised rule as any other start failure: the
+            # desk shows why and every mark stays on Kite REST.
+            logger.error("Live P&L feed not started: host clock is not IST.")
+            self._set_reason(REASON_HOST_NOT_IST)
+            return False
         try:
             factory = self._ticker_factory
             if factory is None:

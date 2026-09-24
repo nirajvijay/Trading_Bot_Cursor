@@ -59,6 +59,7 @@ class FeedTestCase(unittest.TestCase):
             ticker_factory=factory,
             call_in_io_thread=lambda fn, *args: fn(*args),
             now_fn=lambda: self.now,
+            host_clock_ok=lambda: True,
         )
 
     @property
@@ -89,7 +90,10 @@ class LifecycleTests(FeedTestCase):
         def broken(_k, _t):
             raise RuntimeError("no network")
 
-        feed = LiveTickFeed(api_key="k", access_token="t", ticker_factory=broken)
+        feed = LiveTickFeed(
+            api_key="k", access_token="t", ticker_factory=broken,
+            host_clock_ok=lambda: True,
+        )
         self.assertFalse(feed.start())
         health = feed.health()
         self.assertFalse(health.connected)
