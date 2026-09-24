@@ -674,6 +674,8 @@ class FakeBroker:
             return self.position_quotes[tradingsymbol]
         qty = 0
         avg = None
+        buy_value = 0.0
+        sell_value = 0.0
         for order in self.orders.values():
             if order.tradingsymbol != tradingsymbol:
                 continue
@@ -686,14 +688,24 @@ class FakeBroker:
             if filled <= 0:
                 continue
             # Include partially filled stops/exits (filled_quantity > 0) even if not COMPLETE.
-            signed = filled if str(order.transaction_type).upper() == "BUY" else -filled
+            is_buy = str(order.transaction_type).upper() == "BUY"
+            signed = filled if is_buy else -filled
             qty += signed
             if order.average_price is not None and avg is None:
                 avg = float(order.average_price)
+            if order.average_price is not None:
+                value = filled * float(order.average_price)
+                if is_buy:
+                    buy_value += value
+                else:
+                    sell_value += value
         last = self.last_prices.get(tradingsymbol)
         pnl = None
         if avg is not None and last is not None:
-            pnl = float(qty) * (float(last) - float(avg))
+            # Kite's own formula: realised on everything closed today plus the
+            # open remainder marked at the last price. For a flat stock this is
+            # the day's realised P&L, as Kite shows it.
+            pnl = (sell_value - buy_value) + float(qty) * float(last)
         return PositionQuote(
             quantity=qty,
             average_price=avg,

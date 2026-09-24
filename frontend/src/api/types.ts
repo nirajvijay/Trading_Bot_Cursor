@@ -85,6 +85,7 @@ export interface SessionCoverage {
   continuation_decisions: number
   continuation_successful: number
   continuation_failed: number
+  vwap_successful: number
 }
 
 export interface VwapQualifierStatus {
@@ -376,57 +377,6 @@ export interface ObservationStopResponse {
   pid?: number | null
 }
 
-export interface AdminConfigValues {
-  per_trade_risk_cap_inr: number
-  limited_per_trade_risk_cap_inr: number
-  daily_loss_cap_inr: number
-  vwap_accept_gap_exclusive_max: number
-  vwap_limited_gap_inclusive_max: number
-}
-
-export interface AdminConfigResponse {
-  version_id: string
-  entries_paused: boolean
-  values: AdminConfigValues
-  vwap_accept_gap_percent: number
-  vwap_limited_gap_percent: number
-  warnings: string[]
-  accepting_triggers: boolean
-  engine_running: boolean
-}
-
-export interface AdminConfigPatchRequest {
-  values: AdminConfigValues
-  expected_version_id?: string | null
-  comment?: string | null
-}
-
-export interface AdminAuditEntry {
-  id: number
-  at: string
-  actor_username: string
-  action: string
-  version_id?: string | null
-  from_version_id?: string | null
-  diff_json: string
-  result: string
-  detail?: string | null
-  step_up_verified: boolean
-}
-
-export interface AdminAuditResponse {
-  entries: AdminAuditEntry[]
-  limit: number
-  offset: number
-}
-
-export interface AdminActionResponse {
-  success: boolean
-  message: string
-  entries_paused?: boolean | null
-  detail?: string | null
-}
-
 // ---------------------------------------------------------------------------
 // Execution engine (/execution).
 // ---------------------------------------------------------------------------
@@ -465,6 +415,9 @@ export interface ExecutionCapital {
 /** "running" | "stopped" | "crashed" | "absent" */
 export type ExecutionEngineState = 'running' | 'stopped' | 'crashed' | 'absent'
 
+/** Live Open P&L feed: WebSocket, Kite REST fallback, or none (PAPER). */
+export type LivePnlFeedState = 'live' | 'fallback' | 'off'
+
 export interface ExecutionStatus {
   engine_state: ExecutionEngineState
   engine_reason: string | null
@@ -489,6 +442,13 @@ export interface ExecutionStatus {
   total_live_pnl: number | null
   live_pnl_as_of: string | null
   live_pnl_complete: boolean
+  /** Total Day = Total Realised + Total Ongoing. Absent from older APIs. */
+  total_day_pnl?: number | null
+  total_realised_pnl?: number | null
+  total_ongoing_pnl?: number | null
+  live_pnl_feed_state?: LivePnlFeedState | null
+  live_pnl_feed_reason?: string | null
+  live_pnl_last_tick_at?: string | null
   last_error: string | null
   escalations: Record<string, string>
 }
@@ -507,6 +467,15 @@ export interface ExecutionPosition {
   risk_taken_rupees: number | null
   realised_pnl: number | null
   live_pnl: number | null
+  /** "ws" = live WebSocket tick, "kite_rest" = fallback to Kite REST pnl. */
+  live_pnl_source?: 'ws' | 'kite_rest' | null
+  live_pnl_reason?: string | null
+  /** This trade's P&L plus earlier closed trades in the same stock today. */
+  stock_day_total?: number | null
+  /** Kite's day figure for the stock vs our per-trade sum, when over ₹1 apart. */
+  pnl_mismatch?: { kite_pnl: number; ours: number; diff: number } | null
+  /** Closed, but no closing order was found at Kite. */
+  realised_unattributed?: boolean
   entry_order_id: string | null
   stop_order_id: string | null
   exit_order_id: string | null
@@ -528,6 +497,13 @@ export interface ExecutionPositions {
   total_live_pnl: number | null
   live_pnl_as_of: string | null
   live_pnl_complete: boolean
+  /** Total Day = Total Realised + Total Ongoing. Absent from older APIs. */
+  total_day_pnl?: number | null
+  total_realised_pnl?: number | null
+  total_ongoing_pnl?: number | null
+  live_pnl_feed_state?: LivePnlFeedState | null
+  live_pnl_feed_reason?: string | null
+  live_pnl_last_tick_at?: string | null
 }
 
 export interface ExecutionEvent {

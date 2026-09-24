@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from engine_entry import broker_tag_for
+from engine_entry import broker_tag_for, entry_fill_final, fill_price_of
 from engine_types import ExecutionState, Position
 from trading_engine_types import (
     STOP_ORDER_TYPES,
@@ -57,6 +57,13 @@ HOLDING_STATES = (
 
 # States whose stop order should currently be live at the broker.
 STOP_EXPECTED_STATES = (ExecutionState.PROTECTED, ExecutionState.TRAILING)
+
+# Entries still waiting at the broker. The engine watches both reasons to
+# escalate a stall (engine_entry.ENTRY_STALL_ESCALATE_SECONDS).
+# Holding shares whose fill is not final yet (those shares have no stop):
+ENTRY_PARTIAL_WAIT_REASON = "entry_partially_filled_waiting"
+# Still working at the broker with nothing filled:
+ENTRY_WORKING_WAIT_REASON = "entry_still_working"
 
 DEAD_ORDER_STATUSES = {"REJECTED", "CANCELLED"}
 
@@ -291,12 +298,22 @@ def _reconcile_entry(position: Position, truth: BrokerTruth) -> ReconcileDecisio
 
     status = str(order.status).upper()
     filled = broker_order_filled_qty(order)
-    if filled > 0 and order.average_price:
+    if filled > 0:
+        fill_price = fill_price_of(order)
+        if entry_fill_final(order) and fill_price is not None:
+            return ReconcileDecision(
+                actions=[ReconcileAction.APPLY_ENTRY_FILL],
+                fill_price=fill_price,
+                fill_qty=int(filled),
+                order_id=str(order.order_id),
+            )
+        # Shares are held but the fill is not final yet (or Kite has not
+        # priced it). Wait: never fall through to the cancelled/rejected
+        # branches below, which would record held shares as a failed entry.
         return ReconcileDecision(
-            actions=[ReconcileAction.APPLY_ENTRY_FILL],
-            fill_price=float(order.average_price),
             fill_qty=int(filled),
             order_id=str(order.order_id),
+            reason=ENTRY_PARTIAL_WAIT_REASON,
         )
     if status == "REJECTED":
         return ReconcileDecision(
@@ -310,4 +327,4 @@ def _reconcile_entry(position: Position, truth: BrokerTruth) -> ReconcileDecisio
             order_id=str(order.order_id),
             reason="broker_cancelled",
         )
-    return ReconcileDecision(reason="entry_still_working")
+    return ReconcileDecision(order_id=str(order.order_id), reason=ENTRY_WORKING_WAIT_REASON)

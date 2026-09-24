@@ -279,5 +279,25 @@ class LiveMarkTests(StatusTestCase):
         self.assertEqual(len(list(self.dir.iterdir())), 1)
 
 
+    def test_sources_and_feed_state_round_trip(self) -> None:
+        path = self.dir / "marks.json"
+        LiveMarkWriter(path).write(
+            {"t1": 600.0, "t2": -150.0},
+            sources={"t1": "ws", "t2": "kite_rest"},
+            reasons={"t1": None, "t2": "tick_stale"},
+            feed={"state": "fallback", "reason": "tick_stale", "last_tick_at": "2026-09-22T05:00:00+00:00"},
+        )
+        marks = read_live_marks(path)
+        self.assertEqual(marks["source"], {"t1": "ws", "t2": "kite_rest"})
+        self.assertEqual(marks["reason"]["t2"], "tick_stale")
+        self.assertEqual(marks["feed"]["state"], "fallback")
+
+    def test_an_old_marks_file_without_the_new_fields_still_reads(self) -> None:
+        path = self.dir / "marks.json"
+        path.write_text(json.dumps({"as_of": "x", "pnl": {"t1": 1.0}, "total_pnl": 1.0, "complete": True}))
+        marks = read_live_marks(path)
+        self.assertEqual((marks["source"], marks["reason"], marks["feed"]), ({}, {}, {}))
+        self.assertEqual(marks["pnl"], {"t1": 1.0})
+
 if __name__ == "__main__":
     unittest.main()

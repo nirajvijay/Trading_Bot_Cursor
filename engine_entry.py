@@ -233,6 +233,34 @@ def fill_price_of(order: BrokerOrder) -> Optional[float]:
     return float(price)
 
 
+# An entry order that has stopped working at the broker: no more shares can
+# fill, so whatever filled by then is final.
+ENTRY_ENDED_STATUSES = frozenset({"CANCELLED", "REJECTED"})
+
+# How long an entry may keep waiting at the broker (still working with nothing
+# filled, or partly filled) before it is escalated. A MARKET order normally
+# completes within a second, so a stall must reach a human. Alert only: nothing
+# is cancelled or placed early because of it.
+ENTRY_STALL_ESCALATE_SECONDS = 10.0
+
+
+def entry_fill_final(order: BrokerOrder) -> bool:
+    """Whether this entry's fill is final, so steps 7-8 may run on it.
+
+    Steps 7-8 (real risk, the 1.5x line, then the stop) run exactly once per
+    trade, so they must see the final quantity and Kite's final average price,
+    never the first chunk of a fill still in progress.
+    """
+    filled = broker_order_filled_qty(order)
+    if filled <= 0:
+        return False
+    # >= rather than ==: a broker reporting more filled than ordered is still
+    # a finished fill, and waiting on it forever would leave shares unprotected.
+    if filled >= int(order.quantity or 0):
+        return True
+    return str(order.status).upper() in ENTRY_ENDED_STATUSES
+
+
 def apply_entry_fill(
     position: Position,
     *,
@@ -397,12 +425,14 @@ def submit_entry(
         {"order_id": order.order_id, "qty": decision.qty, "status": order.status},
     )
 
-    # Steps 7-8, inline when the fill is already visible. A market order
+    # Steps 7-8, inline when the final fill is already visible. A market order
     # settles essentially instantly, so this is the normal case and taking it
-    # now rather than next tick is what keeps the unprotected window short.
+    # now rather than next tick is what keeps the unprotected window short. A
+    # fill still in progress is left to reconciliation, which applies it once
+    # it is final.
     filled_qty = broker_order_filled_qty(order)
     fill_price = fill_price_of(order)
-    if filled_qty <= 0 or fill_price is None:
+    if filled_qty <= 0 or fill_price is None or not entry_fill_final(order):
         return EntryOutcome(EntryResult.SUBMITTED, position)
 
     verdict = apply_entry_fill(

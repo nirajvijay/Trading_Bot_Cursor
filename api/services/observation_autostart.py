@@ -1,10 +1,10 @@
 """Start observation once after the automatic morning checklist completes.
 
 Runs inside the long-lived API process so the runner is spawned, tracked and
-stopped exactly as the website's Start button does. Only observation starts;
-the execution engine and trading stay manual. Tries at most once per day,
-between 09:00 and the 09:15 open, and only when today's automatic checklist
-run completed with every stage valid.
+stopped exactly as the website's Start button does. Tries at most once per
+day, between 09:00 and the 09:15 open, and only when today's automatic
+checklist run completed with every stage valid. A successful start is recorded
+so the execution autostart knows observation came up on its own today.
 """
 from __future__ import annotations
 
@@ -37,6 +37,19 @@ def _claim_today(day: str) -> bool:
     return True
 
 
+def _started_marker(day: str):
+    return config.runtime_cache_dir() / f"observation-autostarted-{day}.marker"
+
+
+def _record_started(day: str, pid: Optional[int]) -> None:
+    _started_marker(day).write_text(f"{datetime.now(IST).isoformat()} pid={pid}\n")
+
+
+def autostarted_today(day: str) -> bool:
+    """True only when this autostart itself launched observation on ``day``."""
+    return _started_marker(day).exists()
+
+
 def autostart_tick(now: Optional[datetime] = None) -> Optional[str]:
     """One check. Returns the outcome when an attempt was made, else None."""
     from api.services.checklist_activity import read_activity, workflow_busy
@@ -64,6 +77,11 @@ def autostart_tick(now: Optional[datetime] = None) -> Optional[str]:
         else:
             ok, message, pid = start_observation_runner(day)
             outcome = f"observation started (pid {pid})" if ok else f"observation not started: {message}"
+            if ok:
+                try:
+                    _record_started(day, pid)
+                except OSError as exc:
+                    outcome += f"; could not record it, execution will not autostart ({type(exc).__name__})"
     except Exception as exc:
         outcome = f"observation not started: {type(exc).__name__}"
     run_log(f"observation autostart: {outcome}")

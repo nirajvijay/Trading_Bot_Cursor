@@ -17,12 +17,12 @@
   --rhm-cyan: #0091ff;
 
   --rhm-waiting: #cbd2db;       --rhm-waiting-ink: #6b7280;
-  --rhm-spike: #b5c400;         --rhm-spike-ink: #ffffff;
-  --rhm-setup: #ff8a00;         --rhm-setup-ink: #ffffff;
+  --rhm-spike: #6d28d9;         --rhm-spike-ink: #ffffff;
+  --rhm-setup: #d65a00;         --rhm-setup-ink: #ffffff;
   --rhm-armed: #00c853;         --rhm-armed-ink: #ffffff;                    --rhm-armed-glow: rgba(0,200,83,0.35);
   --rhm-triggered: #0091ff;     --rhm-triggered-ink: #ffffff;                --rhm-triggered-glow: rgba(0,145,255,0.4);
   --rhm-rejected: #ff1744;      --rhm-rejected-ink: #ffffff;
-  --rhm-negated: #fbe4e8;       --rhm-negated-ink: #b0324a;
+  --rhm-negated: #475569;       --rhm-negated-ink: #ffffff;
 
   --rhm-up: #00c853;
   --rhm-down: #ff1744;
@@ -127,6 +127,7 @@
 .radar-heat-map .rhm-stat-num { font-family: var(--rhm-font-mono); font-size: 15px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .radar-heat-map .rhm-stat-label { font-size: 8px; color: var(--rhm-ink-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .radar-heat-map .rhm-stat.triggered .rhm-stat-num { color: var(--rhm-cyan); }
+.radar-heat-map .rhm-stat.vwap-successful .rhm-stat-num { color: var(--rhm-armed); }
 .radar-heat-map .rhm-stat.rejected .rhm-stat-num { color: var(--rhm-rejected); }
 
 .radar-heat-map .rhm-grid-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; border-radius: var(--rhm-radius-md); }
@@ -228,24 +229,24 @@
 .radar-heat-map .rhm-card.WAITING .rhm-dot { background: var(--rhm-waiting); }
 .radar-heat-map .rhm-card.WAITING .rhm-status-label { color: var(--rhm-waiting-ink); }
 
-.radar-heat-map .rhm-card.SPIKE { background: color-mix(in srgb, var(--rhm-spike) 24%, var(--rhm-card)); border-color: var(--rhm-spike); }
-.radar-heat-map .rhm-card.SPIKE .rhm-dot { background: var(--rhm-spike); box-shadow: 0 0 6px var(--rhm-spike); }
-.radar-heat-map .rhm-card.SPIKE .rhm-status-label { color: var(--rhm-spike); }
+.radar-heat-map .rhm-card.SPIKE { background: var(--rhm-spike); border-color: var(--rhm-spike); box-shadow: 0 0 0 1px var(--rhm-spike), 0 0 14px color-mix(in srgb, var(--rhm-spike) 45%, transparent); }
+.radar-heat-map .rhm-card.SPIKE .rhm-symbol, .radar-heat-map .rhm-card.SPIKE .rhm-status-label { color: var(--rhm-spike-ink); }
+.radar-heat-map .rhm-card.SPIKE .rhm-dot { background: var(--rhm-spike-ink); }
 
-.radar-heat-map .rhm-card.SETUP_READY { background: color-mix(in srgb, var(--rhm-setup) 26%, var(--rhm-card)); border-color: var(--rhm-setup); }
-.radar-heat-map .rhm-card.SETUP_READY .rhm-dot { background: var(--rhm-setup); }
-.radar-heat-map .rhm-card.SETUP_READY .rhm-status-label { color: var(--rhm-setup); }
+.radar-heat-map .rhm-card.SETUP_READY { background: var(--rhm-setup); border-color: var(--rhm-setup); box-shadow: 0 0 0 1px var(--rhm-setup), 0 0 14px color-mix(in srgb, var(--rhm-setup) 45%, transparent); }
+.radar-heat-map .rhm-card.SETUP_READY .rhm-symbol, .radar-heat-map .rhm-card.SETUP_READY .rhm-status-label { color: var(--rhm-setup-ink); }
+.radar-heat-map .rhm-card.SETUP_READY .rhm-dot { background: var(--rhm-setup-ink); }
 
 .radar-heat-map .rhm-card.TRIGGERED { background: var(--rhm-triggered); border-color: var(--rhm-cyan); box-shadow: 0 0 0 1px var(--rhm-cyan), 0 0 16px var(--rhm-triggered-glow); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-symbol { color: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-dot { background: var(--rhm-triggered-ink); }
 .radar-heat-map .rhm-card.TRIGGERED .rhm-status-label { color: var(--rhm-triggered-ink); }
 
-.radar-heat-map .rhm-card.REJECTED { background: color-mix(in srgb, var(--rhm-rejected) 22%, var(--rhm-card)); border-color: var(--rhm-rejected); }
-.radar-heat-map .rhm-card.REJECTED .rhm-dot { background: var(--rhm-rejected); }
-.radar-heat-map .rhm-card.REJECTED .rhm-status-label { color: var(--rhm-rejected); }
+.radar-heat-map .rhm-card.REJECTED { background: var(--rhm-rejected); border-color: var(--rhm-rejected); box-shadow: 0 0 0 1px var(--rhm-rejected), 0 0 14px color-mix(in srgb, var(--rhm-rejected) 45%, transparent); }
+.radar-heat-map .rhm-card.REJECTED .rhm-symbol, .radar-heat-map .rhm-card.REJECTED .rhm-status-label { color: var(--rhm-rejected-ink); }
+.radar-heat-map .rhm-card.REJECTED .rhm-dot { background: var(--rhm-rejected-ink); }
 
-.radar-heat-map .rhm-card.NEGATED { background: var(--rhm-negated); border-color: var(--rhm-negated); opacity: 0.75; }
+.radar-heat-map .rhm-card.NEGATED { background: var(--rhm-negated); border-color: var(--rhm-negated); box-shadow: 0 0 0 1px var(--rhm-negated), 0 0 14px color-mix(in srgb, var(--rhm-negated) 40%, transparent); }
 .radar-heat-map .rhm-card.NEGATED .rhm-symbol { color: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-dot { background: var(--rhm-negated-ink); }
 .radar-heat-map .rhm-card.NEGATED .rhm-status-label { color: var(--rhm-negated-ink); }

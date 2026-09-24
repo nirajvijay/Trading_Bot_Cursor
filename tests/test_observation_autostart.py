@@ -52,6 +52,7 @@ class ObservationAutostartTests(unittest.TestCase):
         self.assertIsNone(autostart.autostart_tick(at("09:01")))
         self.start_mock.assert_called_once_with(DAY)
         self.assertIn("observation autostart: observation started (pid 4242)", self.log())
+        self.assertTrue(autostart.autostarted_today(DAY))
 
     def test_waits_while_checklist_lock_is_held(self):
         self.completed()
@@ -89,6 +90,7 @@ class ObservationAutostartTests(unittest.TestCase):
         with patch("api.services.observation_runner.is_runner_running", return_value=True):
             self.assertIn("already running", autostart.autostart_tick(at("09:00")))
         self.start_mock.assert_not_called()
+        self.assertFalse(autostart.autostarted_today(DAY))
 
     def test_refused_start_is_logged_and_not_retried(self):
         self.completed()
@@ -97,6 +99,7 @@ class ObservationAutostartTests(unittest.TestCase):
         self.assertIsNone(autostart.autostart_tick(at("09:01")))
         self.assertEqual(self.start_mock.call_count, 1)
         self.assertIn("observation not started: Complete Pre-Market Checklist first", self.log())
+        self.assertFalse(autostart.autostarted_today(DAY))
 
     def test_background_thread_only_in_production(self):
         stop = threading.Event()

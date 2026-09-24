@@ -10,7 +10,6 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'checklist', icon: 'fact_check', label: 'Checklist' },
   { id: 'radar', icon: 'grid_view', label: 'Radar' },
   { id: 'trading', icon: 'monitoring', label: 'Desk' },
-  { id: 'admin', icon: 'tune', label: 'Admin' },
 ]
 
 interface Props {

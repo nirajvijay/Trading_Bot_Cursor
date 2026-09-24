@@ -238,7 +238,17 @@ class LiveMarkWriter:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
 
-    def write(self, pnl_by_trade: Dict[str, Optional[float]]) -> None:
+    def write(
+        self,
+        pnl_by_trade: Dict[str, Optional[float]],
+        *,
+        sources: Optional[Dict[str, str]] = None,
+        reasons: Optional[Dict[str, Optional[str]]] = None,
+        feed: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """`sources` says per trade whether the mark came from the live
+        WebSocket ("ws") or Kite REST ("kite_rest"); `feed` is the desk badge
+        state (live / fallback / off) with its reason and last tick time."""
         known = {k: v for k, v in pnl_by_trade.items() if v is not None}
         write_json_atomic(
             self.path,
@@ -248,6 +258,9 @@ class LiveMarkWriter:
                 # Free alongside the individual numbers, from the same fetch.
                 "total_pnl": sum(known.values()) if known else 0.0,
                 "complete": len(known) == len(pnl_by_trade),
+                "source": dict(sources or {}),
+                "reason": dict(reasons or {}),
+                "feed": dict(feed or {}),
             },
         )
 
@@ -259,4 +272,8 @@ def read_live_marks(path: Path) -> Dict[str, Any]:
         "pnl": data.get("pnl") or {},
         "total_pnl": data.get("total_pnl"),
         "complete": bool(data.get("complete")),
+        # Absent in marks files written before the live feed existed.
+        "source": data.get("source") or {},
+        "reason": data.get("reason") or {},
+        "feed": data.get("feed") or {},
     }

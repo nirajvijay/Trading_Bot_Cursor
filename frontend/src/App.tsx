@@ -12,7 +12,6 @@ import { SecurityPanel } from './components/SecurityPanel'
 import { getPasskey } from './lib/passkey'
 import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
-import { AdminConsolePage } from './components/admin/AdminConsolePage'
 import { VwapHealthPage } from './components/VwapHealthPage'
 import { ExecutionDeskPage } from './components/execution/ExecutionDeskPage'
 import { StationConsoleShell } from './components/StationConsoleShell'
@@ -260,6 +259,8 @@ export default function App() {
             <RadarHeatMap
               rows={filteredRows}
               sessionTriggered={coverage?.continuation_successful}
+              sessionVwapSuccessful={coverage?.vwap_successful}
+              sessionRejected={coverage?.continuation_failed}
               loading={loading}
               sessionDate={sessionDate}
               search=""
@@ -287,8 +288,6 @@ export default function App() {
           />
         ) : activeTab === 'trading' ? (
           <ExecutionDeskPage sessionDate={sessionDate} />
-        ) : activeTab === 'admin' ? (
-          <AdminConsolePage />
         ) : (
           <VwapHealthPage />
         )}

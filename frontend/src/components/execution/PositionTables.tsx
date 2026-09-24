@@ -1,15 +1,17 @@
-import type { ExecutionPosition } from '../../api/types'
+import type { ExecutionPosition, LivePnlFeedState } from '../../api/types'
 import {
   STALE_MARK_SECONDS,
   inr,
   isStuckPendingEntry,
   isUnprotected,
+  mismatchTitle,
   num,
   pnlClass,
   reasonLabel,
   stateLabel,
   timeIst,
 } from './format'
+import { LivePnlBadge } from './LivePnlBadge'
 
 function Th({
   children,
@@ -48,7 +50,7 @@ function TableShell({
   title: string
   count: number
   children: React.ReactNode
-  note?: string
+  note?: React.ReactNode
 }) {
   return (
     <section className="bg-surface border border-outline-variant rounded-sm overflow-hidden">
@@ -58,7 +60,9 @@ function TableShell({
           {count}
         </span>
         {note && (
-          <span className="ml-auto text-[10px] text-on-surface-variant">{note}</span>
+          <span className="ml-auto text-[10px] text-on-surface-variant flex items-center gap-2">
+            {note}
+          </span>
         )}
       </header>
       <div className="overflow-x-auto custom-scrollbar">
@@ -101,12 +105,16 @@ function Tier({ tier }: { tier: string | null }) {
 export function OpenPositionsTable({
   rows,
   markStale,
+  feedState,
+  feedReason,
   busy,
   onClose,
   onInspect,
 }: {
   rows: ExecutionPosition[]
   markStale: boolean
+  feedState?: LivePnlFeedState | null
+  feedReason?: string | null
   busy: string | null
   onClose: (tradeId: string) => void
   onInspect: (tradeId: string) => void
@@ -115,7 +123,12 @@ export function OpenPositionsTable({
     <TableShell
       title="Open"
       count={rows.length}
-      note="click a row for its event diary"
+      note={
+        <>
+          <LivePnlBadge state={feedState} reason={feedReason} />
+          <span>click a row for its event diary</span>
+        </>
+      }
     >
       <thead className="bg-surface-container-low text-on-surface-variant">
         <tr>
@@ -126,14 +139,15 @@ export function OpenPositionsTable({
           <Th align="right">Entry</Th>
           <Th align="right">Stop</Th>
           <Th align="right">Risk taken</Th>
-          <Th align="right">Open P&L</Th>
+          <Th align="right">Ongoing P&L (live)</Th>
+          <Th align="right">Stock Day Total</Th>
           <Th>State</Th>
           <Th />
         </tr>
       </thead>
       <tbody>
         {rows.length === 0 && (
-          <Empty cols={10}>No open positions.</Empty>
+          <Empty cols={11}>No open positions.</Empty>
         )}
         {rows.map((row) => {
           const unprotected = isUnprotected(row.state)
@@ -176,11 +190,26 @@ export function OpenPositionsTable({
                 {inr(row.risk_taken_rupees)}
               </td>
               <td
+                title={
+                  row.live_pnl_source === 'kite_rest' && feedState && feedState !== 'off'
+                    ? `Kite REST fallback: ${reasonLabel(row.live_pnl_reason?.split(':')[0])}`
+                    : undefined
+                }
                 className={`px-3 py-2 text-right font-data tabular-nums ${
                   markStale ? 'text-on-surface-variant' : pnlClass(row.live_pnl)
                 }`}
               >
                 {inr(row.live_pnl)}
+                {row.live_pnl_source === 'kite_rest' && feedState && feedState !== 'off' && (
+                  <span className="ml-1 label-caps text-amber-800">rest</span>
+                )}
+              </td>
+              <td
+                className={`px-3 py-2 text-right font-data tabular-nums ${
+                  markStale ? 'text-on-surface-variant' : pnlClass(row.stock_day_total)
+                }`}
+              >
+                {inr(row.stock_day_total)}
               </td>
               <td className="px-3 py-2 whitespace-nowrap">
                 <span className={unprotected || stuck ? 'text-negative font-semibold' : ''}>
@@ -213,12 +242,16 @@ export function OpenPositionsTable({
 
 export function ClosedPositionsTable({
   rows,
+  totalRealised,
   onInspect,
 }: {
   rows: ExecutionPosition[]
+  /** Kite's figure for flat stocks; see the API's desk P&L rule. */
+  totalRealised?: number | null
   onInspect: (tradeId: string) => void
 }) {
-  const total = rows.reduce((sum, r) => sum + (r.realised_pnl ?? 0), 0)
+  const total =
+    totalRealised ?? rows.reduce((sum, r) => sum + (r.realised_pnl ?? 0), 0)
   return (
     <TableShell
       title="Closed"
@@ -233,11 +266,12 @@ export function ClosedPositionsTable({
           <Th align="right">Entry fill</Th>
           <Th>Closed by</Th>
           <Th align="right">Realised P&L</Th>
+          <Th align="right">Stock Day Total</Th>
           <Th align="right">At</Th>
         </tr>
       </thead>
       <tbody>
-        {rows.length === 0 && <Empty cols={7}>Nothing closed yet.</Empty>}
+        {rows.length === 0 && <Empty cols={8}>Nothing closed yet.</Empty>}
         {rows.map((row) => {
           const surprising =
             row.close_reason === 'manual_broker_intervention' ||
@@ -267,7 +301,30 @@ export function ClosedPositionsTable({
                   row.realised_pnl,
                 )}`}
               >
-                {inr(row.realised_pnl)}
+                {row.realised_unattributed ? (
+                  <span className="text-negative font-semibold whitespace-nowrap">
+                    unattributed — check Kite
+                  </span>
+                ) : (
+                  inr(row.realised_pnl)
+                )}
+              </td>
+              <td
+                className={`px-3 py-2 text-right font-data tabular-nums ${pnlClass(
+                  row.stock_day_total,
+                )}`}
+              >
+                {row.pnl_mismatch && (
+                  <span
+                    role="img"
+                    aria-label={mismatchTitle(row.pnl_mismatch)}
+                    title={mismatchTitle(row.pnl_mismatch)}
+                    className="mr-1 text-amber-700 font-bold cursor-help"
+                  >
+                    ⚠
+                  </span>
+                )}
+                {inr(row.stock_day_total)}
               </td>
               <td className="px-3 py-2 text-right font-data tabular-nums text-on-surface-variant">
                 {timeIst(row.updated_at)}

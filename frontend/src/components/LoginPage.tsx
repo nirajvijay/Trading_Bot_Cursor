@@ -54,7 +54,7 @@ function StationPanel({
         <span className="label-caps text-slate-400">Observation station</span>
         <h1 className="m-0 text-[26px] font-extrabold tracking-[-0.02em] text-white">NIFTY RADAR</h1>
         <p className="m-0 text-[13px] leading-5 text-slate-300 text-pretty">
-          Owner access to the observation dashboard, trading engine and admin console.
+          Owner access to the observation dashboard and trading engine.
         </p>
       </div>
       <div className="flex flex-col border-t border-slate-700">

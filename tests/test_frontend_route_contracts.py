@@ -59,15 +59,9 @@ class FrontendRouteContracts(unittest.TestCase):
         # already failing before the rebuild.
         self._assert_calls('fetchSectorMap', '/observation/sectors')
 
-    def test_diagnostics_entry_toggle_endpoints_survive_the_rebuild(self):
-        # The Diagnostics tab drives these; they were repointed at the new
-        # command queue rather than removed, so that tab needed no changes.
-        for function, endpoint in (
-            ('postAdminPause', '/admin/trading/pause'),
-            ('postAdminResume', '/admin/trading/resume'),
-        ):
-            with self.subTest(function=function):
-                self._assert_calls(function, endpoint)
+    def test_admin_console_is_removed(self):
+        self.assertFalse(any(p.startswith('/api/v1/admin/') for p in self.routes))
+        self.assertNotIn('/admin/', self.source)
 
     def test_the_old_trading_engine_router_is_gone(self):
         stale = [r for r in self.routes if r.startswith('/api/v1/trading-engine')]

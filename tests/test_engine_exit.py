@@ -18,8 +18,11 @@ from engine_exit import (
     flatten,
     flatten_tag_for,
     identify_closing_order,
+    is_engine_tag,
+    kite_realised_pnl,
     realised_pnl,
     select_closing_order,
+    trade_exit_orders,
 )
 from engine_store import SqlitePositionStore
 from engine_types import ExecutionState, Position, TriggerCandidate
@@ -574,6 +577,137 @@ class FlattenTests(ExitTestCase):
         expected_tag = f"{broker_tag_for('s1')}-x"
         exits = [o for o in self.broker.orders.values() if o.tag == expected_tag]
         self.assertEqual(len(exits), 1)
+
+
+def entry(
+    *,
+    qty: int = 300,
+    avg: Optional[float] = 110.20,
+    side: str = "BUY",
+    timestamp: str = "2026-09-22T10:00:05+00:00",
+) -> BrokerOrder:
+    return order(
+        order_id="eo1",
+        tag=broker_tag_for("s1"),
+        order_type="MARKET",
+        side=side,
+        qty=qty,
+        filled=qty,
+        avg=avg,
+        timestamp=timestamp,
+    )
+
+
+class TradeExitOrderScopingTests(unittest.TestCase):
+    """B2.2: exit orders belong to a trade, not merely to its symbol."""
+
+    def test_own_stop_and_own_flatten_belong(self) -> None:
+        pos = position(exit_order_id="xo1")
+        orders = [
+            order(order_id="so1", tag=broker_tag_for("s1"), filled=100, avg=107.0),
+            order(order_id="xo1", tag=flatten_tag_for(pos), order_type="MARKET", filled=200),
+        ]
+        ids = [o.order_id for o in trade_exit_orders(pos, orders, entry_order=entry())]
+        self.assertEqual(sorted(ids), ["so1", "xo1"])
+
+    def test_another_engine_trades_exit_never_belongs(self) -> None:
+        # Trade #1's stop, same symbol, same side, earlier: the old bug's input.
+        other = order(order_id="old-stop", tag=broker_tag_for("s0"), timestamp="2026-09-22T09:30:00+00:00")
+        pos = position(stop_order_id="so1")
+        self.assertEqual(trade_exit_orders(pos, [other], entry_order=entry()), [])
+
+    def test_a_manual_close_after_the_entry_belongs(self) -> None:
+        manual = order(order_id="m1", tag="", order_type="MARKET", timestamp="2026-09-22T10:40:00+00:00")
+        self.assertEqual(
+            [o.order_id for o in trade_exit_orders(position(), [manual], entry_order=entry())],
+            ["m1"],
+        )
+
+    def test_a_manual_order_before_the_entry_does_not_belong(self) -> None:
+        manual = order(order_id="m0", tag="", order_type="MARKET", timestamp="2026-09-22T09:59:00+00:00")
+        self.assertEqual(trade_exit_orders(position(), [manual], entry_order=entry()), [])
+
+    def test_a_manual_order_claimed_by_an_earlier_trade_does_not_belong(self) -> None:
+        manual = order(order_id="m1", tag="", order_type="MARKET", timestamp="2026-09-22T10:40:00+00:00")
+        self.assertEqual(
+            trade_exit_orders(position(), [manual], claimed={"m1"}, entry_order=entry()), []
+        )
+
+    def test_engine_tag_recognition(self) -> None:
+        tag = broker_tag_for("anything")
+        self.assertTrue(is_engine_tag(tag))
+        self.assertTrue(is_engine_tag(tag + "-x"))
+        self.assertFalse(is_engine_tag(""))
+        self.assertFalse(is_engine_tag("my-manual-tag"))
+
+
+class KiteRealisedPnlTests(unittest.TestCase):
+    """B2.1: realised P&L from Kite's entry and every exit piece."""
+
+    def test_a_single_exit(self) -> None:
+        result = kite_realised_pnl(
+            position(entry_price=999.0),  # stored price is ignored
+            entry_order=entry(avg=110.20),
+            exit_orders=[order(avg=106.50, filled=300)],
+        )
+        self.assertAlmostEqual(result.pnl, (106.50 - 110.20) * 300, places=2)
+        self.assertEqual((result.entry_qty, result.exit_qty), (300, 300))
+
+    def test_exits_in_pieces_each_book_their_own_price(self) -> None:
+        exits = [
+            order(order_id="so1", filled=100, avg=107.00, timestamp="2026-09-22T10:20:00+00:00"),
+            order(order_id="xo1", tag="", order_type="MARKET", filled=200, avg=112.00, timestamp="2026-09-22T10:30:00+00:00"),
+        ]
+        result = kite_realised_pnl(position(), entry_order=entry(avg=110.00), exit_orders=exits)
+        self.assertAlmostEqual(result.pnl, 100 * -3.0 + 200 * 2.0, places=2)
+        self.assertEqual(result.exit_order_ids, ["so1", "xo1"])
+
+    def test_a_short_trade(self) -> None:
+        result = kite_realised_pnl(
+            position(direction="DOWN"),
+            entry_order=entry(avg=110.00, side="SELL"),
+            exit_orders=[order(side="BUY", avg=108.00, filled=300)],
+        )
+        self.assertAlmostEqual(result.pnl, 600.0, places=2)
+
+    def test_an_over_exit_is_capped_and_reported(self) -> None:
+        exits = [
+            order(order_id="so1", filled=300, avg=107.00, timestamp="2026-09-22T10:20:00+00:00"),
+            order(order_id="xo1", tag="", order_type="MARKET", filled=300, avg=106.00, timestamp="2026-09-22T10:21:00+00:00"),
+        ]
+        result = kite_realised_pnl(position(), entry_order=entry(avg=110.00), exit_orders=exits)
+        self.assertAlmostEqual(result.pnl, 300 * -3.0, places=2)
+        self.assertEqual(result.over_exit_qty, 300)
+        self.assertEqual(result.exit_order_ids, ["so1"])
+
+    def test_no_exit_orders_is_unattributed_not_zero(self) -> None:
+        result = kite_realised_pnl(position(), entry_order=entry(), exit_orders=[])
+        self.assertIsNone(result.pnl)
+        self.assertEqual(result.reason, "no_exit_orders")
+
+    def test_an_invisible_entry_order_gives_no_number(self) -> None:
+        result = kite_realised_pnl(position(), entry_order=None, exit_orders=[order()])
+        self.assertIsNone(result.pnl)
+
+    def test_finalize_books_the_kite_figure_and_remembers_the_orders(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        store = SqlitePositionStore(Path(tmp.name) / "engine.db")
+        try:
+            pos = position(entry_price=999.0)
+            result = kite_realised_pnl(
+                pos, entry_order=entry(avg=110.00), exit_orders=[order(avg=107.00)]
+            )
+            finalize_exit(
+                pos,
+                closing=ClosingOrder(order(avg=107.00), CloseReason.STOP_HIT),
+                store=store,
+                realised=result,
+            )
+            self.assertAlmostEqual(pos.realised_pnl, -900.0, places=2)
+            self.assertEqual(pos.extra["exit_order_ids"], ["so1"])
+        finally:
+            store.close()
+            tmp.cleanup()
 
 
 if __name__ == "__main__":
