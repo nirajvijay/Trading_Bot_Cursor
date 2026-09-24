@@ -26,6 +26,7 @@ from kiteconnect import KiteTicker
 
 from historical_collector import DEFAULT_INSTRUMENTS_DB_PATH, load_nifty50_tokens
 from host_clock import host_is_ist, host_not_ist_message
+from kite_ticker_factory import make_kite_ticker
 from kite_tick_normalizer import normalize_kite_tick, to_tick_event
 from login import _get_kite, _require_env, check_access_token
 from candle_emission import CandleEmissionError
@@ -85,7 +86,7 @@ class TickReceiver:
         self._stale_seconds = stale_seconds
         self._health_interval = health_interval
         self._worker_poll_seconds = worker_poll_seconds
-        self._ticker_factory = ticker_factory or KiteTicker
+        self._ticker_factory = ticker_factory or make_kite_ticker
 
         valid, message = check_access_token(access_token)
         if not valid:

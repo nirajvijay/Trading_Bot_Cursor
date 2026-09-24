@@ -144,9 +144,9 @@ class LiveTickFeed:
         try:
             factory = self._ticker_factory
             if factory is None:
-                from kiteconnect import KiteTicker
+                from kite_ticker_factory import make_kite_ticker
 
-                factory = KiteTicker
+                factory = make_kite_ticker
             ticker = factory(self._api_key, self._access_token)
             ticker.on_ticks = self._on_ticks
             ticker.on_connect = self._on_connect
