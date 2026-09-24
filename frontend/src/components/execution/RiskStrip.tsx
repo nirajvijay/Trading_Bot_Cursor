@@ -80,6 +80,7 @@ export function PnlSummary({
           <LivePnlBadge
             state={status?.live_pnl_feed_state}
             reason={status?.live_pnl_feed_reason}
+            orderUpdates={status?.live_pnl_order_updates}
           />
         }
         note={

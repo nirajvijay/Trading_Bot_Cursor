@@ -37,8 +37,10 @@ from engine_live_ticks import LiveTickFeed, NullTickFeed
 from engine_risk import RiskPolicy
 from engine_runloop import (
     TICK_INTERVAL_SECONDS,
+    LoopWake,
     accumulated_drift_seconds,
     next_sleep_seconds,
+    wait_for_next_tick,
 )
 from engine_sizing import RiskCappedSizing
 from engine_status import EngineStatus, HeartbeatWriter, LiveMarkWriter
@@ -126,7 +128,7 @@ def build_broker(*, live_orders: bool):
     )
 
 
-def build_tick_feed(*, live_orders: bool):
+def build_tick_feed(*, live_orders: bool, on_order_update=None):
     """The live Open P&L feed: a dedicated KiteTicker in LIVE, nothing in PAPER.
 
     Display only. Building it never fails the engine: missing credentials just
@@ -140,6 +142,7 @@ def build_tick_feed(*, live_orders: bool):
     return LiveTickFeed(
         api_key=str(env.get("KITE_API_KEY") or ""),
         access_token=str(env.get("KITE_ACCESS_TOKEN") or ""),
+        on_order_update=on_order_update,
     )
 
 
@@ -152,6 +155,7 @@ def live_mark_feed_summary(engine: ExecutionEngine) -> dict:
         "connected": health.connected,
         "reason": health.reason or first_reason(engine.live_pnl_reason),
         "last_tick_at": health.last_tick_at.isoformat() if health.last_tick_at else None,
+        "order_updates": int(getattr(health, "order_updates", 0) or 0),
     }
 
 
@@ -188,7 +192,9 @@ def build_feed_monitor(runner_status_file: Optional[str]) -> FeedMonitor:
     )
 
 
-def build_engine(args: argparse.Namespace, *, store, queue, floor_iso: str):
+def build_engine(
+    args: argparse.Namespace, *, store, queue, floor_iso: str, wake: Optional[LoopWake] = None
+):
     config = build_config(args)
     session_date = args.session_date or engine_clock.to_ist().strftime("%Y-%m-%d")
     return ExecutionEngine(
@@ -207,7 +213,10 @@ def build_engine(args: argparse.Namespace, *, store, queue, floor_iso: str):
         is_live=bool(args.live_orders),
         run_id=args.run_id or uuid4().hex[:12],
         command_source=queue.take_pending,
-        tick_feed=build_tick_feed(live_orders=bool(args.live_orders)),
+        tick_feed=build_tick_feed(
+            live_orders=bool(args.live_orders),
+            on_order_update=wake.notify if wake is not None else None,
+        ),
     )
 
 
@@ -260,8 +269,9 @@ def run(argv: Optional[List[str]] = None) -> int:
         else Path(args.status_file).with_name("engine_live_marks.json")
     )
 
+    wake = LoopWake()
     try:
-        engine = build_engine(args, store=store, queue=queue, floor_iso=floor_iso)
+        engine = build_engine(args, store=store, queue=queue, floor_iso=floor_iso, wake=wake)
     except Exception as exc:  # noqa: BLE001 - a failed start must be visible
         heartbeat.write(
             EngineStatus(
@@ -290,6 +300,9 @@ def run(argv: Optional[List[str]] = None) -> int:
     try:
         while True:
             tick_started = time.monotonic()
+            # Before the REST reads: a push landing during this tick re-arms
+            # the next wait instead of being cleared away unseen.
+            wake.clear()
             engine.tick()
             heartbeat.write(snapshot_status(engine))
             marks.write(
@@ -327,8 +340,13 @@ def run(argv: Optional[List[str]] = None) -> int:
                 tick_finished_at=tick_finished,
                 interval=interval,
             )
-            if sleep_for > 0:
-                time.sleep(sleep_for)
+            wait_for_next_tick(
+                sleep_for=sleep_for,
+                tick_started_at=tick_started,
+                wait_for_wake=wake.wait,
+                sleep=time.sleep,
+                monotonic=time.monotonic,
+            )
     except BaseException as exc:  # noqa: BLE001
         # An unhandled failure escaped every per-step guard. Do not write a
         # stop note: this is a crash, and the heartbeat going silent without a

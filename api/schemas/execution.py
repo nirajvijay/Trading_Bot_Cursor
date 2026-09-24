@@ -98,6 +98,8 @@ class ExecutionStatusResponse(BaseModel):
     live_pnl_feed_state: Optional[str] = None
     live_pnl_feed_reason: Optional[str] = None
     live_pnl_last_tick_at: Optional[str] = None
+    # Kite order-update pushes the engine's WebSocket has received this run.
+    live_pnl_order_updates: Optional[int] = None
     last_error: Optional[str] = None
     escalations: Dict[str, str] = Field(default_factory=dict)
 
@@ -157,6 +159,8 @@ class PositionsResponse(BaseModel):
     live_pnl_feed_state: Optional[str] = None
     live_pnl_feed_reason: Optional[str] = None
     live_pnl_last_tick_at: Optional[str] = None
+    # Kite order-update pushes the engine's WebSocket has received this run.
+    live_pnl_order_updates: Optional[int] = None
 
 
 class EventView(BaseModel):
