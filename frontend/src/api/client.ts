@@ -20,6 +20,7 @@ import type {
   VwapHealthStatus,
   ExecutionCommand,
   ExecutionCommandKind,
+  ExecutionCommandPayload,
   ExecutionEvents,
   ExecutionPositions,
   ExecutionPreflight,
@@ -308,8 +309,9 @@ export function postExecutionStart(body: {
 export function postExecutionCommand(
   kind: ExecutionCommandKind,
   tradeId?: string,
+  payload?: ExecutionCommandPayload,
 ): Promise<ExecutionCommand> {
-  return postJson('/execution/commands', { kind, trade_id: tradeId ?? null })
+  return postJson('/execution/commands', { kind, trade_id: tradeId ?? null, ...payload })
 }
 
 export function fetchExecutionCommand(commandId: number): Promise<ExecutionCommand> {

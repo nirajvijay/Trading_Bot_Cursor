@@ -32,6 +32,32 @@ const EVENT_LABELS: Record<string, string> = {
   cancelled: 'Cancelled',
   skipped: 'Skipped',
   entry_cancel_raced_fill: 'Cancel raced a fill',
+  stop_move_failed: 'Stop move failed — stop left where it was',
+  stop_replaced_for_mod_cap: 'Stop re-placed (Kite modification limit)',
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  auto: 'auto-trail',
+  manual: 'manual nudge',
+  kite: 'changed in Kite',
+}
+
+/** Stop changes name who made them: auto-trail, a manual nudge, or Kite. */
+function eventLabel(event: ExecutionEvent): string {
+  const source = String(event.payload.source ?? '')
+  const who = SOURCE_LABELS[source] ?? source
+  if (event.event_type === 'stop_moved') {
+    return source === 'manual' ? `Stop nudged · ${who}` : `Stop trailed · ${who}`
+  }
+  if (event.event_type === 'stop_adopted') {
+    return source === 'kite'
+      ? 'Stop changed directly in Kite · adopted'
+      : `Stop move confirmed late · ${who}`
+  }
+  if (event.event_type === 'trail_toggled') {
+    return event.payload.to ? 'Auto-trail switched on' : 'Auto-trail switched off'
+  }
+  return EVENT_LABELS[event.event_type] ?? event.event_type
 }
 
 function isAlarming(type: string): boolean {
@@ -255,7 +281,7 @@ function EventItem({ event, startMs }: { event: ExecutionEvent; startMs: number 
         >
           <div className="flex items-baseline gap-2 flex-wrap">
             <span className={`text-[12px] font-bold ${bad ? 'text-negative' : ''}`}>
-              {EVENT_LABELS[event.event_type] ?? event.event_type}
+              {eventLabel(event)}
             </span>
             <span className="ml-auto font-data text-[10px] text-on-surface-variant">
               {event.event_type}

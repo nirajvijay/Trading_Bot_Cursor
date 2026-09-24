@@ -10,6 +10,7 @@ import {
 import type {
   ExecutionCommand,
   ExecutionCommandKind,
+  ExecutionCommandPayload,
   ExecutionPositions,
   ExecutionPreflight,
   ExecutionSessionCaps,
@@ -99,11 +100,11 @@ export function useExecutionEngine(sessionDate: string, enabled: boolean) {
   }, [refresh])
 
   const sendCommand = useCallback(
-    async (kind: ExecutionCommandKind, tradeId?: string) => {
+    async (kind: ExecutionCommandKind, tradeId?: string, payload?: ExecutionCommandPayload) => {
       setBusy(tradeId ? `${kind}:${tradeId}` : kind)
       setActionError(null)
       try {
-        const command = await postExecutionCommand(kind, tradeId)
+        const command = await postExecutionCommand(kind, tradeId, payload)
         return await settleCommand(command)
       } catch (err) {
         setActionError(err instanceof Error ? err.message : `${kind} failed`)
@@ -150,6 +151,9 @@ export function useExecutionEngine(sessionDate: string, enabled: boolean) {
     stopEntries: () => sendCommand('stop'),
     startEntries: () => sendCommand('start'),
     closePosition: (tradeId: string) => sendCommand('close_position', tradeId),
+    nudgeStop: (tradeId: string, ticks: 1 | -1) => sendCommand('move_stop', tradeId, { ticks }),
+    setTrail: (tradeId: string, enabled: boolean) =>
+      sendCommand('set_trail', tradeId, { enabled }),
     killAll: () => sendCommand('kill_all'),
     clearActionError: () => setActionError(null),
   }
