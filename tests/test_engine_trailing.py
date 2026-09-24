@@ -117,6 +117,13 @@ class ResolveTests(unittest.TestCase):
             self.resolve(106.9, auto_on=False).reason, "beyond_initial_stop"
         )
 
+    def test_a_stop_already_past_the_floor_can_still_be_tightened(self) -> None:
+        # Adopted from a Kite edit below the original stop.
+        self.assertEqual(self.resolve(106.55, current=106.5).target, 106.55)
+        self.assertEqual(
+            self.resolve(106.45, current=106.5, auto_on=False).reason, "beyond_initial_stop"
+        )
+
     def test_a_stop_at_or_through_the_market_is_refused(self) -> None:
         self.assertEqual(self.resolve(112.0).reason, "at_or_through_market")
         self.assertEqual(self.resolve(112.05).reason, "at_or_through_market")
@@ -368,6 +375,15 @@ class KiteEditTests(TrailingTestCase):
         self.price(ENTRY + 0.5 * R)
         engine.tick()
         self.assertEqual(self.stored().stop_price, ENTRY)
+
+    def test_a_kite_edit_past_the_floor_can_be_nudged_back_up(self) -> None:
+        engine, _ = self.open_one()
+        self.edit_in_kite(106.5)  # below the 106.95 initial stop
+        engine.tick()
+        cid = self.command(CommandKind.MOVE_STOP, ticks=1)
+        engine.tick()
+        self.assertEqual(self.command_status(cid)[0], "applied")
+        self.assertEqual(self.stored().stop_price, 106.55)
 
     def test_a_kite_edit_counts_against_the_modification_cap(self) -> None:
         engine, _ = self.open_one()

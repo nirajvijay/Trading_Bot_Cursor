@@ -181,9 +181,12 @@ def resolve_stop(
     half_tick = tick_size / 2.0
     if abs(target - current) < half_tick:
         return StopDecision(None, "unchanged")
-    if is_tighter(floor, target, direction) and abs(target - floor) >= half_tick:
-        return StopDecision(None, "beyond_initial_stop")
     tighter = is_tighter(target, current, direction)
+    # Only a loosening move is held to the floor. A stop already past it (an
+    # edit adopted from Kite) may still be tightened one tick at a time.
+    beyond_floor = is_tighter(floor, target, direction) and abs(target - floor) >= half_tick
+    if beyond_floor and not tighter:
+        return StopDecision(None, "beyond_initial_stop")
     if auto_on and not tighter:
         return StopDecision(None, "auto_trail_on_cannot_loosen")
     if tighter:
