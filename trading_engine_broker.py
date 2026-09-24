@@ -1270,7 +1270,18 @@ class KiteBroker:
         # token refusal there proves no order exists. The poll below is not --
         # by then the order may have been accepted.
         try:
-            existing = [o for o in self.orders_by_tag(tag) if o.order_type == "MARKET"]
+            # Not `order_type == "MARKET"`: with market_protection Kite books
+            # and reports our MARKET orders as LIMIT (verified live 2026-09-25,
+            # every engine entry and exit). Filtering on MARKET never matched,
+            # so a flatten retried after an accepted-but-unconfirmed exit
+            # placed a second exit. Same rule as FakeBroker: any live non-stop
+            # order under this tag is the one already placed.
+            existing = [
+                o
+                for o in self.orders_by_tag(tag)
+                if not _is_stop_order(o)
+                and str(o.status).upper() not in SL_CANCELLED
+            ]
             if existing:
                 return existing[0]
             result = self._kite.place_order(  # type: ignore[attr-defined]
