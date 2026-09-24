@@ -16,12 +16,6 @@ on it.
 
 Example: RELIANCE #1 closes +500 -> 500. #2 open at +200 -> 700, moving live.
 #2 closes +300 -> 800, fixed.
-
-Realised P&L, per closed row, is Kite's too wherever Kite pinned a figure:
-the pinned stock total minus what the earlier trades in that stock already
-booked. So a trade whose own orders did more than the trade itself (DRREDDY,
-2026-09-24: 6 shares bought, 387 sold, 381 bought back by hand) shows what
-it really cost, and the closed rows always add up to Total Realised.
 """
 from __future__ import annotations
 
@@ -50,9 +44,6 @@ class DeskRow:
 @dataclass(frozen=True)
 class RowPnl:
     stock_day_total: Optional[float] = None
-    # This closed trade's realised P&L as Kite has it (see module docstring);
-    # None where there is no closed figure to show.
-    realised: Optional[float] = None
     # Kite's pinned day figure differs from our per-trade sum by over Rs 1.
     mismatch: Optional[Dict[str, float]] = None
     # Closed, but no closing order was found at Kite.
@@ -92,16 +83,10 @@ def build_desk_pnl(
             if row.state == CLOSED_STATE:
                 stock_day = row.extra.get("stock_day") or {}
                 kite_pnl = stock_day.get("kite_pnl")
-                booked_before = realised_so_far
                 if kite_pnl is not None:
                     realised_so_far = float(kite_pnl)
                 elif row.realised_pnl is not None:
                     realised_so_far += float(row.realised_pnl)
-                realised = (
-                    round(realised_so_far - booked_before, 2)
-                    if kite_pnl is not None or row.realised_pnl is not None
-                    else None
-                )
                 mismatch = None
                 if stock_day.get("mismatch"):
                     mismatch = {
@@ -118,7 +103,6 @@ def build_desk_pnl(
                         if unattributed and kite_pnl is None
                         else round(realised_so_far, 2)
                     ),
-                    realised=realised,
                     mismatch=mismatch,
                     unattributed=unattributed,
                 )
