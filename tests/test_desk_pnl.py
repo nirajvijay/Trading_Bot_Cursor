@@ -97,6 +97,41 @@ class StockDayTotalTests(unittest.TestCase):
         )
         self.assertIsNone(desk.rows["b"].mismatch)
 
+    def test_a_closed_row_shows_kites_realised(self) -> None:
+        # 2026-09-24, as on the desk: DRREDDY booked -23.4 for its own 6
+        # shares, but its stops sold 381 more that were bought back by hand.
+        desk = build_desk_pnl(
+            [
+                row("hy", symbol="HYUNDAI", realised=14.0, kite_day=14.0),
+                row("ci", symbol="CIPLA", realised=-19.8, kite_day=-19.8),
+                row("dm", symbol="DMART", realised=-24.6, kite_day=-24.6),
+                row("lo", symbol="LODHA", realised=6.1, kite_day=6.1),
+                row("dr", symbol="DRREDDY", realised=-23.4, kite_day=-133.5, ours=-23.4, mismatch=True),
+            ],
+            {},
+        )
+        self.assertEqual(desk.rows["dr"].realised, -133.5)
+        self.assertEqual(desk.rows["hy"].realised, 14.0)
+        rows_total = round(sum(r.realised for r in desk.rows.values()), 2)
+        self.assertEqual(rows_total, desk.total_realised)
+        self.assertEqual(desk.total_realised, -157.8)
+
+    def test_a_later_trade_shows_only_its_own_share_of_kites_figure(self) -> None:
+        # Kite pins 500 after #1, then 800 after #2: #2 made 300.
+        desk = build_desk_pnl(
+            [
+                row("a", realised=500.0, kite_day=500.0, at="2026-09-22T09:00:00+00:00"),
+                row("b", realised=280.0, kite_day=800.0, ours=780.0, mismatch=True, at="2026-09-22T10:00:00+00:00"),
+            ],
+            {},
+        )
+        self.assertEqual(desk.rows["a"].realised, 500.0)
+        self.assertEqual(desk.rows["b"].realised, 300.0)
+
+    def test_without_kites_figure_the_row_keeps_our_number(self) -> None:
+        desk = build_desk_pnl([row("a", realised=-12.5)], {})
+        self.assertEqual(desk.rows["a"].realised, -12.5)
+
     def test_other_stocks_are_separate(self) -> None:
         desk = build_desk_pnl(
             [row("r", realised=500.0), row("t", symbol="TCS", realised=-100.0)], {}

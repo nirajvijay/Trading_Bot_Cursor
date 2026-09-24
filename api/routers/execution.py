@@ -148,7 +148,12 @@ def _to_view(
         entry_price=row["entry_price"],
         stop_price=row["stop_price"],
         risk_taken_rupees=row["risk_taken_rupees"],
-        realised_pnl=row["realised_pnl"],
+        # Kite's figure for a closed trade wherever Kite pinned one.
+        realised_pnl=(
+            row_pnl.realised
+            if row_pnl is not None and row_pnl.realised is not None
+            else row["realised_pnl"]
+        ),
         live_pnl=live_pnl.get(trade_id),
         live_pnl_source=(marks.get("source") or {}).get(trade_id),
         live_pnl_reason=(marks.get("reason") or {}).get(trade_id),
