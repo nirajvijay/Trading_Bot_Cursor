@@ -27,7 +27,8 @@ from engine_core import (
 )
 from engine_entry import broker_tag_for
 from engine_exit import EXIT_PENDING_KEY, ORPHAN_STOPS_KEY
-from engine_types import ExecutionState
+from engine_risk import RiskPolicy, realised_loss_rupees
+from engine_types import ExecutionState, RiskLimits
 from tests.test_engine_lifecycle import LifecycleTestCase, candidate
 from trading_engine_broker import KiteBroker
 from trading_engine_types import PositionQuote
@@ -511,6 +512,77 @@ class UnprotectedTimeoutTests(SafetyExitTestCase):
         self.assertEqual(stored.state, ExecutionState.PROTECTED)
         self.assertEqual(self.exit_orders(), [])
         self.assertNotIn("auto_flatten_unprotected", self.events("s1"))
+
+
+# ----------------------------------------------------------------------
+# Realised loss: Kite's truth reaches the row, the total and the cap
+# ----------------------------------------------------------------------
+
+
+class RealisedLossTests(SafetyExitTestCase):
+    def closed(self, pnl, *, stock_day=None):
+        from tests.test_engine_exit import position
+
+        p = position(state=ExecutionState.CLOSED)
+        p.realised_pnl = pnl
+        if stock_day is not None:
+            p.extra["stock_day"] = stock_day
+        return p
+
+    def test_todays_numbers_count_kite_s_drreddy_loss(self) -> None:
+        """2026-09-24: CIPLA -19.8, DMART -24.6, DRREDDY booked -23.4 while
+        Kite showed -133.5 for the stock. The cap must see 177.9, not 67.8."""
+        day = [
+            self.closed(-19.8),
+            self.closed(-24.6),
+            self.closed(
+                -23.4,
+                stock_day={"kite_pnl": -133.5, "ours": -23.4, "diff": -110.1, "mismatch": True},
+            ),
+            self.closed(14.0),
+            self.closed(6.1),
+        ]
+        self.assertAlmostEqual(realised_loss_rupees(day), 177.9, places=2)
+        check = RiskPolicy(
+            RiskLimits(
+                per_trade_cap_rupees=50.0,
+                per_trade_cap_vwap_limited_rupees=25.0,
+                daily_loss_cap_rupees=150.0,
+            )
+        ).check_daily_loss(day)
+        self.assertTrue(check.breached)
+
+    def test_kite_better_than_ours_never_loosens_the_cap(self) -> None:
+        day = [
+            self.closed(
+                -40.0,
+                stock_day={"kite_pnl": -30.0, "ours": -40.0, "diff": 10.0, "mismatch": True},
+            )
+        ]
+        self.assertAlmostEqual(realised_loss_rupees(day), 40.0, places=2)
+
+    def test_an_engine_over_sell_is_booked_to_the_trade(self) -> None:
+        engine, stored = self.open_one()
+        tag = broker_tag_for("s1")
+        # The stop sells the 295 held, then a second stop of ours sells 10
+        # more (the account goes short), and those 10 are bought back by hand.
+        self.broker.fill_sl(stored.stop_order_id, 106.95)
+        self.broker.inject_complete_order(
+            tradingsymbol="AAA", transaction_type="SELL", quantity=10,
+            price=106.9, order_type="SL", tag=tag,
+        )
+        self.broker.inject_complete_order(
+            tradingsymbol="AAA", transaction_type="BUY", quantity=10, price=108.5,
+        )
+        engine.tick()
+        closed = self.store.get("s1")
+        assert closed is not None
+        self.assertEqual(closed.state, ExecutionState.CLOSED)
+        kite_pnl = closed.extra["stock_day"]["kite_pnl"]
+        self.assertAlmostEqual(closed.realised_pnl, kite_pnl, places=2)
+        self.assertFalse(closed.extra["stock_day"]["mismatch"])
+        self.assertIn("over_exit_loss_booked", self.events("s1"))
+        self.assertAlmostEqual(engine.realised_loss_today, -kite_pnl, places=2)
 
 
 if __name__ == "__main__":

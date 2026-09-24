@@ -361,9 +361,10 @@ def _opt_str(value: object) -> Optional[str]:
 
 
 def realised_loss_rupees(positions: Sequence[Position]) -> float:
-    """Total realised loss as a positive number. Profits do not offset."""
-    return sum(
-        -p.realised_pnl
-        for p in positions
-        if p.realised_pnl is not None and p.realised_pnl < 0
-    )
+    """Total realised loss as a positive number. Profits do not offset.
+
+    One rule, shared with the daily-loss cap (engine_risk.trade_loss_rupees).
+    """
+    from engine_risk import realised_loss_rupees as _rule
+
+    return _rule(positions)
