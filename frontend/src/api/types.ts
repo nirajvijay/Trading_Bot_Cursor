@@ -542,3 +542,44 @@ export interface ExecutionStartResponse {
   message: string
   pid: number | null
 }
+
+// ---- Charges tab (display only; never feeds the engine) ----
+
+export interface ChargeBreakdown {
+  brokerage: number
+  stt: number
+  exchange: number
+  sebi: number
+  stamp_duty: number
+  gst: number
+  total: number
+}
+
+export type TradeChargesStatus = 'ok' | 'paper' | 'unavailable'
+
+export interface TradeChargesRow {
+  trade_id: string
+  tradingsymbol: string
+  direction: string
+  qty: number
+  closed_at: string | null
+  close_reason: string | null
+  entry_avg: number | null
+  exit_avg: number | null
+  gross_pnl: number | null
+  charges: ChargeBreakdown | null
+  net_pnl: number | null
+  status: TradeChargesStatus
+  reason: string | null
+}
+
+export interface TradeChargesDay {
+  session_date: string
+  trades: TradeChargesRow[]
+  total_gross_pnl: number
+  total_charges: number
+  total_net_pnl: number
+  priced_count: number
+  live_closed_count: number
+  kite_error: string | null
+}

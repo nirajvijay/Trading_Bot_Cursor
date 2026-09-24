@@ -7,6 +7,7 @@ const TABS: { id: AppTab; label: string }[] = [
   { id: 'checklist', label: 'Checklist' },
   { id: 'radar', label: 'Observation' },
   { id: 'trading', label: 'Execution Desk' },
+  { id: 'charges', label: 'Charges' },
   { id: 'auth', label: 'VWAP Health' },
 ]
 

@@ -1,7 +1,7 @@
 import { marketStatusNow } from '../lib/format'
 import type { RunnerStatus, SessionCoverage } from '../api/types'
 
-export type AppTab = 'radar' | 'checklist' | 'auth' | 'trading'
+export type AppTab = 'radar' | 'checklist' | 'auth' | 'trading' | 'charges'
 
 interface Props {
   activeTab: AppTab

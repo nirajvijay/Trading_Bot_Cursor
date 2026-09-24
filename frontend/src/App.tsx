@@ -14,6 +14,7 @@ import { PreMarketChecklistPage } from './components/PreMarketChecklistPage'
 import { RadarHeatMap } from './components/RadarHeatMap'
 import { VwapHealthPage } from './components/VwapHealthPage'
 import { ExecutionDeskPage } from './components/execution/ExecutionDeskPage'
+import { ChargesPage } from './components/charges/ChargesPage'
 import { StationConsoleShell } from './components/StationConsoleShell'
 import { type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
@@ -288,6 +289,8 @@ export default function App() {
           />
         ) : activeTab === 'trading' ? (
           <ExecutionDeskPage sessionDate={sessionDate} />
+        ) : activeTab === 'charges' ? (
+          <ChargesPage sessionDate={sessionDate} />
         ) : (
           <VwapHealthPage />
         )}

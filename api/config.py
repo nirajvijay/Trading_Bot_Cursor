@@ -116,6 +116,18 @@ def execution_engine_live_mark_file() -> Path:
     return runtime_cache_dir() / "execution_engine_live_marks.json"
 
 
+def trade_charges_db_path() -> Path:
+    """The Charges tab's own cache of Kite's per-trade charges.
+
+    Its own file, never the engine's store: the tab only ever reads the engine
+    database, and what it saves is display data the engine never sees.
+    """
+    override = os.environ.get("TRADE_CHARGES_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+    return local_data_dir() / "trade_charges.db"
+
+
 def admin_config_db_path() -> Path:
     """Admin Console V1 runtime configuration database."""
     override = os.environ.get("ADMIN_CONFIG_DB_PATH")
