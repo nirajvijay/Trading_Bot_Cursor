@@ -94,6 +94,9 @@ def build_desk_pnl(
                         "ours": float(stock_day.get("ours") or 0.0),
                         "diff": float(stock_day.get("diff") or 0.0),
                     }
+                    if stock_day.get("over_exit_qty"):
+                        # Our own orders sold more than the trade held.
+                        mismatch["over_exit_qty"] = float(stock_day["over_exit_qty"])
                 unattributed = row.realised_pnl is None
                 out[row.trade_id] = RowPnl(
                     # An unattributed close with no Kite figure has no honest

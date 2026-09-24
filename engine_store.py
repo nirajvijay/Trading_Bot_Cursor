@@ -28,7 +28,7 @@ import sqlite3
 from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from engine_types import ExecutionState, Position, TriggerCandidate
 
@@ -278,6 +278,29 @@ class SqlitePositionStore:
             )
         )
 
+    def latest_event_payloads(
+        self, trade_ids: Sequence[str], event_types: Sequence[str]
+    ) -> Dict[Tuple[str, str], dict]:
+        """The latest payload of each given event type, per trade, in one read."""
+        if not trade_ids or not event_types:
+            return {}
+        id_marks = ",".join("?" for _ in trade_ids)
+        type_marks = ",".join("?" for _ in event_types)
+        rows = self._conn.execute(
+            f"SELECT trade_id, event_type, payload_json FROM position_events "
+            f"WHERE trade_id IN ({id_marks}) AND event_type IN ({type_marks}) "
+            f"ORDER BY event_id ASC",
+            (*trade_ids, *event_types),
+        )
+        out: Dict[Tuple[str, str], dict] = {}
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except (ValueError, TypeError):
+                payload = {}
+            out[(str(row["trade_id"]), str(row["event_type"]))] = payload
+        return out
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -361,9 +384,10 @@ def _opt_str(value: object) -> Optional[str]:
 
 
 def realised_loss_rupees(positions: Sequence[Position]) -> float:
-    """Total realised loss as a positive number. Profits do not offset."""
-    return sum(
-        -p.realised_pnl
-        for p in positions
-        if p.realised_pnl is not None and p.realised_pnl < 0
-    )
+    """Total realised loss as a positive number. Profits do not offset.
+
+    One rule, shared with the daily-loss cap (engine_risk.trade_loss_rupees).
+    """
+    from engine_risk import realised_loss_rupees as _rule
+
+    return _rule(positions)

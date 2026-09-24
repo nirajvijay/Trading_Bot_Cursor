@@ -213,7 +213,11 @@ export function OpenPositionsTable({
               </td>
               <td className="px-3 py-2 whitespace-nowrap">
                 <span className={unprotected || stuck ? 'text-negative font-semibold' : ''}>
-                  {stuck ? 'Stuck — never reached broker' : stateLabel(row.state)}
+                  {stuck
+                    ? 'Stuck — never reached broker'
+                    : row.exiting
+                      ? 'Exiting'
+                      : stateLabel(row.state)}
                 </span>
                 {row.manual_review && (
                   <span className="ml-1.5 label-caps text-negative">review</span>

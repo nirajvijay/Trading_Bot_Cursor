@@ -5,6 +5,8 @@ KiteBroker never logs tokens. FakeBroker never calls kiteconnect.place_order.
 
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Protocol
@@ -308,6 +310,9 @@ class FakeBroker:
     _hidden_order_ids: set = field(default_factory=set)
     # When True, cancel_order leaves the order working (unconfirmed cancel).
     cancel_noop: bool = False
+    # One-shot, like Kite: the cancel takes effect, but the immediate response
+    # still reads CANCEL PENDING. Later polls and the order book show CANCELLED.
+    cancel_pending_once: bool = False
     # Extra shares filled at cancel time (cancellation-race simulation).
     cancel_additional_fill: int = 0
     # Optional fixed timestamp for new orders (tests); otherwise wall clock.
@@ -651,6 +656,9 @@ class FakeBroker:
         # Hidden order: cancel may have applied locally, but visibility/response is lost.
         if str(order_id) in self._hidden_order_ids:
             return None
+        if self.cancel_pending_once:
+            self.cancel_pending_once = False
+            return _copy_order(updated, status="CANCEL PENDING")
         return updated
 
     def poll_order(self, order_id: str) -> Optional[BrokerOrder]:
@@ -1049,6 +1057,13 @@ def _find_mis_position(data: dict, tradingsymbol: str) -> Optional[dict]:
     return None
 
 
+# Kite answers a cancel before the order has left CANCEL PENDING. Re-read it
+# briefly so the caller sees a final status instead of the transient one.
+CANCEL_CONFIRM_POLL_SECONDS = 0.25
+CANCEL_CONFIRM_TIMEOUT_SECONDS = 1.5
+FINAL_ORDER_STATUSES = frozenset({"CANCELLED", "REJECTED", "COMPLETE"})
+
+
 class KiteBroker:
     """Live Kite Connect adapter. Must not run unless live_orders_enabled."""
 
@@ -1057,6 +1072,9 @@ class KiteBroker:
         self.live_orders_enabled = live_orders_enabled
         self._positions_payload: Optional[object] = None
         self._positions_failed = False
+        # Injectable so tests never really sleep.
+        self._sleep = time.sleep
+        self._monotonic = time.monotonic
 
     def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
         raw = self._kite.quote([f"NSE:{tradingsymbol}"])
@@ -1323,7 +1341,16 @@ class KiteBroker:
     def cancel_order(self, order_id: str) -> Optional[BrokerOrder]:
         self._require_live()
         self._kite.cancel_order(variety="regular", order_id=order_id)  # type: ignore[attr-defined]
-        return self.poll_order(order_id)
+        # Whatever is returned is only reported, never assumed: a status still
+        # short of final (CANCEL PENDING) after the wait stays unconfirmed.
+        order = self.poll_order(order_id)
+        deadline = self._monotonic() + CANCEL_CONFIRM_TIMEOUT_SECONDS
+        while (
+            order is None or str(order.status).upper() not in FINAL_ORDER_STATUSES
+        ) and self._monotonic() < deadline:
+            self._sleep(CANCEL_CONFIRM_POLL_SECONDS)
+            order = self.poll_order(order_id)
+        return order
 
     def flatten_mis(
         self,

@@ -363,6 +363,51 @@ class PositionsTests(ExecutionApiTestCase):
         self.assertEqual([p["trade_id"] for p in body["closed"]], ["s2"])
         self.assertEqual([p["trade_id"] for p in body["rejected"]], ["s3"])
 
+    def seed_drreddy(self) -> None:
+        """2026-09-24 as stored: bought 6, qty adopted to 381, booked -23.4,
+        Kite -133.5 for the stock. Closed before over_exit_qty was pinned on
+        the stock-day figure, so the count lives only in the diary."""
+        from engine_store import SqlitePositionStore
+        from engine_types import ExecutionState, Position, TriggerCandidate
+
+        store = SqlitePositionStore(self.db)
+        try:
+            store.save(
+                Position(
+                    trade_id="dr",
+                    candidate=TriggerCandidate(**_candidate_row("dr", "DRREDDY")),
+                    state=ExecutionState.CLOSED,
+                    qty=381,
+                    entry_price=1212.6,
+                    realised_pnl=-23.4,
+                    run_id="run-1",
+                    extra={
+                        "close_reason": "manual_broker_intervention",
+                        "qty_adopted_from_broker": {"was": 362, "now": 381},
+                        "stock_day": {
+                            "kite_pnl": -133.5, "ours": -23.4, "diff": -110.1, "mismatch": True,
+                        },
+                    },
+                )
+            )
+            store.append_event("dr", "entry_filled", {"fill_price": 1212.6, "filled_qty": 6})
+            store.append_event("dr", "over_exit_detected", {"over_exit_qty": 381, "entry_qty": 6})
+        finally:
+            store.close()
+
+    def test_a_closed_row_shows_the_trade_s_own_qty_and_pnl(self) -> None:
+        self.seed_drreddy()
+        body = self.client.get(f"{BASE}/positions?session_date=2026-09-22").json()
+        row = body["closed"][0]
+        self.assertEqual(row["qty"], 6)
+        self.assertAlmostEqual(row["realised_pnl"], -23.4)
+        self.assertAlmostEqual(row["stock_day_total"], -133.5)
+        self.assertEqual(
+            row["pnl_mismatch"],
+            {"kite_pnl": -133.5, "ours": -23.4, "diff": -110.1, "over_exit_qty": 381.0},
+        )
+        self.assertAlmostEqual(body["total_realised_pnl"], -133.5)
+
     def test_an_open_position_carries_the_numbers_the_desk_needs(self) -> None:
         self.seed_store()
         body = self.client.get(f"{BASE}/positions?session_date=2026-09-22").json()

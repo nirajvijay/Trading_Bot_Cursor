@@ -52,6 +52,12 @@ class CloseReason(str, Enum):
     # Flat at the broker, but no completed order explains it. Recorded honestly
     # rather than guessed at.
     UNATTRIBUTED = "unattributed"
+    # Safety exits the engine takes on its own (see engine_core).
+    DIRECTION_MISMATCH_FLATTEN = "direction_mismatch_flatten"
+    STOP_REPLACEMENT_CAP = "stop_replacement_cap"
+    UNPROTECTED_TIMEOUT = "unprotected_timeout"
+    # Our stop-limit triggered but its limit did not fill in time.
+    STOP_TRIGGERED_UNFILLED = "stop_triggered_unfilled"
 
 
 # Reasons we ourselves initiate, stashed on the position when we send the exit
@@ -63,10 +69,23 @@ ACTIVE_EXIT_REASONS = frozenset(
         CloseReason.MANUAL_CLOSE,
         CloseReason.ABNORMAL_SLIPPAGE_FLATTEN,
         CloseReason.KILL_ALL,
+        CloseReason.DIRECTION_MISMATCH_FLATTEN,
+        CloseReason.STOP_REPLACEMENT_CAP,
+        CloseReason.UNPROTECTED_TIMEOUT,
+        CloseReason.STOP_TRIGGERED_UNFILLED,
     }
 )
 
 EXIT_REASON_KEY = "exit_reason"
+# Set while an exit has started but the stop cancel is not yet confirmed. While
+# it is set, nothing re-places a stop, and each tick resumes the exit.
+EXIT_PENDING_KEY = "exit_pending"
+# Stops still live after the position closed elsewhere, awaiting a confirmed cancel.
+ORPHAN_STOPS_KEY = "orphan_stops"
+
+# Stop statuses that mean the order can still execute.
+LIVE_STOP_STATUSES = frozenset({"TRIGGER PENDING", "OPEN", "AMO REQ RECEIVED", "VALIDATION PENDING"})
+CANCELLED_STATUSES = frozenset({"CANCELLED", "REJECTED"})
 FLATTEN_TAG_SUFFIX = "-x"
 
 
@@ -92,6 +111,11 @@ class FlattenOutcome:
     submitted: bool
     reason: Optional[str] = None
     order_id: Optional[str] = None
+    # Shares the cancelled stop sold before the cancel landed (a triggered
+    # stop-limit can fill in part). The exit covers only what is left.
+    stop_filled_qty: int = 0
+    # The size the cancelled stop was covering, when known.
+    stop_qty: Optional[int] = None
 
 
 def realised_pnl(
@@ -469,11 +493,37 @@ def cancel_stop(position: Position, *, broker, store) -> FlattenOutcome:
     would sell twice and leave the account accidentally net short. So the
     flatten waits on this. Same three-way discipline as every other broker
     call: an ambiguous cancel is not treated as a success.
+
+    Resumable: the stop is read first, so a retry on a later tick sees a cancel
+    Kite already finished, and never re-cancels one still CANCEL PENDING. A stop
+    that has COMPLETEd already sold the position: exiting again would sell twice.
     """
     if not position.stop_order_id:
         return FlattenOutcome(True, reason="no_stop_to_cancel")
+    stop_id = str(position.stop_order_id)
+
+    current = None
+    poll = getattr(broker, "poll_order", None)
+    if poll is not None:
+        try:
+            current = poll(stop_id)
+        except Exception:  # noqa: BLE001 - an unreadable stop falls through to the cancel
+            current = None
+    if current is not None:
+        status = str(current.status).upper()
+        if status in CANCELLED_STATUSES:
+            store.append_event(
+                position.trade_id, "stop_cancelled", {"order_id": stop_id, "status": status}
+            )
+            return _stop_gone(current, stop_id)
+        if status == "COMPLETE":
+            return FlattenOutcome(False, reason="stop_filled")
+        if status not in LIVE_STOP_STATUSES:
+            # CANCEL PENDING and friends: a cancel is already in flight.
+            return FlattenOutcome(False, reason=f"cancel_unconfirmed: {status}")
+
     try:
-        result = broker.cancel_order(str(position.stop_order_id))
+        result = broker.cancel_order(stop_id)
     except Exception as exc:  # noqa: BLE001
         reason = str(exc) or exc.__class__.__name__
         store.append_event(
@@ -490,7 +540,10 @@ def cancel_stop(position: Position, *, broker, store) -> FlattenOutcome:
         return FlattenOutcome(False, reason="cancel_ambiguous: no_response")
 
     status = str(result.status).upper()
-    if status not in {"CANCELLED", "REJECTED", "COMPLETE"}:
+    if status == "COMPLETE":
+        # The stop fired in the gap before the cancel landed: already out.
+        return FlattenOutcome(False, reason="stop_filled")
+    if status not in CANCELLED_STATUSES:
         store.append_event(
             position.trade_id, "stop_cancel_ambiguous", {"status": status}
         )
@@ -499,7 +552,52 @@ def cancel_stop(position: Position, *, broker, store) -> FlattenOutcome:
     store.append_event(
         position.trade_id, "stop_cancelled", {"order_id": position.stop_order_id, "status": status}
     )
-    return FlattenOutcome(True, order_id=str(position.stop_order_id))
+    return _stop_gone(result, stop_id)
+
+
+def _stop_gone(order: BrokerOrder, stop_id: str) -> FlattenOutcome:
+    return FlattenOutcome(
+        True,
+        order_id=stop_id,
+        stop_filled_qty=broker_order_filled_qty(order),
+        stop_qty=int(order.quantity) if order.quantity else None,
+    )
+
+
+def cancel_order_confirmed(broker, order_id: str) -> str:
+    """Cancel one order: "cancelled", "filled" or "unconfirmed". Never raises."""
+    try:
+        result = broker.cancel_order(str(order_id))
+    except Exception:  # noqa: BLE001 - reported as unconfirmed, retried by the caller
+        return "unconfirmed"
+    if result is None:
+        return "unconfirmed"
+    status = str(result.status).upper()
+    if status in CANCELLED_STATUSES:
+        return "cancelled"
+    if status == "COMPLETE":
+        return "filled"
+    return "unconfirmed"
+
+
+def live_stops_for(position: Position, orders: Iterable[BrokerOrder]) -> List[BrokerOrder]:
+    """Every order of ours that could still sell this position: the saved stop
+    plus any live stop carrying the trade's tag."""
+    from engine_reconcile import is_our_stop_row
+
+    tag = broker_tag_for(position.trade_id)
+    stop_id = str(position.stop_order_id) if position.stop_order_id else None
+    found: Dict[str, BrokerOrder] = {}
+    for order in orders:
+        oid = str(order.order_id)
+        if str(order.status).upper() not in LIVE_STOP_STATUSES:
+            continue
+        # By identity, not type: a triggered stop-limit reads as LIMIT.
+        if oid == stop_id or (
+            str(order.tag or "") == tag and is_our_stop_row(position, order)
+        ):
+            found[oid] = order
+    return list(found.values())
 
 
 def flatten(
@@ -517,20 +615,42 @@ def flatten(
         ExecutionState.CANCELLED,
     ):
         return FlattenOutcome(False, reason="already_terminal")
+    if position.state == ExecutionState.EXIT_SUBMITTED:
+        # An exit is already working; a second one would over-sell.
+        return FlattenOutcome(
+            True, reason="exit_already_submitted", order_id=position.exit_order_id
+        )
     if int(position.qty or 0) <= 0:
         return FlattenOutcome(False, reason="no_quantity")
 
     cancelled = cancel_stop(position, broker=broker, store=store)
     if not cancelled.submitted:
-        # Try again next tick rather than risk a double exit.
+        if cancelled.reason != "stop_filled":
+            # Remember the exit so the next tick finishes it, and so nothing
+            # re-places a stop in the meantime. Never risk a double exit.
+            mark_exit_pending(position, reason=reason, detail=cancelled.reason, store=store)
         return FlattenOutcome(False, reason=cancelled.reason)
+
+    exit_qty = int(position.qty)
+    if cancelled.stop_filled_qty > 0:
+        # The stop sold part before it was cancelled. Never exit more than it
+        # left: whichever is smaller of our record and the stop's remainder
+        # (the record may already have adopted the smaller broker size).
+        covering = cancelled.stop_qty or exit_qty
+        exit_qty = min(exit_qty, max(0, covering - cancelled.stop_filled_qty))
+        if exit_qty <= 0:
+            position.extra.pop(EXIT_PENDING_KEY, None)
+            store.save_with_event(
+                position, "exit_not_needed", {"stop_filled_qty": cancelled.stop_filled_qty}
+            )
+            return FlattenOutcome(False, reason="stop_filled")
 
     candidate = position.candidate
     try:
         order = broker.flatten_mis(
             tradingsymbol=candidate.tradingsymbol,
             transaction_type=exit_transaction_type_for(candidate.direction),
-            quantity=int(position.qty),
+            quantity=exit_qty,
             tag=flatten_tag_for(position),
         )
     except Exception as exc:  # noqa: BLE001
@@ -546,12 +666,32 @@ def flatten(
 
     position.exit_order_id = str(order.order_id)
     position.stop_order_id = None  # cancelled above; no longer live
+    position.extra.pop(EXIT_PENDING_KEY, None)
     position.extra[EXIT_REASON_KEY] = reason.value
     if position.state != ExecutionState.EXIT_SUBMITTED:
         transition(position, ExecutionState.EXIT_SUBMITTED)
     store.save_with_event(
         position,
         "exit_submitted",
-        {"reason": reason.value, "order_id": order.order_id, "qty": position.qty},
+        {"reason": reason.value, "order_id": order.order_id, "qty": exit_qty},
     )
     return FlattenOutcome(True, order_id=str(order.order_id))
+
+
+def mark_exit_pending(position: Position, *, reason: CloseReason, detail: Optional[str], store) -> None:
+    """Record that an exit has started and is waiting on the stop cancel."""
+    if position.extra.get(EXIT_PENDING_KEY):
+        return
+    from datetime import datetime, timezone
+
+    position.extra[EXIT_PENDING_KEY] = {
+        "reason": reason.value,
+        "detail": detail,
+        "stop_order_id": position.stop_order_id,
+        "since": datetime.now(timezone.utc).isoformat(),
+    }
+    store.save_with_event(
+        position,
+        "exit_pending",
+        {"reason": reason.value, "detail": detail, "stop_order_id": position.stop_order_id},
+    )
