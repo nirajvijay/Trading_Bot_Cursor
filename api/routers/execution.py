@@ -163,6 +163,11 @@ def _to_view(
         close_reason=extra.get("close_reason"),
         skip_reason=extra.get("skip_reason") or extra.get("reject_reason"),
         stop_adopted_from_broker="stop_adopted_from_broker" in extra,
+        exiting=bool(
+            extra.get("exit_pending")
+            or extra.get("safety_exit")
+            or (extra.get("direction_mismatch") or {}).get("confirmed")
+        ),
         manual_review=extra.get("manual_review"),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),

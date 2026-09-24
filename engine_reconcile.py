@@ -37,7 +37,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from engine_entry import broker_tag_for, entry_fill_final, fill_price_of
+from engine_entry import (
+    broker_tag_for,
+    entry_fill_final,
+    exit_transaction_type_for,
+    fill_price_of,
+)
 from engine_types import ExecutionState, Position
 from trading_engine_types import (
     STOP_ORDER_TYPES,
@@ -76,6 +81,12 @@ class ReconcileAction(str, Enum):
     ADOPT_STOP_PRICE = "adopt_stop_price"
     REPLACE_STOP = "replace_stop"
     FINALIZE_EXIT = "finalize_exit"
+    # The broker holds size the opposite way to the trade. Blocks every other
+    # action: no stop, no adopted quantity (see engine_core).
+    DIRECTION_MISMATCH = "direction_mismatch"
+
+# Set while an exit waits on its stop cancel (engine_exit.EXIT_PENDING_KEY).
+EXIT_PENDING_KEY = "exit_pending"
 
 
 @dataclass(frozen=True)
@@ -97,7 +108,27 @@ class BrokerTruth:
         no MIS net position exists, so absence is flat. A book that could not be
         read at all sets ok=False instead, and nothing acts on it.
         """
-        return abs(int(self.net_qty.get(tradingsymbol, 0)))
+        return abs(self.signed_net_for(tradingsymbol))
+
+    def signed_net_for(self, tradingsymbol: str) -> int:
+        """Size held with its sign: positive long, negative short."""
+        return int(self.net_qty.get(tradingsymbol, 0))
+
+    def stop_filled_for(self, position: Position) -> bool:
+        """Did one of our stops already execute? Then it is not missing: the
+        position is on its way to flat and must never get a replacement."""
+        exit_side = exit_transaction_type_for(position.candidate.direction)
+        stop = self.order(position.stop_order_id)
+        if stop is not None and broker_order_filled_qty(stop) > 0:
+            return True
+        for order in self.orders_by_tag.get(broker_tag_for(position.trade_id), []):
+            if position.entry_order_id and str(order.order_id) == str(position.entry_order_id):
+                continue
+            if str(order.transaction_type).upper() != exit_side:
+                continue
+            if str(order.order_type) in STOP_ORDER_TYPES and broker_order_filled_qty(order) > 0:
+                return True
+        return False
 
     def order(self, order_id: Optional[str]) -> Optional[BrokerOrder]:
         if not order_id:
@@ -235,7 +266,18 @@ def reconcile(
         return ReconcileDecision()
 
     symbol = position.candidate.tradingsymbol
-    broker_qty = truth.net_for(symbol)
+    signed_qty = truth.signed_net_for(symbol)
+    broker_qty = abs(signed_qty)
+
+    expected_sign = 1 if str(position.candidate.direction).upper() == "UP" else -1
+    if signed_qty * expected_sign < 0:
+        # Short against a long trade (or the reverse). Adopting that size, or
+        # placing a stop on the trade's side, would only add to it.
+        return ReconcileDecision(
+            actions=[ReconcileAction.DIRECTION_MISMATCH],
+            broker_qty=signed_qty,
+            reason="direction_mismatch",
+        )
 
     if broker_qty == 0:
         # The position went flat. Which order actually did it is a separate
@@ -252,8 +294,15 @@ def reconcile(
         actions.append(ReconcileAction.ADOPT_QTY)
 
     broker_stop_price: Optional[float] = None
-    if position.state in STOP_EXPECTED_STATES:
+    exiting = bool(position.extra.get(EXIT_PENDING_KEY))
+    if position.state in STOP_EXPECTED_STATES and not exiting:
         stop_order = truth.stop_order_for(position)
+        if stop_order is None and truth.stop_filled_for(position):
+            # The stop executed; the positions book just has not caught up.
+            # Wait for it to show flat rather than sell a second time.
+            return ReconcileDecision(
+                actions=actions, broker_qty=broker_qty, reason="stop_filled_awaiting_flat"
+            )
         if stop_order is None:
             # The stop is genuinely not at the broker any more, so the position
             # genuinely is not protected. Say so and re-place it.

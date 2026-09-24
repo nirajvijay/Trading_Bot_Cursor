@@ -36,12 +36,20 @@ from engine_entry import (
     submit_entry,
 )
 from engine_exit import (
+    CANCELLED_STATUSES,
     EXIT_ORDER_IDS_KEY,
+    EXIT_PENDING_KEY,
+    EXIT_REASON_KEY,
+    LIVE_STOP_STATUSES,
+    ORPHAN_STOPS_KEY,
     CloseReason,
+    cancel_order_confirmed,
     finalize_exit,
     flatten,
+    flatten_tag_for,
     identify_closing_order,
     kite_realised_pnl,
+    live_stops_for,
     trade_exit_orders,
 )
 from engine_feed import FeedMonitor
@@ -52,6 +60,7 @@ from engine_live_marks import (
     compute_live_mark,
 )
 from engine_live_ticks import NullTickFeed, TickFeedHealth
+from engine_entry import broker_tag_for
 from engine_orders import transition
 from engine_priority import VWAP_ENTRY_CLASSES, rank_candidates
 from engine_protection import ensure_protected
@@ -79,7 +88,7 @@ from engine_sizing import SizingPolicy
 from engine_squareoff import SquareoffProgress, squareoff_all
 from engine_types import ExecutionState, Position, TriggerCandidate
 from trading_engine_broker import BrokerPort, parse_timestamp_text
-from trading_engine_types import broker_order_filled_qty
+from trading_engine_types import STOP_ORDER_TYPES, broker_order_filled_qty
 
 # Kite's own day P&L for a stock, pinned on the closed row that made it flat.
 STOCK_DAY_KEY = "stock_day"
@@ -101,6 +110,23 @@ ENTRY_STALL_EVENTS = {
 # from the old engine's constant -- if the interval ever changes, recompute
 # this as roughly 2x the new one rather than leaving it stale.
 VWAP_WAIT_SECONDS = 2.0
+
+# --- Safety exits -------------------------------------------------------------
+# Kite's signed position must point the trade's way on this many consecutive
+# ticks before it is treated as a real mismatch: one lagging read never acts.
+MISMATCH_CONFIRM_TICKS = 2
+MISMATCH_KEY = "direction_mismatch"
+# A confirmed-live stop that later vanished is re-placed at most this many
+# times; the next disappearance exits the position instead.
+MAX_STOP_REPLACEMENTS = 3
+STOP_REPLACEMENTS_KEY = "stop_replacements"
+# A filled position with no confirmed stop for longer than this is exited.
+UNPROTECTED_FLATTEN_SECONDS = 12.0
+UNPROTECTED_SINCE_KEY = "unprotected_since"
+# Set once the engine has decided to exit on its own; blocks any new stop.
+SAFETY_EXIT_KEY = "safety_exit"
+# An exit still waiting on its stop cancel after this long is escalated.
+EXIT_PENDING_ESCALATE_SECONDS = 10.0
 
 
 class PositionStore(Protocol):
@@ -170,6 +196,9 @@ class ExecutionEngine:
         self.last_truth: Optional[BrokerTruth] = None
         self.escalation_notices: List[str] = []
         self.realised_loss_today = 0.0
+        # Set by a safety exit. Like a breach, it keeps entries paused until a
+        # human restarts the engine, whatever the feed does.
+        self.safety_hold: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Tick
@@ -193,6 +222,20 @@ class ExecutionEngine:
         run_step(
             STEP_RECONCILE,
             lambda: self._drive_open_orders(positions),
+            tracker=self.failures,
+            on_escalate=self._on_escalate,
+        )
+
+        # Exits already under way, before anything could re-protect them.
+        run_step(
+            STEP_RECONCILE,
+            lambda: self._advance_pending_exits(self.store.open_positions()),
+            tracker=self.failures,
+            on_escalate=self._on_escalate,
+        )
+        run_step(
+            STEP_RECONCILE,
+            self._sweep_orphan_stops,
             tracker=self.failures,
             on_escalate=self._on_escalate,
         )
@@ -250,8 +293,8 @@ class ExecutionEngine:
         self.pause_reason = reason
 
     def _resume(self) -> None:
-        if self.breached:
-            return  # a breach is permanent for the session
+        if self.breached or self.safety_hold:
+            return  # a breach or a safety exit holds for the session
         self.entries_paused = False
         self.pause_reason = None
 
@@ -346,7 +389,11 @@ class ExecutionEngine:
             position.extra["manual_review"] = "abnormal_slippage"
             self.store.save(position)
             return
-        ensure_protected(position, broker=self.broker, store=self.store)
+        filled_at = self.now_fn().isoformat()
+        if not ensure_protected(position, broker=self.broker, store=self.store).protected:
+            # The unprotected clock starts at the fill, not at the next tick.
+            position.extra[UNPROTECTED_SINCE_KEY] = filled_at
+            self.store.save(position)
 
     # ------------------------------------------------------------------
     # Entry gates, rechecked immediately before sending
@@ -423,6 +470,8 @@ class ExecutionEngine:
         for position in positions:
             decision = reconcile(position, truth)
             self._watch_waiting_entry(position, decision)
+            if not decision.has(ReconcileAction.DIRECTION_MISMATCH):
+                self._clear_mismatch_blip(position)
             if decision.is_noop:
                 continue
             self._apply_reconciliation(position, decision, truth)
@@ -612,7 +661,15 @@ class ExecutionEngine:
         return claimed
 
     def _apply_reconciliation(self, position: Position, decision, truth: BrokerTruth) -> None:
+        if decision.has(ReconcileAction.DIRECTION_MISMATCH):
+            self._handle_direction_mismatch(position, decision, truth)
+            return
+
         if decision.has(ReconcileAction.FINALIZE_EXIT):
+            # Closed somewhere other than our own exit (in Kite, say): a stop of
+            # ours may still be live and could open a fresh position later.
+            self._cancel_leftover_stops(position, truth)
+            mismatch = position.extra.get(MISMATCH_KEY) or {}
             entry_order = truth.order(position.entry_order_id)
             exits = trade_exit_orders(
                 position,
@@ -636,6 +693,15 @@ class ExecutionEngine:
             except Exception as exc:  # noqa: BLE001 - information only; the close is already booked
                 self.store.append_event(
                     position.trade_id, "stock_day_record_failed", {"error": str(exc)}
+                )
+            if mismatch.get("confirmed"):
+                self.store.append_event(
+                    position.trade_id,
+                    "mismatch_flattened",
+                    {
+                        "broker_qty": mismatch.get("broker_qty"),
+                        "flatten_order_id": mismatch.get("flatten_order_id"),
+                    },
                 )
             if realised.over_exit_qty > 0:
                 self.store.append_event(
@@ -710,12 +776,34 @@ class ExecutionEngine:
 
         if decision.has(ReconcileAction.REPLACE_STOP):
             # The stop is genuinely gone, so the position genuinely is not
-            # protected. Say so, and let the protection step re-place it.
+            # protected. Say so, and let the protection step re-place it --
+            # at most MAX_STOP_REPLACEMENTS times, then exit instead.
+            replacements = int(position.extra.get(STOP_REPLACEMENTS_KEY) or 0)
             position.stop_order_id = None
             if position.state in (ExecutionState.PROTECTED, ExecutionState.TRAILING):
                 transition(position, ExecutionState.ENTERED)
+            if replacements >= MAX_STOP_REPLACEMENTS:
+                self.store.save_with_event(
+                    position,
+                    "stop_missing_at_broker",
+                    {"qty": position.qty, "replacements": replacements},
+                )
+                self._safety_exit(
+                    position,
+                    CloseReason.STOP_REPLACEMENT_CAP,
+                    event="stop_replacement_cap_reached",
+                    detail=(
+                        f"{position.candidate.tradingsymbol} stop vanished again after "
+                        f"{replacements} re-placements; exiting at market"
+                    ),
+                )
+                return
+            position.extra[STOP_REPLACEMENTS_KEY] = replacements + 1
+            position.extra[UNPROTECTED_SINCE_KEY] = self.now_fn().isoformat()
             self.store.save_with_event(
-                position, "stop_missing_at_broker", {"qty": position.qty}
+                position,
+                "stop_missing_at_broker",
+                {"qty": position.qty, "replacement": replacements + 1},
             )
             return
 
@@ -731,12 +819,323 @@ class ExecutionEngine:
             )
 
     def _ensure_protection(self, positions: List[Position]) -> None:
-        if not engine_clock.protection_retry_allowed(self.now_fn()):
-            return
+        now = self.now_fn()
+        retry_allowed = engine_clock.protection_retry_allowed(now)
         for position in positions:
             if position.state != ExecutionState.ENTERED:
+                if position.extra.pop(UNPROTECTED_SINCE_KEY, None) is not None:
+                    self.store.save(position)
                 continue
-            ensure_protected(position, broker=self.broker, store=self.store)
+            if self._exit_underway(position):
+                # Being closed (or held for a mismatch): a new stop here is
+                # exactly how a closing position gets sold twice.
+                continue
+            since = parse_timestamp_text(position.extra.get(UNPROTECTED_SINCE_KEY))
+            if since is None:
+                position.extra[UNPROTECTED_SINCE_KEY] = now.isoformat()
+                self.store.save(position)
+            elif (now - since).total_seconds() > UNPROTECTED_FLATTEN_SECONDS:
+                self._safety_exit(
+                    position,
+                    CloseReason.UNPROTECTED_TIMEOUT,
+                    event="auto_flatten_unprotected",
+                    detail=(
+                        f"{position.candidate.tradingsymbol} had no confirmed stop for "
+                        f"{(now - since).total_seconds():.0f}s; exiting at market"
+                    ),
+                )
+                continue
+            if retry_allowed:
+                ensure_protected(position, broker=self.broker, store=self.store)
+
+    # ------------------------------------------------------------------
+    # Safety exits
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _exit_underway(position: Position) -> bool:
+        return bool(
+            position.extra.get(EXIT_PENDING_KEY)
+            or position.extra.get(SAFETY_EXIT_KEY)
+            or position.extra.get(MISMATCH_KEY)
+        )
+
+    def _safety_escalate(self, key: str, detail: str, *, pause_reason: str) -> None:
+        """Pause entries for the session and put the notice on the desk."""
+        self.safety_hold = pause_reason
+        self._pause(pause_reason)
+        self.failures.escalated[key] = detail
+        self._on_escalate(key, detail)
+
+    def _safety_exit(
+        self, position: Position, reason: CloseReason, *, event: str, detail: str
+    ) -> None:
+        """Exit through the normal flatten path (cancel first, never twice).
+
+        Logged and escalated once; the exit itself is retried every tick by
+        _advance_pending_exits until it is submitted.
+        """
+        if not position.extra.get(SAFETY_EXIT_KEY):
+            position.extra[SAFETY_EXIT_KEY] = {
+                "reason": reason.value,
+                "at": self.now_fn().isoformat(),
+            }
+            position.extra["manual_review"] = reason.value
+            self.store.save_with_event(position, event, {"detail": detail})
+            self._safety_escalate(
+                f"{reason.value}:{position.trade_id}", detail, pause_reason=reason.value
+            )
+        flatten(position, reason=reason, broker=self.broker, store=self.store)
+
+    def _advance_pending_exits(self, positions: List[Position]) -> None:
+        """Finish exits that started but were waiting on their stop cancel.
+
+        Each tick re-runs flatten, which reads the old stop first: once Kite
+        shows it CANCELLED the market exit goes out; if it COMPLETEd, the stop
+        already closed the position and reconciliation books it.
+        """
+        now = self.now_fn()
+        for position in positions:
+            pending = position.extra.get(EXIT_PENDING_KEY)
+            safety = position.extra.get(SAFETY_EXIT_KEY)
+            if not (pending or safety):
+                continue
+            if position.state not in (
+                ExecutionState.ENTERED,
+                ExecutionState.PROTECTED,
+                ExecutionState.TRAILING,
+            ):
+                continue
+            if (position.extra.get(MISMATCH_KEY) or {}).get("confirmed"):
+                continue  # the mismatch handler owns this exit
+            reason = CloseReason((pending or safety)["reason"])
+            outcome = flatten(position, reason=reason, broker=self.broker, store=self.store)
+            if outcome.submitted:
+                continue
+            if outcome.reason == "stop_filled":
+                position.extra.pop(EXIT_PENDING_KEY, None)
+                self.store.save_with_event(
+                    position,
+                    "exit_pending_stop_filled",
+                    {"stop_order_id": position.stop_order_id},
+                )
+                continue
+            info = position.extra.get(EXIT_PENDING_KEY)
+            if not info:
+                continue
+            seen = parse_timestamp_text(info.get("seen_at"))
+            if seen is None:
+                info["seen_at"] = now.isoformat()
+                self.store.save(position)
+                continue
+            waited = (now - seen).total_seconds()
+            if waited > EXIT_PENDING_ESCALATE_SECONDS and not info.get("escalated"):
+                info["escalated"] = True
+                position.extra["manual_review"] = "exit_pending_stuck"
+                detail = (
+                    f"{position.candidate.tradingsymbol} exit waiting {waited:.0f}s on its "
+                    f"stop cancel ({outcome.reason})"
+                )
+                self.store.save_with_event(position, "exit_pending_stuck", {"detail": detail})
+                key = f"exit_pending:{position.trade_id}"
+                self.failures.escalated[key] = detail
+                self._on_escalate(key, detail)
+
+    def _clear_mismatch_blip(self, position: Position) -> None:
+        """A mismatch seen on fewer ticks than required was just a lagging read."""
+        info = position.extra.get(MISMATCH_KEY)
+        if info and not info.get("confirmed"):
+            position.extra.pop(MISMATCH_KEY, None)
+            self.store.save(position)
+
+    def _handle_direction_mismatch(
+        self, position: Position, decision, truth: BrokerTruth
+    ) -> None:
+        """Kite holds this stock the opposite way to the trade: close to flat.
+
+        Sized from Kite's signed quantity, never from the trade record, after
+        every stop of ours on the symbol is confirmed cancelled.
+        """
+        signed = int(decision.broker_qty or 0)
+        info = dict(position.extra.get(MISMATCH_KEY) or {})
+        info["ticks"] = int(info.get("ticks") or 0) + 1
+        info["broker_qty"] = signed
+        info.setdefault("first_seen", self.now_fn().isoformat())
+        position.extra[MISMATCH_KEY] = info
+        if info["ticks"] < MISMATCH_CONFIRM_TICKS:
+            self.store.save(position)
+            return
+
+        symbol = position.candidate.tradingsymbol
+        if not info.get("confirmed"):
+            info["confirmed"] = True
+            position.extra["manual_review"] = "direction_mismatch"
+            self.store.save_with_event(
+                position,
+                "direction_mismatch",
+                {
+                    "broker_qty": signed,
+                    "trade_direction": position.candidate.direction,
+                    "trade_qty": position.qty,
+                    "ticks": info["ticks"],
+                },
+            )
+            self._safety_escalate(
+                f"direction_mismatch:{position.trade_id}",
+                f"{symbol}: Kite holds {signed} against a "
+                f"{'long' if position.candidate.direction == 'UP' else 'short'} trade; "
+                "closing to flat",
+                pause_reason="direction_mismatch",
+            )
+
+        # An exit already working: wait for Kite to show it done.
+        working = truth.order(info.get("flatten_order_id"))
+        if info.get("flatten_order_id") and (
+            working is None or str(working.status).upper() not in CANCELLED_STATUSES
+        ):
+            self.store.save(position)
+            return
+
+        # 1. Every stop of ours on the symbol, confirmed gone first.
+        unconfirmed = []
+        for stop in live_stops_for(position, truth.orders_by_id.values()):
+            result = cancel_order_confirmed(self.broker, stop.order_id)
+            if result == "cancelled":
+                self.store.append_event(
+                    position.trade_id,
+                    "stop_cancelled",
+                    {"order_id": stop.order_id, "why": "direction_mismatch"},
+                )
+            else:
+                unconfirmed.append(str(stop.order_id))
+                self.store.append_event(
+                    position.trade_id,
+                    "stop_cancel_ambiguous",
+                    {"order_id": stop.order_id, "result": result, "why": "direction_mismatch"},
+                )
+        tag = broker_tag_for(position.trade_id)
+        for order in truth.orders_by_tag.get(tag, []):
+            status = str(order.status).upper()
+            if (
+                str(order.order_type) in STOP_ORDER_TYPES
+                and status not in LIVE_STOP_STATUSES
+                and status not in CANCELLED_STATUSES
+                and status != "COMPLETE"
+            ):
+                unconfirmed.append(str(order.order_id))  # e.g. CANCEL PENDING
+        if unconfirmed:
+            info["awaiting_cancel"] = sorted(set(unconfirmed))
+            self.store.save(position)
+            return
+        info.pop("awaiting_cancel", None)
+
+        # 2. Market order from Kite's signed size: short -> BUY, long -> SELL.
+        side = "BUY" if signed < 0 else "SELL"
+        try:
+            order = self.broker.flatten_mis(
+                tradingsymbol=symbol,
+                transaction_type=side,
+                quantity=abs(signed),
+                tag=flatten_tag_for(position),
+            )
+        except Exception as exc:  # noqa: BLE001 - retried next tick
+            self.store.save_with_event(
+                position, "flatten_failed", {"reason": str(exc) or exc.__class__.__name__}
+            )
+            return
+        if order is None:
+            self.store.save_with_event(
+                position, "flatten_failed", {"reason": "broker_returned_no_order"}
+            )
+            return
+        info["flatten_order_id"] = str(order.order_id)
+        position.stop_order_id = None
+        position.exit_order_id = str(order.order_id)
+        position.extra[EXIT_REASON_KEY] = CloseReason.DIRECTION_MISMATCH_FLATTEN.value
+        position.extra.pop(EXIT_PENDING_KEY, None)
+        if position.state != ExecutionState.EXIT_SUBMITTED:
+            transition(position, ExecutionState.EXIT_SUBMITTED)
+        self.store.save_with_event(
+            position,
+            "mismatch_flatten_submitted",
+            {"order_id": order.order_id, "side": side, "qty": abs(signed)},
+        )
+
+    def _cancel_leftover_stops(self, position: Position, truth: BrokerTruth) -> None:
+        """The position is flat without our exit: cancel any stop still live."""
+        unconfirmed = []
+        for stop in live_stops_for(position, truth.orders_by_id.values()):
+            result = cancel_order_confirmed(self.broker, stop.order_id)
+            if result == "cancelled":
+                self.store.append_event(
+                    position.trade_id,
+                    "stop_cancelled",
+                    {"order_id": stop.order_id, "why": "position_flat"},
+                )
+            elif result == "filled":
+                self._leftover_stop_filled(position, stop.order_id)
+            else:
+                unconfirmed.append(str(stop.order_id))
+                self.store.append_event(
+                    position.trade_id,
+                    "stop_cancel_ambiguous",
+                    {"order_id": stop.order_id, "why": "position_flat"},
+                )
+        if unconfirmed:
+            # finalize_exit saves this with the close; the sweep keeps retrying.
+            position.extra[ORPHAN_STOPS_KEY] = unconfirmed
+            position.extra["manual_review"] = "orphan_stop_unconfirmed"
+            key = f"orphan_stop:{position.trade_id}"
+            detail = (
+                f"{position.candidate.tradingsymbol} closed, but stop "
+                f"{', '.join(unconfirmed)} is not confirmed cancelled"
+            )
+            self.failures.escalated[key] = detail
+            self._on_escalate(key, detail)
+
+    def _leftover_stop_filled(self, position: Position, order_id) -> None:
+        """A stop fired after the position was already flat: new exposure."""
+        position.extra["manual_review"] = "leftover_stop_filled"
+        self.store.append_event(position.trade_id, "leftover_stop_filled", {"order_id": order_id})
+        self._safety_escalate(
+            f"leftover_stop_filled:{position.trade_id}",
+            f"{position.candidate.tradingsymbol} stop {order_id} executed after the "
+            "position was flat; check Kite",
+            pause_reason="leftover_stop_filled",
+        )
+
+    def _sweep_orphan_stops(self) -> None:
+        """Keep cancelling stops left live on closed trades until Kite confirms."""
+        for position in self.store.closed_today(self.session_date):
+            pending = list(position.extra.get(ORPHAN_STOPS_KEY) or [])
+            if not pending:
+                continue
+            remaining = []
+            for order_id in pending:
+                try:
+                    order = self.broker.poll_order(order_id)
+                except Exception:  # noqa: BLE001 - try again next tick
+                    order = None
+                status = str(order.status).upper() if order is not None else None
+                if status in LIVE_STOP_STATUSES:
+                    result = cancel_order_confirmed(self.broker, order_id)
+                    status = {"cancelled": "CANCELLED", "filled": "COMPLETE"}.get(result, status)
+                if status in CANCELLED_STATUSES:
+                    self.store.append_event(
+                        position.trade_id, "orphan_stop_cleared", {"order_id": order_id}
+                    )
+                elif status == "COMPLETE":
+                    self._leftover_stop_filled(position, order_id)
+                else:
+                    remaining.append(order_id)
+            if remaining == pending:
+                continue
+            if remaining:
+                position.extra[ORPHAN_STOPS_KEY] = remaining
+            else:
+                position.extra.pop(ORPHAN_STOPS_KEY, None)
+                self.failures.escalated.pop(f"orphan_stop:{position.trade_id}", None)
+            self.store.save(position)
 
     # ------------------------------------------------------------------
     # Commands
@@ -781,6 +1180,10 @@ class ExecutionEngine:
             )
             if outcome.submitted:
                 command.applied({"order_id": outcome.order_id})
+            elif position.extra.get(EXIT_PENDING_KEY):
+                # Accepted: the engine finishes the exit itself once Kite
+                # confirms the stop cancel. Pressing Close again is not needed.
+                command.applied({"exit_pending": True, "detail": outcome.reason})
             else:
                 command.rejected(str(outcome.reason))
             return

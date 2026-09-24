@@ -133,6 +133,8 @@ class PositionView(BaseModel):
     close_reason: Optional[str] = None
     skip_reason: Optional[str] = None
     stop_adopted_from_broker: bool = False
+    # An exit is under way (waiting on its stop cancel, or a safety exit).
+    exiting: bool = False
     manual_review: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

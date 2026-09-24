@@ -484,6 +484,8 @@ export interface ExecutionPosition {
   close_reason: string | null
   skip_reason: string | null
   stop_adopted_from_broker: boolean
+  /** An exit is under way: waiting on the stop cancel, or a safety exit. */
+  exiting?: boolean
   manual_review: string | null
   created_at: string | null
   updated_at: string | null
