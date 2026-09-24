@@ -22,6 +22,7 @@ from engine_core import (
     MAX_STOP_REPLACEMENTS,
     MISMATCH_KEY,
     STOP_REPLACEMENTS_KEY,
+    STOP_TRIGGER_FILL_SECONDS,
     UNPROTECTED_FLATTEN_SECONDS,
 )
 from engine_entry import broker_tag_for
@@ -303,6 +304,110 @@ class DirectionMismatchTests(SafetyExitTestCase):
         self.assertEqual(closed.extra.get("close_reason"), "stop_hit")
         sells = [o for o in self.broker.orders.values() if o.transaction_type == "SELL"]
         self.assertEqual(len(sells), 1)
+
+
+# ----------------------------------------------------------------------
+# Triggered stop-limit: Kite shows it as a LIMIT under the same order id
+# ----------------------------------------------------------------------
+
+
+class TriggeredStopLimitTests(SafetyExitTestCase):
+    def trigger(self, stored, *, filled: int = 0) -> None:
+        """What Kite does when our SL triggers: same id, now a working LIMIT."""
+        order = self.broker.orders[stored.stop_order_id]
+        qty = int(order.quantity)
+        self.broker.orders[stored.stop_order_id] = dataclasses.replace(
+            order,
+            order_type="LIMIT",
+            status="OPEN",
+            filled_quantity=filled,
+            pending_quantity=qty - filled,
+            average_price=106.95 if filled else None,
+        )
+
+    def test_a_triggered_unfilled_stop_is_not_replaced(self) -> None:
+        engine, stored = self.open_one()
+        self.trigger(stored)
+        for _ in range(2):
+            engine.tick()
+            self.clock.advance(1)
+        self.assertEqual(self.broker.slm_place_count, 1)
+        self.assertNotIn("stop_missing_at_broker", self.events("s1"))
+        self.assertEqual(self.exit_orders(), [])
+        self.assertIn("stop_triggered", self.events("s1"))
+
+    def test_unfilled_past_the_limit_is_cancelled_and_exited_once(self) -> None:
+        engine, stored = self.open_one()
+        self.trigger(stored)
+        engine.tick()  # triggered: the clock starts
+        self.clock.advance(STOP_TRIGGER_FILL_SECONDS + 1)
+        engine.tick()  # still unfilled: cancel, then market out
+        for _ in range(3):
+            self.clock.advance(1)
+            engine.tick()
+        self.assertEqual(self.broker.orders[stored.stop_order_id].status, "CANCELLED")
+        exits = self.exit_orders()
+        self.assertEqual(len(exits), 1)
+        self.assertEqual(exits[0].transaction_type, "SELL")
+        self.assertEqual(int(exits[0].quantity), int(stored.qty))
+        closed = self.store.get("s1")
+        assert closed is not None
+        self.assertEqual(closed.state, ExecutionState.CLOSED)
+        self.assertEqual(closed.extra.get("close_reason"), "stop_triggered_unfilled")
+        self.assertEqual(self.broker.net_position_qty("AAA"), 0)
+        self.assertEqual(self.broker.slm_place_count, 1)
+
+    def test_a_part_filled_stop_exits_only_what_is_left(self) -> None:
+        engine, stored = self.open_one()
+        self.trigger(stored, filled=100)
+        engine.tick()
+        self.clock.advance(STOP_TRIGGER_FILL_SECONDS + 1)
+        engine.tick()
+        engine.tick()
+        exits = self.exit_orders()
+        self.assertEqual(len(exits), 1)
+        self.assertEqual(int(exits[0].quantity), int(stored.qty) - 100)
+        self.assertEqual(self.broker.net_position_qty("AAA"), 0)
+        closed = self.store.get("s1")
+        assert closed is not None
+        self.assertEqual(closed.state, ExecutionState.CLOSED)
+
+    def test_a_part_filled_stop_never_over_sells_while_positions_lag(self) -> None:
+        engine, stored = self.open_one()
+        self.trigger(stored, filled=100)
+        # Kite's positions book has not caught up with the 100 sold yet.
+        self.broker.position_quotes["AAA"] = PositionQuote(quantity=int(stored.qty))
+        engine.tick()
+        self.clock.advance(STOP_TRIGGER_FILL_SECONDS + 1)
+        engine.tick()
+        del self.broker.position_quotes["AAA"]
+        engine.tick()
+        exits = self.exit_orders()
+        self.assertEqual(len(exits), 1)
+        self.assertEqual(int(exits[0].quantity), int(stored.qty) - 100)
+        self.assertEqual(self.broker.net_position_qty("AAA"), 0)
+
+    def test_a_stop_that_fills_in_time_is_left_to_close_normally(self) -> None:
+        engine, stored = self.open_one()
+        self.trigger(stored)
+        engine.tick()
+        self.clock.advance(1)
+        self.broker.fill_sl(stored.stop_order_id, 106.95)
+        engine.tick()
+        closed = self.store.get("s1")
+        assert closed is not None
+        self.assertEqual(closed.extra.get("close_reason"), "stop_hit")
+        self.assertEqual(self.exit_orders(), [])
+
+    def test_a_kite_side_close_cancels_a_triggered_stop_too(self) -> None:
+        engine, stored = self.open_one()
+        self.trigger(stored)
+        self.broker.simulate_external_flatten("AAA", 106.0)
+        engine.tick()
+        self.assertEqual(self.broker.orders[stored.stop_order_id].status, "CANCELLED")
+        closed = self.store.get("s1")
+        assert closed is not None
+        self.assertEqual(closed.state, ExecutionState.CLOSED)
 
 
 # ----------------------------------------------------------------------

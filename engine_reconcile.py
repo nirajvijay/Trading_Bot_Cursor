@@ -140,14 +140,33 @@ class BrokerTruth:
 
         The tag fallback matters after a crash between placing a stop and
         persisting its id: the order exists, we just lost the pointer.
+
+        Matched by identity, never by order type: our stop is a stop-limit
+        (SL), and once it triggers Kite shows the same order as a plain LIMIT.
+        Judged by type, a triggered stop looks missing and gets replaced --
+        and then both can sell.
         """
         direct = self.order(position.stop_order_id)
-        if direct is not None and _is_live_stop(direct):
+        if direct is not None and str(direct.status).upper() not in DEAD_ORDER_STATUSES:
             return direct
         for candidate in self.orders_by_tag.get(broker_tag_for(position.trade_id), []):
-            if _is_live_stop(candidate):
+            if is_our_stop_row(position, candidate) and (
+                str(candidate.status).upper() not in DEAD_ORDER_STATUSES
+            ):
                 return candidate
         return None
+
+
+def is_our_stop_row(position: Position, order: BrokerOrder) -> bool:
+    """An order under the trade's own tag that sells (or buys back) the
+    position and is not the entry: a stop, triggered or not."""
+    if str(order.order_type) in STOP_ORDER_TYPES:
+        return True
+    if position.entry_order_id and str(order.order_id) == str(position.entry_order_id):
+        return False
+    return str(order.transaction_type).upper() == exit_transaction_type_for(
+        position.candidate.direction
+    )
 
 
 @dataclass(frozen=True)
@@ -308,8 +327,13 @@ def reconcile(
             # genuinely is not protected. Say so and re-place it.
             actions.append(ReconcileAction.REPLACE_STOP)
         else:
+            # A triggered stop reads as LIMIT and may carry no trigger at all;
+            # only a stop still waiting says what its trigger is.
             broker_stop_price = (
-                None if stop_order.trigger_price is None else float(stop_order.trigger_price)
+                float(stop_order.trigger_price)
+                if str(stop_order.order_type) in STOP_ORDER_TYPES
+                and stop_order.trigger_price
+                else None
             )
             tolerance = stop_price_tolerance
             if tolerance is None:

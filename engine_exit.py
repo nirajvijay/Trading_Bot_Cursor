@@ -56,6 +56,8 @@ class CloseReason(str, Enum):
     DIRECTION_MISMATCH_FLATTEN = "direction_mismatch_flatten"
     STOP_REPLACEMENT_CAP = "stop_replacement_cap"
     UNPROTECTED_TIMEOUT = "unprotected_timeout"
+    # Our stop-limit triggered but its limit did not fill in time.
+    STOP_TRIGGERED_UNFILLED = "stop_triggered_unfilled"
 
 
 # Reasons we ourselves initiate, stashed on the position when we send the exit
@@ -70,6 +72,7 @@ ACTIVE_EXIT_REASONS = frozenset(
         CloseReason.DIRECTION_MISMATCH_FLATTEN,
         CloseReason.STOP_REPLACEMENT_CAP,
         CloseReason.UNPROTECTED_TIMEOUT,
+        CloseReason.STOP_TRIGGERED_UNFILLED,
     }
 )
 
@@ -108,6 +111,11 @@ class FlattenOutcome:
     submitted: bool
     reason: Optional[str] = None
     order_id: Optional[str] = None
+    # Shares the cancelled stop sold before the cancel landed (a triggered
+    # stop-limit can fill in part). The exit covers only what is left.
+    stop_filled_qty: int = 0
+    # The size the cancelled stop was covering, when known.
+    stop_qty: Optional[int] = None
 
 
 def realised_pnl(
@@ -507,7 +515,7 @@ def cancel_stop(position: Position, *, broker, store) -> FlattenOutcome:
             store.append_event(
                 position.trade_id, "stop_cancelled", {"order_id": stop_id, "status": status}
             )
-            return FlattenOutcome(True, order_id=stop_id)
+            return _stop_gone(current, stop_id)
         if status == "COMPLETE":
             return FlattenOutcome(False, reason="stop_filled")
         if status not in LIVE_STOP_STATUSES:
@@ -544,7 +552,16 @@ def cancel_stop(position: Position, *, broker, store) -> FlattenOutcome:
     store.append_event(
         position.trade_id, "stop_cancelled", {"order_id": position.stop_order_id, "status": status}
     )
-    return FlattenOutcome(True, order_id=str(position.stop_order_id))
+    return _stop_gone(result, stop_id)
+
+
+def _stop_gone(order: BrokerOrder, stop_id: str) -> FlattenOutcome:
+    return FlattenOutcome(
+        True,
+        order_id=stop_id,
+        stop_filled_qty=broker_order_filled_qty(order),
+        stop_qty=int(order.quantity) if order.quantity else None,
+    )
 
 
 def cancel_order_confirmed(broker, order_id: str) -> str:
@@ -566,6 +583,8 @@ def cancel_order_confirmed(broker, order_id: str) -> str:
 def live_stops_for(position: Position, orders: Iterable[BrokerOrder]) -> List[BrokerOrder]:
     """Every order of ours that could still sell this position: the saved stop
     plus any live stop carrying the trade's tag."""
+    from engine_reconcile import is_our_stop_row
+
     tag = broker_tag_for(position.trade_id)
     stop_id = str(position.stop_order_id) if position.stop_order_id else None
     found: Dict[str, BrokerOrder] = {}
@@ -573,8 +592,9 @@ def live_stops_for(position: Position, orders: Iterable[BrokerOrder]) -> List[Br
         oid = str(order.order_id)
         if str(order.status).upper() not in LIVE_STOP_STATUSES:
             continue
+        # By identity, not type: a triggered stop-limit reads as LIMIT.
         if oid == stop_id or (
-            str(order.tag or "") == tag and str(order.order_type) in STOP_ORDER_TYPES
+            str(order.tag or "") == tag and is_our_stop_row(position, order)
         ):
             found[oid] = order
     return list(found.values())
@@ -611,12 +631,26 @@ def flatten(
             mark_exit_pending(position, reason=reason, detail=cancelled.reason, store=store)
         return FlattenOutcome(False, reason=cancelled.reason)
 
+    exit_qty = int(position.qty)
+    if cancelled.stop_filled_qty > 0:
+        # The stop sold part before it was cancelled. Never exit more than it
+        # left: whichever is smaller of our record and the stop's remainder
+        # (the record may already have adopted the smaller broker size).
+        covering = cancelled.stop_qty or exit_qty
+        exit_qty = min(exit_qty, max(0, covering - cancelled.stop_filled_qty))
+        if exit_qty <= 0:
+            position.extra.pop(EXIT_PENDING_KEY, None)
+            store.save_with_event(
+                position, "exit_not_needed", {"stop_filled_qty": cancelled.stop_filled_qty}
+            )
+            return FlattenOutcome(False, reason="stop_filled")
+
     candidate = position.candidate
     try:
         order = broker.flatten_mis(
             tradingsymbol=candidate.tradingsymbol,
             transaction_type=exit_transaction_type_for(candidate.direction),
-            quantity=int(position.qty),
+            quantity=exit_qty,
             tag=flatten_tag_for(position),
         )
     except Exception as exc:  # noqa: BLE001
@@ -639,7 +673,7 @@ def flatten(
     store.save_with_event(
         position,
         "exit_submitted",
-        {"reason": reason.value, "order_id": order.order_id, "qty": position.qty},
+        {"reason": reason.value, "order_id": order.order_id, "qty": exit_qty},
     )
     return FlattenOutcome(True, order_id=str(order.order_id))
 

@@ -71,6 +71,7 @@ from engine_reconcile import (
     BrokerTruth,
     ReconcileAction,
     fetch_broker_truth,
+    is_our_stop_row,
     reconcile,
     symbols_of,
 )
@@ -127,6 +128,10 @@ UNPROTECTED_SINCE_KEY = "unprotected_since"
 SAFETY_EXIT_KEY = "safety_exit"
 # An exit still waiting on its stop cancel after this long is escalated.
 EXIT_PENDING_ESCALATE_SECONDS = 10.0
+# Our stop is a stop-limit (limit = trigger). If it triggers and the limit has
+# not filled after this long, the price ran through it: cancel and exit at market.
+STOP_TRIGGER_FILL_SECONDS = 3.0
+STOP_TRIGGERED_KEY = "stop_triggered"
 
 
 class PositionStore(Protocol):
@@ -475,6 +480,8 @@ class ExecutionEngine:
             if decision.is_noop:
                 continue
             self._apply_reconciliation(position, decision, truth)
+
+        self._watch_triggered_stops(positions, truth)
 
         # After reconciliation, so a trade that just filled is subscribed and
         # one that just closed is dropped.
@@ -941,6 +948,68 @@ class ExecutionEngine:
                 self.failures.escalated[key] = detail
                 self._on_escalate(key, detail)
 
+    def _watch_triggered_stops(self, positions: List[Position], truth: BrokerTruth) -> None:
+        """A triggered stop-limit whose limit has not filled is no protection.
+
+        Kite turns our SL into a LIMIT at the trigger price. On a fast move
+        the price can run through that limit and leave it working unfilled.
+        After STOP_TRIGGER_FILL_SECONDS, cancel it and exit whatever is still
+        held at market, through flatten (cancel first, never sell twice).
+        """
+        now = self.now_fn()
+        for position in positions:
+            if position.state not in (ExecutionState.PROTECTED, ExecutionState.TRAILING):
+                continue
+            if self._exit_underway(position):
+                continue
+            stop = truth.stop_order_for(position)
+            triggered = (
+                stop is not None
+                and str(stop.status).upper() == "OPEN"
+                and (
+                    str(stop.order_type) not in STOP_ORDER_TYPES
+                    or broker_order_filled_qty(stop) > 0
+                )
+            )
+            info = position.extra.get(STOP_TRIGGERED_KEY)
+            if not triggered:
+                if info:
+                    position.extra.pop(STOP_TRIGGERED_KEY, None)
+                    self.store.save(position)
+                continue
+            if not info or info.get("order_id") != str(stop.order_id):
+                position.extra[STOP_TRIGGERED_KEY] = {
+                    "order_id": str(stop.order_id),
+                    "seen_at": now.isoformat(),
+                }
+                self.store.save_with_event(
+                    position,
+                    "stop_triggered",
+                    {"order_id": stop.order_id, "filled": broker_order_filled_qty(stop)},
+                )
+                continue
+            seen = parse_timestamp_text(info.get("seen_at"))
+            waited = (now - seen).total_seconds() if seen is not None else 0.0
+            if waited <= STOP_TRIGGER_FILL_SECONDS:
+                continue
+            position.extra.pop(STOP_TRIGGERED_KEY, None)
+            self.store.save_with_event(
+                position,
+                "stop_triggered_unfilled",
+                {
+                    "order_id": stop.order_id,
+                    "filled": broker_order_filled_qty(stop),
+                    "quantity": stop.quantity,
+                    "seconds": round(waited, 1),
+                },
+            )
+            flatten(
+                position,
+                reason=CloseReason.STOP_TRIGGERED_UNFILLED,
+                broker=self.broker,
+                store=self.store,
+            )
+
     def _clear_mismatch_blip(self, position: Position) -> None:
         """A mismatch seen on fewer ticks than required was just a lagging read."""
         info = position.extra.get(MISMATCH_KEY)
@@ -1017,7 +1086,7 @@ class ExecutionEngine:
         for order in truth.orders_by_tag.get(tag, []):
             status = str(order.status).upper()
             if (
-                str(order.order_type) in STOP_ORDER_TYPES
+                is_our_stop_row(position, order)
                 and status not in LIVE_STOP_STATUSES
                 and status not in CANCELLED_STATUSES
                 and status != "COMPLETE"
