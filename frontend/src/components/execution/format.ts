@@ -114,6 +114,7 @@ const REASON_LABELS: Record<string, string> = {
   entries_paused: 'Entries paused',
   entries_stopped: 'Entries stopped',
   feed_stale: 'Feed stale',
+  kite_session_expired: 'Kite login expired',
   insufficient_margin_preflight: 'Insufficient margin',
   // Why the live Open P&L fell back to Kite REST.
   ws_disconnected: 'WebSocket disconnected',
