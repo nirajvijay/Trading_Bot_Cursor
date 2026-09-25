@@ -719,10 +719,15 @@ class StopControlTests(ExecutionApiTestCase):
         self.assertEqual(open_row["stop_price"], 110.0)
         self.assertTrue(open_row["trail_enabled"])
         self.assertEqual(open_row["stop_mod_count"], 3)
+        # Stop moved to the entry: nothing left at risk, while the risk at
+        # the fill is kept as it was.
+        self.assertEqual(open_row["current_risk_rupees"], 0.0)
+        self.assertEqual(open_row["risk_taken_rupees"], 899.75)
         [closed_row] = body["closed"]
         # From before trailing: the protection event supplies the initial stop.
         self.assertEqual(closed_row["initial_stop_price"], 106.9)
         self.assertEqual(closed_row["stop_price"], 111.5)
+        self.assertIsNone(closed_row["current_risk_rupees"])
 
 
 class RouterSurfaceTests(ExecutionApiTestCase):

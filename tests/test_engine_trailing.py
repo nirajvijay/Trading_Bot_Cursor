@@ -26,6 +26,7 @@ from engine_trailing import (
     STOP_MOVE_PENDING_KEY,
     TRAIL_ENABLED_KEY,
     adopted_source,
+    current_risk_rupees,
     nudge_target,
     resolve_stop,
     round_stop,
@@ -74,6 +75,25 @@ class ScheduleTests(unittest.TestCase):
         self.assertIsNone(at(99.05))
         self.assertEqual(at(99.0), 100.0)
         self.assertEqual(at(98.0), 99.0)
+
+
+class CurrentRiskTests(unittest.TestCase):
+    def test_risk_follows_the_stop_for_a_long(self) -> None:
+        at = lambda stop: current_risk_rupees(direction="UP", entry=1222.4, stop=stop, qty=14)
+        self.assertEqual(at(1219.0), 47.6)   # the initial stop: same as risk taken
+        self.assertEqual(at(1220.4), 28.0)   # nudged up: less at risk
+        self.assertEqual(at(1222.4), 0.0)    # breakeven
+        self.assertEqual(at(1223.4), -14.0)  # profit locked in
+
+    def test_risk_follows_the_stop_for_a_short(self) -> None:
+        at = lambda stop: current_risk_rupees(direction="DOWN", entry=100.0, stop=stop, qty=10)
+        self.assertEqual(at(102.0), 20.0)
+        self.assertEqual(at(99.5), -5.0)
+
+    def test_no_figure_without_a_fill_or_a_stop(self) -> None:
+        self.assertIsNone(current_risk_rupees(direction="UP", entry=None, stop=100.0, qty=5))
+        self.assertIsNone(current_risk_rupees(direction="UP", entry=100.0, stop=None, qty=5))
+        self.assertIsNone(current_risk_rupees(direction="UP", entry=100.0, stop=99.0, qty=0))
 
 
 class RoundingTests(unittest.TestCase):

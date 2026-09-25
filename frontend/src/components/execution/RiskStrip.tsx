@@ -55,7 +55,11 @@ export function PnlSummary({
   // Older APIs send only total_live_pnl; the ongoing total is the same figure.
   const ongoingPnl = status?.total_ongoing_pnl ?? status?.total_live_pnl ?? null
   const dayPnl = status?.total_day_pnl ?? null
-  const riskTaken = open.reduce((sum, r) => sum + (r.risk_taken_rupees ?? 0), 0)
+  // Locked-in profit counts as zero risk, never as an offset to another trade's.
+  const riskTaken = open.reduce(
+    (sum, r) => sum + Math.max(0, r.current_risk_rupees ?? r.risk_taken_rupees ?? 0),
+    0,
+  )
 
   return (
     <section className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-px bg-outline-variant border border-outline-variant rounded-md overflow-hidden">
@@ -92,9 +96,9 @@ export function PnlSummary({
         }
       />
       <Tile
-        label="Total Risk Taken"
+        label="Total Open Risk"
         value={inr(Math.round(riskTaken * 100) / 100)}
-        note="sum of risk on open trades"
+        note="if every current stop filled now"
       />
     </section>
   )

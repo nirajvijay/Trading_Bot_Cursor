@@ -211,6 +211,23 @@ function TrailToggle({
   )
 }
 
+/** Loss if the current stop filled now; follows every stop move. */
+function RiskNowCell({ row }: { row: ExecutionPosition }) {
+  const risk = row.current_risk_rupees ?? row.risk_taken_rupees
+  const locked = risk != null && risk < 0
+  const title = `Loss if the current stop filled now (before charges). Risk at entry: ${inr(
+    row.risk_taken_rupees,
+  )}.`
+  return (
+    <td
+      title={title}
+      className={`${NUM} whitespace-nowrap ${locked ? 'text-positive font-semibold' : 'text-on-surface-variant'}`}
+    >
+      {locked ? `locked ${inr(-risk)}` : inr(risk)}
+    </td>
+  )
+}
+
 function OpenRows({
   rows,
   markStale,
@@ -240,7 +257,7 @@ function OpenRows({
           <Th align="right">Initial Stop</Th>
           <Th align="right">Current Stop</Th>
           <Th>Trail</Th>
-          <Th align="right">Risk taken</Th>
+          <Th align="right">Risk now</Th>
           <Th align="right" divider>
             Ongoing P&L (live)
           </Th>
@@ -289,7 +306,7 @@ function OpenRows({
               <td className={`${CELL} whitespace-nowrap`}>
                 <TrailToggle row={row} busy={busy} onTrail={onTrail} />
               </td>
-              <td className={`${NUM} text-on-surface-variant`}>{inr(row.risk_taken_rupees)}</td>
+              <RiskNowCell row={row} />
               <td
                 className={`${NUM} font-semibold whitespace-nowrap ${DIVIDER} ${
                   markStale ? 'text-on-surface-variant' : pnlClass(row.live_pnl)

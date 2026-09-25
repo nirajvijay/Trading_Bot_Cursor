@@ -466,7 +466,10 @@ export interface ExecutionPosition {
   qty: number
   entry_price: number | null
   stop_price: number | null
+  /** Risk at the fill; never changes. */
   risk_taken_rupees: number | null
+  /** Loss if the current stop filled now; negative once profit is locked. Open only. */
+  current_risk_rupees?: number | null
   realised_pnl: number | null
   live_pnl: number | null
   /** "ws" = live WebSocket tick, "kite_rest" = fallback to Kite REST pnl. */

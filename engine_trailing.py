@@ -114,6 +114,22 @@ def round_stop(price: float, tick_size: float, direction: str) -> float:
     return float(ticks * tick)
 
 
+def current_risk_rupees(
+    *, direction: str, entry: Optional[float], stop: Optional[float], qty: int
+) -> Optional[float]:
+    """What the position would lose if its stop filled exactly now.
+
+    Follows every stop move (auto, manual, Kite). Zero at breakeven, negative
+    once profit is locked in. Display only: risk_taken_rupees stays the risk
+    at the fill, which the abnormal-slippage check was judged on. Ignores
+    charges and any slippage past the stop.
+    """
+    if entry is None or stop is None or int(qty or 0) <= 0:
+        return None
+    per_share = float(entry) - float(stop) if is_long(direction) else float(stop) - float(entry)
+    return round(per_share * int(qty), 2)
+
+
 def r_points(entry: Optional[float], initial_stop: Optional[float]) -> Optional[float]:
     """Per-share risk. Equal to risk_taken_rupees / qty, but unaffected by a
     quantity later adopted from Kite."""
