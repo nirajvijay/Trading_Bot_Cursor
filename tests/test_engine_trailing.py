@@ -33,7 +33,8 @@ from engine_trailing import (
 )
 from engine_types import ExecutionState
 from tests.test_engine_lifecycle import LifecycleTestCase, candidate
-from trading_engine_broker import KiteBroker
+from trading_engine_broker import QUOTE_MIN_INTERVAL_SECONDS, KiteBroker
+from trading_engine_types import PositionQuote
 
 ENTRY = 110.0
 INITIAL_STOP = 106.95
@@ -128,9 +129,10 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(self.resolve(112.0).reason, "at_or_through_market")
         self.assertEqual(self.resolve(112.05).reason, "at_or_through_market")
 
-    def test_tightening_needs_a_price_from_this_tick(self) -> None:
-        self.assertEqual(self.resolve(108.05, ltp=None).reason, "no_fresh_price")
-        # Loosening never approaches the market, so it does not.
+    def test_without_a_price_the_market_check_is_left_to_kite(self) -> None:
+        # Only a manual nudge reaches here without a price; Kite refuses a
+        # stop through the market itself.
+        self.assertEqual(self.resolve(108.05, ltp=None).target, 108.05)
         self.assertEqual(self.resolve(107.95, auto_on=False, ltp=None).target, 107.95)
 
     def test_no_change_is_not_a_move(self) -> None:
@@ -250,13 +252,57 @@ class AutoTrailTests(TrailingTestCase):
         engine.tick()
         self.assertEqual(self.stored().stop_price, 111.5)
 
-    def test_no_price_this_tick_means_no_move(self) -> None:
+    def test_a_spent_quote_budget_skips_the_tick_quietly(self) -> None:
         engine, _ = self.open_one()
         self.price(ENTRY + 1.0 * R)
-        self.broker.positions_error = True
+        self.broker.quote_budget_busy = True
         engine.tick()
         self.assertEqual(self.broker.modify_count, 0)
         self.assertEqual(self.stored().stop_price, INITIAL_STOP)
+        self.assertNotIn(STEP_TRAIL, engine.failures.consecutive)
+        # Next tick the budget is free again and the move happens.
+        self.broker.quote_budget_busy = False
+        engine.tick()
+        self.assertEqual(self.stored().stop_price, 111.5)
+
+    def test_the_price_comes_from_kite_ltp_not_the_positions_book(self) -> None:
+        engine, pos = self.open_one()
+        # The positions book says +1R; Kite's LTP says barely above entry.
+        self.price(ENTRY + 0.1)
+        self.broker.position_quotes["AAA"] = PositionQuote(
+            quantity=295, average_price=ENTRY, last_price=ENTRY + 1.0 * R
+        )
+        engine.tick()
+        self.assertEqual(self.stored().stop_price, INITIAL_STOP)
+
+    def test_one_ltp_call_per_tick_covers_every_position(self) -> None:
+        self.candidates = [candidate("s1"), candidate("s2", symbol="BBB")]
+        engine = self.engine()
+        engine.tick()
+        self.candidates = []
+        calls = self.broker.ltps_calls
+        self.price(ENTRY + 0.5 * R)
+        self.broker.last_prices["BBB"] = ENTRY + 0.5 * R
+        engine.tick()
+        self.assertEqual(self.broker.ltps_calls - calls, 1)
+        self.assertEqual(self.store.get("s2").stop_price, ENTRY)
+
+    def test_no_ltp_call_when_nothing_can_trail(self) -> None:
+        engine, _ = self.open_one()
+        self.command(CommandKind.SET_TRAIL, enabled=False)
+        engine.tick()
+        calls = self.broker.ltps_calls
+        engine.tick()
+        self.assertEqual(self.broker.ltps_calls, calls)
+
+    def test_a_failed_ltp_read_is_counted_and_moves_nothing(self) -> None:
+        engine, _ = self.open_one()
+        self.price(ENTRY + 1.0 * R)
+        self.broker.ltp_error = "Too many requests"
+        engine.tick()
+        self.assertEqual(self.stored().stop_price, INITIAL_STOP)
+        self.assertEqual(engine.failures.consecutive.get(STEP_TRAIL), 1)
+        self.assertIn("ltp read failed", engine.failures.last_error)
 
     def test_a_failed_modify_keeps_the_stop_and_counts_as_a_step_failure(self) -> None:
         engine, _ = self.open_one()
@@ -332,6 +378,15 @@ class ManualNudgeTests(TrailingTestCase):
         status, result = self.command_status(cid)
         self.assertEqual(status, "rejected")
         self.assertIn("tick_size_unavailable", result)
+
+    def test_a_nudge_is_not_blocked_by_a_spent_quote_budget(self) -> None:
+        # No local market check this tick; Kite's own check still applies.
+        engine, _ = self.open_one()
+        self.broker.quote_budget_busy = True
+        cid = self.command(CommandKind.MOVE_STOP, ticks=1)
+        engine.tick()
+        self.assertEqual(self.command_status(cid)[0], "applied")
+        self.assertEqual(self.stored().stop_price, 107.0)
 
     def test_more_than_one_tick_per_press_is_refused(self) -> None:
         engine, _ = self.open_one()
@@ -494,6 +549,69 @@ class KiteModificationCountTests(unittest.TestCase):
 
         broker = KiteBroker(Kite(), live_orders_enabled=True)
         self.assertEqual(broker.order_modification_count("sl1"), 2)
+
+
+class QuoteBudgetTests(unittest.TestCase):
+    """Kite allows one quote/ltp/ohlc request per second, shared by everyone."""
+
+    def setUp(self) -> None:
+        test = self
+
+        class Kite:
+            def ltp(self, keys):
+                test.calls.append(("ltp", test.clock["t"], list(keys)))
+                return {k: {"last_price": 100.0} for k in keys if k != "NSE:NOPRICE"}
+
+            def quote(self, keys):
+                test.calls.append(("quote", test.clock["t"], list(keys)))
+                return {keys[0]: {"depth": {"buy": [{"price": 99.9, "quantity": 5}],
+                                            "sell": [{"price": 100.1, "quantity": 5}]}}}
+
+        self.calls = []
+        self.clock = {"t": 100.0}
+        self.broker = KiteBroker(Kite(), live_orders_enabled=True)
+        self.broker._monotonic = lambda: self.clock["t"]
+        self.broker._sleep = lambda s: self.clock.__setitem__("t", self.clock["t"] + s)
+
+    def test_one_batched_call_for_every_symbol(self) -> None:
+        prices = self.broker.ltps(["BBB", "AAA", "AAA", "NOPRICE"])
+        self.assertEqual(prices, {"AAA": 100.0, "BBB": 100.0})
+        self.assertEqual(self.calls, [("ltp", 100.0, ["NSE:AAA", "NSE:BBB", "NSE:NOPRICE"])])
+
+    def test_trailing_skips_rather_than_waits_inside_the_second(self) -> None:
+        self.broker.ltps(["AAA"])
+        self.clock["t"] += 0.5  # an early-woken tick
+        self.assertIsNone(self.broker.ltps(["AAA"]))
+        self.assertEqual(len(self.calls), 1)
+        self.clock["t"] += QUOTE_MIN_INTERVAL_SECONDS
+        self.assertEqual(self.broker.ltps(["AAA"]), {"AAA": 100.0})
+
+    def test_an_entry_quote_waits_out_the_second_and_is_never_refused(self) -> None:
+        self.broker.ltps(["AAA"])  # trailing spent the budget at t=100.0
+        self.clock["t"] += 0.3
+        quote = self.broker.touch_quote("AAA")
+        self.assertIsNotNone(quote)
+        (_, t_trail, _), (_, t_entry, _) = self.calls
+        self.assertGreaterEqual(t_entry - t_trail, QUOTE_MIN_INTERVAL_SECONDS)
+
+    def test_trailing_gives_way_after_an_entry_quote(self) -> None:
+        self.broker.touch_quote("AAA")
+        self.assertIsNone(self.broker.ltps(["AAA"]))
+        self.assertEqual([c[0] for c in self.calls], ["quote"])
+
+    def test_no_symbols_spends_no_budget(self) -> None:
+        self.assertEqual(self.broker.ltps([]), {})
+        self.assertEqual(self.broker.ltps(["AAA"]), {"AAA": 100.0})
+
+    def test_a_failed_call_still_spends_the_second(self) -> None:
+        def boom(keys):
+            self.calls.append(("ltp", self.clock["t"], list(keys)))
+            raise RuntimeError("Too many requests")
+
+        self.broker._read.ltp = boom  # type: ignore[attr-defined]
+        with self.assertRaises(RuntimeError):
+            self.broker.ltps(["AAA"])
+        self.assertIsNone(self.broker.ltps(["AAA"]))
 
 
 if __name__ == "__main__":

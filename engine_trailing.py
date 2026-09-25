@@ -6,9 +6,11 @@ the stop sits exactly one 0.5R step behind it: 0.5R of profit moves it to
 breakeven (the entry price), 1.0R locks in +0.5R, 1.5R locks in +1.0R, and so
 on, with no tightening at higher R. Nothing here depends on the setup type.
 
-**Decided from pulled truth only.** The price used is the ``last_price`` from
-this tick's REST positions read (``BrokerTruth.last_price``), never a
-websocket tick: a push may only wake the loop early (engine_runloop.LoopWake).
+**Decided from pulled truth only.** The price used is Kite's LTP, read over
+REST at most once a tick (``BrokerPort.ltps``) within Kite's shared 1/second
+quote budget -- never a websocket tick (a push may only wake the loop early,
+engine_runloop.LoopWake), and never the positions book's last_price, which
+Kite does not keep live.
 
 **One funnel.** Auto trailing and manual nudges both go through ``move_stop``,
 so both share the same floor, the same favourable-only rule while auto is on,
@@ -189,10 +191,10 @@ def resolve_stop(
         return StopDecision(None, "beyond_initial_stop")
     if auto_on and not tighter:
         return StopDecision(None, "auto_trail_on_cannot_loosen")
-    if tighter:
-        if ltp is None:
-            return StopDecision(None, "no_fresh_price")
-        # A stop at or through the market is refused by Kite or fires at once.
+    # A stop at or through the market would be refused by Kite. With no
+    # price this tick (only a manual nudge gets here without one: auto needs
+    # the price to compute a target at all) Kite's own check is the guard.
+    if tighter and ltp is not None:
         if is_long(direction) and target >= ltp:
             return StopDecision(None, "at_or_through_market")
         if not is_long(direction) and target <= ltp:
