@@ -95,9 +95,6 @@ class BrokerTruth:
 
     net_qty: Dict[str, int] = field(default_factory=dict)
     pnl: Dict[str, Optional[float]] = field(default_factory=dict)
-    # Kite's last traded price per symbol, from the same positions read. The
-    # only price trailing acts on: pulled this tick, never pushed.
-    last_price: Dict[str, Optional[float]] = field(default_factory=dict)
     orders_by_id: Dict[str, BrokerOrder] = field(default_factory=dict)
     orders_by_tag: Dict[str, List[BrokerOrder]] = field(default_factory=dict)
     fetched_at: Optional[datetime] = None
@@ -237,7 +234,6 @@ def fetch_broker_truth(broker, symbols: Iterable[str] = ()) -> BrokerTruth:
     # Copying Kite's own `pnl` field rather than recomputing from last price
     # and average price guarantees parity with what the Kite site displays.
     pnl: Dict[str, Optional[float]] = {}
-    last_price: Dict[str, Optional[float]] = {}
     position_quote = getattr(broker, "position_quote", None)
     if position_quote is not None:
         for symbol in set(symbols):
@@ -247,12 +243,10 @@ def fetch_broker_truth(broker, symbols: Iterable[str] = ()) -> BrokerTruth:
                 continue
             if quote is not None:
                 pnl[symbol] = quote.pnl
-                last_price[symbol] = quote.last_price
 
     return BrokerTruth(
         net_qty=net_qty,
         pnl=pnl,
-        last_price=last_price,
         orders_by_id=orders_by_id,
         orders_by_tag=orders_by_tag,
         fetched_at=now,

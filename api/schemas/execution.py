@@ -115,7 +115,11 @@ class PositionView(BaseModel):
     qty: int = 0
     entry_price: Optional[float] = None
     stop_price: Optional[float] = None
+    # Risk at the fill (what the slippage check judged); never changes.
     risk_taken_rupees: Optional[float] = None
+    # Loss if the current stop filled now: follows every stop move. Negative
+    # once profit is locked in. Open positions only.
+    current_risk_rupees: Optional[float] = None
     realised_pnl: Optional[float] = None
     live_pnl: Optional[float] = None
     # "ws" (live WebSocket tick) or "kite_rest" (fallback), with why.

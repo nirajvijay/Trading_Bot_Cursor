@@ -222,9 +222,11 @@ class ExecutionEngine:
         self.live_pnl_reason: Dict[str, Optional[str]] = {}
         self.live_feed_health: TickFeedHealth = self.tick_feed.health()
         self.last_truth: Optional[BrokerTruth] = None
-        # The tick whose REST read last succeeded. Trailing acts only on a
-        # price read this very tick, never a stale one.
-        self.truth_tick: Optional[int] = None
+        # Kite LTPs for stop decisions, and the tick they were read on. At
+        # most one read per tick, shared by manual nudges and auto-trail.
+        self._stop_prices: Dict[str, float] = {}
+        self._stop_prices_tick: Optional[int] = None
+        self._stop_price_error: Optional[str] = None
         self.escalation_notices: List[str] = []
         self.realised_loss_today = 0.0
         # Set by a safety exit. Like a breach, it keeps entries paused until a
@@ -567,7 +569,6 @@ class ExecutionEngine:
                 "__engine__", "broker_truth_unavailable", {"reason": truth.reason}
             )
             return
-        self.truth_tick = self.tick_count
 
         self._update_live_marks(positions, truth)
 
@@ -1367,12 +1368,34 @@ class ExecutionEngine:
         return None
 
     def _fresh_ltp(self, position: Position) -> Optional[float]:
-        """Last price from this tick's REST read, or None if that read did not
-        happen or did not succeed this tick."""
-        truth = self.last_truth
-        if truth is None or not truth.ok or self.truth_tick != self.tick_count:
-            return None
-        return truth.last_price.get(position.candidate.tradingsymbol)
+        """Kite's last traded price for this position, read this tick, or None.
+
+        One Kite LTP call per tick covers every position whose stop could
+        move. Pulled over REST, never taken from the websocket, and never from
+        the positions book (its last_price is not live). None when Kite's
+        per-second quote budget was already spent -- the broker skips rather
+        than queue behind an entry -- or when the read failed (kept in
+        _stop_price_error for the trail step to count); either way the next
+        tick tries again.
+        """
+        if self._stop_prices_tick != self.tick_count:
+            self._stop_prices_tick = self.tick_count
+            self._stop_prices = {}
+            self._stop_price_error = None
+            symbols = sorted(
+                {
+                    p.candidate.tradingsymbol
+                    for p in self.store.open_positions()
+                    if self._stop_movable(p) is None
+                }
+            )
+            try:
+                prices = self.broker.ltps(symbols)
+            except Exception as exc:  # noqa: BLE001 - no price means no move, not a crash
+                self._stop_price_error = str(exc) or type(exc).__name__
+                prices = None
+            self._stop_prices = dict(prices or {})
+        return self._stop_prices.get(position.candidate.tradingsymbol)
 
     def _advance_trailing(self, positions: List[Position]) -> None:
         """The 0.5R schedule, for every position with auto-trail on.
@@ -1412,6 +1435,8 @@ class ExecutionEngine:
             )
             if outcome.failed:
                 failures.append(f"{position.trade_id}: {outcome.reason}")
+        if self._stop_prices_tick == self.tick_count and self._stop_price_error:
+            failures.append(f"ltp read failed: {self._stop_price_error}")
         if failures:
             raise RuntimeError("trail failed: " + "; ".join(failures))
 

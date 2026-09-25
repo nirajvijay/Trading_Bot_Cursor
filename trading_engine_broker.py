@@ -6,11 +6,12 @@ KiteBroker never logs tokens. FakeBroker never calls kiteconnect.place_order.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Protocol
+from typing import Dict, List, Optional, Protocol, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -217,6 +218,15 @@ class BrokerPort(Protocol):
 
     def ltp(self, tradingsymbol: str) -> Optional[float]: ...
 
+    def ltps(self, tradingsymbols: Sequence[str]) -> Optional[Dict[str, float]]:
+        """Last traded prices for several symbols in one quote-budget call.
+
+        None means the call was skipped because Kite's per-second quote budget
+        was already spent; the caller simply tries again on its next tick.
+        Symbols Kite returns no price for are left out.
+        """
+        ...
+
     # True once the broker has refused a call for a dead access token. Sticky
     # for the process: the token is only read at start, so it cannot recover.
     session_expired: bool
@@ -357,6 +367,10 @@ class FakeBroker:
     available_margin: Optional[float] = None
     margins_unavailable: bool = False
     touch_quotes: Dict[str, TouchQuote] = field(default_factory=dict)
+    # ltps(): simulate the per-second quote budget already spent, or a failure.
+    quote_budget_busy: bool = False
+    ltp_error: Optional[str] = None
+    ltps_calls: int = 0
     limit_place_count: int = 0
     # Dead-token simulation, mirroring KiteBroker: while token_dead, calls that
     # reach "Kite" are refused and flip session_expired, which stays set.
@@ -807,6 +821,14 @@ class FakeBroker:
     def ltp(self, tradingsymbol: str) -> Optional[float]:
         return self.last_prices.get(tradingsymbol)
 
+    def ltps(self, tradingsymbols: Sequence[str]) -> Optional[Dict[str, float]]:
+        if self.quote_budget_busy:
+            return None
+        if self.ltp_error:
+            raise RuntimeError(self.ltp_error)
+        self.ltps_calls += 1
+        return {s: self.last_prices[s] for s in tradingsymbols if s in self.last_prices}
+
     def fill_entry(self, order_id: str, price: float) -> BrokerOrder:
         order = self.orders[order_id]
         filled = _copy_order(
@@ -1127,6 +1149,8 @@ FINAL_ORDER_STATUSES = frozenset({"CANCELLED", "REJECTED", "COMPLETE"})
 # Order-history statuses Kite's documented order lifecycle uses for a modify.
 # To be confirmed against a real modified order's history before relying on it.
 MODIFY_HISTORY_STATUSES = frozenset({"MODIFY VALIDATION PENDING", "MODIFY PENDING", "MODIFIED"})
+# Kite's quote endpoints (quote, ltp, ohlc) share one limit: 1 request/second.
+QUOTE_MIN_INTERVAL_SECONDS = 1.0
 
 
 class KiteBroker:
@@ -1163,6 +1187,10 @@ class KiteBroker:
         # Injectable so tests never really sleep.
         self._sleep = time.sleep
         self._monotonic = time.monotonic
+        # The shared quote budget. Reads run on the engine thread today; the
+        # lock keeps the rule true if that ever changes.
+        self._quote_lock = threading.Lock()
+        self._last_quote_at: Optional[float] = None
 
     def _on_session_expired(self) -> None:
         if not self.session_expired:
@@ -1180,7 +1208,37 @@ class KiteBroker:
             return None
         return True
 
+    def _take_quote_slot(self, *, priority: bool) -> bool:
+        """Claim this second's single quote-endpoint call.
+
+        Kite refuses a second quote/ltp/ohlc request inside the same second
+        with "too many requests", so every such call goes through here first.
+        A priority caller (anything pricing an entry) waits out the rest of
+        the second and always gets the slot. Anyone else -- trailing -- is
+        refused instead of waiting, and tries again on its next tick. The slot
+        is spent before the request is sent: Kite counts a request whatever
+        its outcome.
+        """
+        if priority:
+            self._quote_lock.acquire()
+        elif not self._quote_lock.acquire(blocking=False):
+            return False
+        try:
+            now = self._monotonic()
+            if self._last_quote_at is not None:
+                wait = QUOTE_MIN_INTERVAL_SECONDS - (now - self._last_quote_at)
+                if wait > 0:
+                    if not priority:
+                        return False
+                    self._sleep(wait)
+                    now = self._monotonic()
+            self._last_quote_at = now
+            return True
+        finally:
+            self._quote_lock.release()
+
     def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
+        self._take_quote_slot(priority=True)
         raw = self._read.quote([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
         item = raw.get(f"NSE:{tradingsymbol}") if isinstance(raw, dict) else None
         if not isinstance(item, dict):
@@ -1641,9 +1699,32 @@ class KiteBroker:
         return None
 
     def ltp(self, tradingsymbol: str) -> Optional[float]:
+        self._take_quote_slot(priority=True)
         data = self._read.ltp([f"NSE:{tradingsymbol}"])  # type: ignore[attr-defined]
         key = f"NSE:{tradingsymbol}"
         if isinstance(data, dict) and key in data:
             last = data[key].get("last_price")
             return float(last) if last is not None else None
         return None
+
+    def ltps(self, tradingsymbols: Sequence[str]) -> Optional[Dict[str, float]]:
+        """One Kite LTP call for every symbol; never waits for the budget.
+
+        The positions book's last_price is not live (verified 2026-09-25: it
+        held RELIANCE at 1222.4 for over 90s while it traded 1220.5-1222.9),
+        so anything deciding on price reads this instead.
+        """
+        symbols = sorted(set(tradingsymbols))
+        if not symbols:
+            return {}
+        if not self._take_quote_slot(priority=False):
+            return None
+        data = self._read.ltp([f"NSE:{s}" for s in symbols])  # type: ignore[attr-defined]
+        prices: Dict[str, float] = {}
+        if isinstance(data, dict):
+            for symbol in symbols:
+                item = data.get(f"NSE:{symbol}")
+                last = item.get("last_price") if isinstance(item, dict) else None
+                if last not in (None, "", 0, 0.0):
+                    prices[symbol] = float(last)
+        return prices

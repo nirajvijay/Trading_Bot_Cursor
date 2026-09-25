@@ -44,7 +44,12 @@ from engine_commands import POSITION_SCOPED, CommandKind, CommandQueue
 from engine_config import SessionRiskConfig, margin_used_rupees
 from engine_status import heartbeat_age_seconds
 from engine_store import SqlitePositionStore
-from engine_trailing import INITIAL_STOP_KEY, STOP_MODS_KEY, TRAIL_ENABLED_KEY
+from engine_trailing import (
+    INITIAL_STOP_KEY,
+    STOP_MODS_KEY,
+    TRAIL_ENABLED_KEY,
+    current_risk_rupees,
+)
 
 router = APIRouter(prefix="/execution", tags=["execution"])
 
@@ -179,6 +184,16 @@ def _to_view(
         entry_price=row["entry_price"],
         stop_price=row["stop_price"],
         risk_taken_rupees=row["risk_taken_rupees"],
+        current_risk_rupees=(
+            current_risk_rupees(
+                direction=str(row["direction"]),
+                entry=row["entry_price"],
+                stop=row["stop_price"],
+                qty=int(row["qty"] or 0),
+            )
+            if str(row["state"]) in _OPEN_STATES
+            else None
+        ),
         realised_pnl=row["realised_pnl"],
         live_pnl=live_pnl.get(trade_id),
         live_pnl_source=(marks.get("source") or {}).get(trade_id),
