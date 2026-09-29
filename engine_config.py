@@ -15,9 +15,10 @@ formula".
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
+from engine_arb import ArbSettings, InvalidArbSettings, validate_settings
 from engine_types import Position, RiskLimits
 
 # Defaults for the current account. Both caps and total capital are editable at
@@ -28,6 +29,13 @@ DEFAULT_LEVERAGE_FACTOR = 5.0
 DEFAULT_PER_TRADE_CAP_RUPEES = 50.0
 DEFAULT_PER_TRADE_CAP_VWAP_LIMITED_RUPEES = 25.0
 DEFAULT_DAILY_LOSS_CAP_RUPEES = 150.0
+
+# Which strategy decides entries and sizes. Legacy is the VWAP-tiered funnel
+# with fixed per-trade caps; ARB is the Adaptive Risk Budget
+# (Reference/arb_strategy_2026-09). Legacy stays the default.
+STRATEGY_LEGACY_VWAP = "legacy_vwap"
+STRATEGY_ARB = "arb"
+STRATEGY_MODES = (STRATEGY_LEGACY_VWAP, STRATEGY_ARB)
 
 
 class InvalidSessionConfig(ValueError):
@@ -41,6 +49,13 @@ class SessionRiskConfig:
     daily_loss_cap_rupees: float = DEFAULT_DAILY_LOSS_CAP_RUPEES
     total_capital_rupees: float = DEFAULT_TOTAL_CAPITAL_RUPEES
     leverage_factor: float = DEFAULT_LEVERAGE_FACTOR
+    strategy_mode: str = STRATEGY_LEGACY_VWAP
+    # Only read when strategy_mode is ARB.
+    arb: ArbSettings = field(default_factory=ArbSettings)
+
+    @property
+    def is_arb(self) -> bool:
+        return self.strategy_mode == STRATEGY_ARB
 
     @property
     def buying_power_rupees(self) -> float:
@@ -60,7 +75,19 @@ class SessionRiskConfig:
         return self.remaining_capital_rupees(margin_used_rupees) * self.leverage_factor
 
     def to_risk_limits(self) -> RiskLimits:
-        """The subset engine_risk.RiskPolicy needs, unchanged."""
+        """The subset engine_risk.RiskPolicy needs.
+
+        In ARB mode the daily cap is ARB's closed-loss backstop (D15), and the
+        per-trade caps are ARB's largest trade risk: they are only a fallback
+        for a row that somehow lacks its own stamped risk cap.
+        """
+        if self.is_arb:
+            largest = self.arb.max_trade_risk_rupees()
+            return RiskLimits(
+                per_trade_cap_rupees=largest,
+                per_trade_cap_vwap_limited_rupees=largest,
+                daily_loss_cap_rupees=self.arb.closed_loss_backstop_rupees(),
+            )
         return RiskLimits(
             per_trade_cap_rupees=self.per_trade_cap_rupees,
             per_trade_cap_vwap_limited_rupees=self.per_trade_cap_vwap_limited_rupees,
@@ -108,6 +135,18 @@ def validate(config: SessionRiskConfig) -> None:
 
     if config.leverage_factor < 1:
         raise InvalidSessionConfig("leverage_factor must be at least 1")
+
+    if config.strategy_mode not in STRATEGY_MODES:
+        raise InvalidSessionConfig(
+            f"strategy_mode must be one of {STRATEGY_MODES}, got {config.strategy_mode!r}"
+        )
+    if config.is_arb:
+        try:
+            validate_settings(config.arb)
+        except InvalidArbSettings as exc:
+            raise InvalidSessionConfig(f"arb: {exc}") from exc
+        # ARB sizes from its own numbers; the legacy per-trade caps are unused.
+        return
 
     for name, value in positive_fields[:2]:
         if value > config.daily_loss_cap_rupees:

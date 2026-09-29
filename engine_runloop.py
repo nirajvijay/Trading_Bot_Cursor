@@ -51,6 +51,7 @@ STEP_INGEST = "ingest_triggers"
 STEP_COMMANDS = "handle_commands"
 STEP_SQUAREOFF = "squareoff"
 STEP_TRAIL = "trail_stops"
+STEP_ARB_DAY = "arb_day_controls"
 
 # Consecutive-failure thresholds, tiered by how much real exposure builds up
 # per second the step stays broken -- not one flat number for everything.
@@ -70,6 +71,9 @@ FAILURE_THRESHOLDS: Dict[str, int] = {
     # A broken trail leaves every stop where it last was -- still protecting,
     # just not advancing. Loud, but it never pauses entries.
     STEP_TRAIL: 10,
+    # ARB's hard day stop and day lock. While it fails, ARB takes no new
+    # entries (engine_core fails closed); open positions keep their stops.
+    STEP_ARB_DAY: 5,
 }
 
 # Escalating these two suggests something is wrong with our ability to protect
