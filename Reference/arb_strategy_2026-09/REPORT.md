@@ -5,6 +5,25 @@ Research report · built 26 Sep 2026 · backtest data: 1-minute candles, Jan–S
 
 > **Status: backtest only.** All parameters were chosen by looking at 2026 data (in-sample). Treat these numbers as a best case until a paper or small-size forward test confirms them. This is research, not investment advice.
 
+> **Correction, 12 Oct 2026: the ORB "top 3" in this report used the future.**
+> The backtest ranked by opening volume among the stocks that had already broken out by 11:00. At 09:20 nobody knows which stocks will break out, so a live system cannot follow that rule. The rule it can follow is: rank at 09:20, arm the top 3, trade the ones that break out. With that rule the same backtest gives:
+>
+> | Jan–Sep 2026, after charges | This report | Live rule, 3 bps | Live rule, 5 bps |
+> |---|--:|--:|--:|
+> | Average per month | ₹43,814 | **₹41,944** | ₹35,075 |
+> | Jun–Sep average per month | ₹42,746 | ₹49,489 | ₹39,816 |
+> | Profitable months | 9 / 9 | 9 / 9 | 9 / 9 |
+> | Weakest month | +₹7,780 | +₹8,063 | +₹4,317 |
+> | Green days | 62% | 60% | 59% |
+> | Worst day | −₹5,674 | −₹5,970 | −₹6,331 |
+> | Days worse than −₹6,000 | 0 | 0 | 1 |
+> | Max drawdown | −₹21,579 | −₹26,146 | −₹31,010 |
+>
+> - **The average is about ₹1,900 a month lower and the drawdown about ₹4,600 deeper.** The conclusions of the report stand; its ORB numbers are slightly optimistic.
+> - **Single months move a lot** (January ₹126k → ₹78k, September ₹51k → ₹90k). A different ORB trade changes "half size after a loser" for the rest of that day, so the result depends on the path. Read the monthly figures as rough.
+> - Five other rules that a live system could follow gave ₹34k–₹42k a month. None beat the simple one.
+> - Everywhere below, "top 3 by RVOL" should be read as "top 3 by RVOL at 09:20". The tables below are unchanged and still show the original run. Details and the reproduction script (`code/orb_selection_check.py`) are in `PR_B_PLAN.md`.
+
 ---
 
 ## 1. Summary
@@ -84,7 +103,7 @@ This is how prop-trading desks size positions: from the day's remaining loss all
 |---|---|
 | Opening range | First 5 minutes (09:15–09:19) |
 | RVOL | Volume in the first 5 minutes ÷ average first-5-minute volume over the previous 14 sessions |
-| Stock selection | RVOL ≥ 3.0; take the **top 3 by RVOL** that day |
+| Stock selection | RVOL ≥ 3.0; take the **top 3 by RVOL** that day (ranked at 09:20: see the correction at the top) |
 | Direction | Direction of the first 5-minute candle (close > open → long only; close < open → short only; doji → skip) |
 | Entry | Stop-entry at the opening-range high (long) or low (short), valid until **11:00** |
 | Initial stop | Entry ∓ **0.35 × ATR14 (daily)** |

@@ -23,9 +23,8 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from engine_charges import round_trip_charges
 from engine_types import ExecutionState, Position
-
-STRATEGY_FUNNEL = "FUNNEL"
-STRATEGY_ORB = "ORB"
+# The strategy names live with TriggerCandidate; re-exported for callers here.
+from trading_engine_types import STRATEGY_FUNNEL, STRATEGY_ORB  # noqa: F401
 
 # The rollout stages (IMPLEMENTATION_IDEA.md section 6). Anything else is refused.
 ALLOWED_RISK_SCALES = (0.05, 0.25, 0.5, 1.0)
@@ -45,6 +44,9 @@ REASON_STOP_TOO_TIGHT = "arb_stop_below_min_pct"
 REASON_NOT_FIRST = "arb_not_first_trigger_today"
 REASON_SCORE0_LIMIT = "arb_score0_limit"
 REASON_BELOW_MIN_RISK = "arb_below_min_risk"
+REASON_ORB_NO_STOP = "arb_orb_no_stop"
+REASON_ORB_OUTSIDE_WINDOW = "arb_orb_outside_window"
+REASON_UNKNOWN_STRATEGY = "arb_unknown_strategy"
 
 PENDING_STATES = frozenset({ExecutionState.PENDING_ENTRY, ExecutionState.ENTRY_SUBMITTED})
 HOLDING_STATES = frozenset(
@@ -87,6 +89,9 @@ class ArbSettings:
     day_lock_arm: float = 3000.0
     day_lock_keep: float = 0.40
     closed_loss_backstop: float = 6000.0
+    # ORB breakouts are taken while the clock is before this: the backtest
+    # took them in 1-minute bars labelled up to 11:00 (orb_config.trigger_end).
+    orb_cutoff: time = time(11, 1)
     # Funnel filters and score.
     funnel_cutoff: time = time(13, 0)
     min_volume_ratio: float = 2.0

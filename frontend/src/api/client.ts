@@ -28,6 +28,8 @@ import type {
   ExecutionStartResponse,
   ExecutionStatus,
   TradeChargesDay,
+  OrbDay,
+  FunnelFeed,
 } from './types'
 
 const BASE = '/api/v1'
@@ -292,6 +294,16 @@ export function fetchExecutionPositions(sessionDate?: string): Promise<Execution
 export function fetchTradeCharges(sessionDate?: string): Promise<TradeChargesDay> {
   const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
   return getJson(`/charges${query}`)
+}
+
+export function fetchStrategyOrb(sessionDate?: string): Promise<OrbDay> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson(`/strategy/orb${query}`)
+}
+
+export function fetchStrategyFunnel(sessionDate?: string): Promise<FunnelFeed> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson(`/strategy/funnel${query}`)
 }
 
 export function fetchExecutionEvents(tradeId: string): Promise<ExecutionEvents> {

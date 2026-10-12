@@ -23,7 +23,9 @@ Deliberately not implemented, each rejected during design:
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import Enum
 from typing import Callable, List, Optional, Protocol
 
@@ -37,7 +39,7 @@ from trading_engine_broker import (
     LIVE_ORDERS_DISABLED_REASON,
 )
 from engine_stop import structural_stop_price
-from trading_engine_types import BrokerOrder, broker_order_filled_qty
+from trading_engine_types import STRATEGY_ORB, BrokerOrder, broker_order_filled_qty
 
 # Real risk above this multiple of the intended cap is abnormal: skip the stop
 # and flatten immediately. 1.5x of Rs 900 is Rs 1,350; of Rs 450 it is Rs 675,
@@ -135,7 +137,13 @@ def compute_stop_price(candidate: TriggerCandidate) -> Optional[float]:
     """Structural: one tick below the swing low (long) or above the swing high
     (short). Fixed once, from market structure. Never recalculated off the
     entry price, and never moved later to make a risk number fit.
+
+    An ORB trigger has no pullback structure. Its stop was fixed by the
+    detector when the breakout fired (0.35 x ATR14 from the trigger price) and
+    arrives on the candidate; it is used as given or not at all.
     """
+    if candidate.strategy == STRATEGY_ORB:
+        return planned_stop_price(candidate)
     return structural_stop_price(
         direction=candidate.direction,
         swing_high=candidate.pullback_swing_high,
@@ -143,6 +151,39 @@ def compute_stop_price(candidate: TriggerCandidate) -> Optional[float]:
         tick_size=candidate.tick_size,
         buffer_ticks=candidate.buffer_ticks,
     )
+
+
+def planned_stop_price(candidate: TriggerCandidate) -> Optional[float]:
+    """The stop a trigger brought with it, checked before it is trusted.
+
+    None unless it is a real price on the losing side of the trigger. Snapped
+    to the tick grid away from the trade (a no-op for a stop already on it), so
+    the stop sent to the broker is never tighter than the one planned.
+    """
+    direction = str(candidate.direction).upper()
+    if direction not in ("UP", "DOWN"):
+        return None
+    try:
+        stop = float(candidate.planned_stop)  # type: ignore[arg-type]
+        price = float(candidate.trigger_price)
+        tick = float(candidate.tick_size)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) and value > 0 for value in (stop, price, tick)):
+        return None
+    rounding = ROUND_FLOOR if direction == "UP" else ROUND_CEILING
+    try:
+        ticks = (Decimal(str(stop)) / Decimal(str(tick))).to_integral_value(rounding=rounding)
+        snapped = float(ticks * Decimal(str(tick)))
+    except ArithmeticError:
+        return None
+    if snapped <= 0:
+        return None
+    if direction == "UP" and snapped >= price:
+        return None
+    if direction == "DOWN" and snapped <= price:
+        return None
+    return snapped
 
 
 def transaction_type_for(direction: str) -> str:

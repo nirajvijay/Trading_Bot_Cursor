@@ -32,3 +32,6 @@ The scripts also import `engine_sizing`, `engine_stop` and `engine_trailing` fro
 10. `hy_lab2.py` → the in-day context table (`../data/context_lab_R_by_half.txt`).
 11. `charges.py`: Zerodha intraday charges (checked against a Kite contract note).
 12. `export_golden.py <repo>/tests/fixtures/arb_golden`: writes the golden fixtures that the live port's parity tests use (`tests/test_engine_arb_golden.py`). It checks its own replay against `hybrid_v2.run` before writing.
+13. `orb_selection_check.py`: reruns the whole backtest with ORB stocks chosen in ways a live system can follow. `combo2.orb_cands` ranks among stocks that went on to break out, which cannot be known at 09:20. The live rule (rank at 09:20, arm the top 3) gives ₹41,944/month against the reported ₹43,814. See `../PR_B_PLAN.md`.
+14. `export_orb_golden.py <repo>/tests/fixtures/orb_golden`: writes the ORB golden fixtures (`tests/test_orb_golden.py`): baselines, the 09:20 ranking and the breakouts for every 2026 day, using the live rule. It checks itself against `orb.json` before writing.
+15. `replay_orb_detector.py [day ...]`: drives the repo's real `OrbDetector` with ticks synthesised from the 12-month candles (day OHLC, cumulative volume, a made-up auction volume on top) and compares its arms and breakouts with the ORB golden fixture. All 182 days match: 431 arms, 314 breakouts.

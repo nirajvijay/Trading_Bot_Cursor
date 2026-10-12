@@ -74,6 +74,13 @@ STRATEGY_MODULES = {
     "vwap_qualifier_v2",
     "vwap_qualifier_v2_writer",
     "vwap_qualifier_writer",
+    "orb_config",
+    "orb_types",
+    "orb_baselines",
+    "orb_rules",
+    "orb_writer",
+    "orb_detector",
+    "orb_parity",
 }
 
 

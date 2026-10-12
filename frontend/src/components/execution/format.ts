@@ -118,6 +118,11 @@ const REASON_LABELS: Record<string, string> = {
   feed_stale: 'Feed stale',
   kite_session_expired: 'Kite login expired',
   insufficient_margin_preflight: 'Insufficient margin',
+  strategy_not_enabled: 'Strategy not enabled in this session',
+  arb_orb_no_stop: 'ORB: no valid stop',
+  arb_orb_outside_window: 'ORB: outside the breakout window',
+  arb_past_orb_cutoff: 'ORB: past the 11:00 cutoff',
+  arb_unknown_strategy: 'Unknown strategy',
   // Why the live Open P&L fell back to Kite REST.
   ws_disconnected: 'WebSocket disconnected',
   ws_connecting: 'WebSocket connecting',
