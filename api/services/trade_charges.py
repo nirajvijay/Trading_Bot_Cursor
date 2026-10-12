@@ -23,6 +23,8 @@ Once worked out they are saved and never recomputed.
 """
 from __future__ import annotations
 
+import arb_metrics
+
 import json
 import logging
 import math
@@ -414,6 +416,8 @@ class ClosedTrade:
     exit_order_ids: Tuple[str, ...]
     close_reason: Optional[str]
     closed_at: Optional[str]
+    # ARB only: "ORB", or "F0".."F3" by funnel score. None for a legacy trade.
+    source: Optional[str] = None
 
 
 def _exit_ids(extra: Mapping[str, Any], exit_order_id: Optional[str]) -> Tuple[str, ...]:
@@ -469,6 +473,9 @@ def read_closed_trades(engine_db: Path, session_date: str) -> List[ClosedTrade]:
                 exit_order_ids=_exit_ids(extra, row["exit_order_id"]),
                 close_reason=extra.get("close_reason"),
                 closed_at=str(row["closed_at"]) if row["closed_at"] else None,
+                source=arb_metrics.source_label(
+                    extra.get("arb") if isinstance(extra.get("arb"), dict) else None
+                ),
             )
         )
     return out

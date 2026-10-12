@@ -25,8 +25,12 @@ import type {
   ExecutionPositions,
   ExecutionPreflight,
   ExecutionSessionCaps,
+  ExecutionSettings,
   ExecutionStartResponse,
   ExecutionStatus,
+  MarketBreadth,
+  PerformanceSummary,
+  StrategyMode,
   TradeChargesDay,
   OrbDay,
   FunnelFeed,
@@ -314,8 +318,39 @@ export function postExecutionStart(body: {
   caps: ExecutionSessionCaps
   session_date?: string
   live_orders?: boolean
+  strategy_mode?: StrategyMode
+  arb_risk_scale?: number
 }): Promise<ExecutionStartResponse> {
   return postJson('/execution/start', body)
+}
+
+export function fetchExecutionSettings(): Promise<ExecutionSettings> {
+  return getJson('/execution/settings')
+}
+
+export function postExecutionSettings(body: {
+  autostart_strategy: StrategyMode
+  arb_risk_scale: number
+  arb_total_capital_rupees: number
+}): Promise<ExecutionSettings> {
+  return postJson('/execution/settings', body)
+}
+
+export function fetchStrategyBreadth(sessionDate?: string): Promise<MarketBreadth> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return getJson(`/strategy/breadth${query}`)
+}
+
+export function postPerformanceCheck(
+  sessionDate?: string,
+): Promise<{ summary: Record<string, unknown>; report: string }> {
+  const query = sessionDate ? `?session_date=${encodeURIComponent(sessionDate)}` : ''
+  return postJson(`/performance/check${query}`)
+}
+
+export function fetchPerformance(parityDate?: string): Promise<PerformanceSummary> {
+  const query = parityDate ? `?parity_date=${encodeURIComponent(parityDate)}` : ''
+  return getJson(`/performance/summary${query}`)
 }
 
 export function postExecutionCommand(

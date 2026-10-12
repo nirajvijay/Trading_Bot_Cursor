@@ -39,7 +39,27 @@ class OrbBaselines(BaseModel):
     not_ready: List[OrbBaselineIssue] = Field(default_factory=list)
 
 
+class EngineDecisionView(BaseModel):
+    """What the execution engine did with a signal (from the engine DB)."""
+
+    # "entered" | "skipped"
+    decision: str
+    state: str
+    reason: Optional[str] = None
+    # "ORB", "F0".."F3"; None for a trade ARB did not stamp.
+    source: Optional[str] = None
+    base_risk: Optional[float] = None
+    risk_used: Optional[float] = None
+    half_size: Optional[bool] = None
+    qty: Optional[int] = None
+    entry_price: Optional[float] = None
+    close_reason: Optional[str] = None
+
+
 class OrbArmView(BaseModel):
+    # None when the engine has no row for this signal: it was not running in
+    # ARB mode then, or was paused, stopped or halted.
+    engine: Optional[EngineDecisionView] = None
     setup_id: str
     symbol: str
     direction: str
@@ -91,6 +111,7 @@ class OrbDayResponse(BaseModel):
 
 
 class FunnelTriggerView(BaseModel):
+    engine: Optional[EngineDecisionView] = None
     setup_id: str
     symbol: str
     direction: str

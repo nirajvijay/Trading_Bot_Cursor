@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ExecutionPosition, LivePnlFeedState } from '../../api/types'
 import {
+  bps,
   inr,
   isStuckPendingEntry,
   isUnprotected,
@@ -8,9 +9,11 @@ import {
   num,
   pnlClass,
   reasonLabel,
+  rMultiple,
   stateLabel,
   timeIst,
 } from './format'
+import { SourceBadge } from './ArbBudgetStrip'
 import { LivePnlBadge } from './LivePnlBadge'
 
 export type PositionKind = 'open' | 'closed' | 'skipped'
@@ -215,15 +218,40 @@ function TrailToggle({
 function RiskNowCell({ row }: { row: ExecutionPosition }) {
   const risk = row.current_risk_rupees ?? row.risk_taken_rupees
   const locked = risk != null && risk < 0
-  const title = `Loss if the current stop filled now (before charges). Risk at entry: ${inr(
-    row.risk_taken_rupees,
-  )}.`
+  const arb = row.arb
+  const title =
+    `Loss if the current stop filled now (before charges). Risk at entry: ${inr(
+      row.risk_taken_rupees,
+    )}.` +
+    (arb?.risk_used != null
+      ? ` ARB allowed ${inr(arb.risk_used, 0)} of a base ${inr(arb.base_risk, 0)}${
+          arb.half_size ? ' (half size after a loser)' : ''
+        }${arb.one_share_floor ? ' (one-share floor)' : ''}.`
+      : '') +
+    (row.entry_slippage_bps != null
+      ? ` Entry ${bps(row.entry_slippage_bps)} against the signal price.`
+      : '')
+  const stage =
+    row.lock_stage === 'locked'
+      ? '+0.25R locked'
+      : row.lock_stage === 'giveback'
+        ? 'keeping 25% of peak'
+        : null
   return (
     <td
       title={title}
       className={`${NUM} whitespace-nowrap ${locked ? 'text-positive font-semibold' : 'text-on-surface-variant'}`}
     >
+      {row.risk_freed && (
+        <span
+          title="The stop is at or beyond entry: this trade no longer uses the open-risk budget"
+          className="label-caps mr-1.5 px-[5px] py-px rounded-[3px] border border-emerald-200 bg-emerald-50 text-positive"
+        >
+          Freed
+        </span>
+      )}
       {locked ? `locked ${inr(-risk)}` : inr(risk)}
+      {stage && <span className="block text-[10px] font-normal text-on-surface-variant">{stage}</span>}
     </td>
   )
 }
@@ -281,7 +309,7 @@ function OpenRows({
             >
               <Instrument symbol={row.tradingsymbol}>
                 <Side direction={row.direction} />
-                <Tier tier={row.vwap_classification} />
+                {row.source ? <SourceBadge source={row.source} /> : <Tier tier={row.vwap_classification} />}
               </Instrument>
               <td className={NUM}>{row.qty || '—'}</td>
               <td className={NUM}>{num(row.entry_price)}</td>
@@ -414,6 +442,7 @@ function ClosedRows({
             >
               <Instrument symbol={row.tradingsymbol}>
                 <Side direction={row.direction} />
+                {row.source && <SourceBadge source={row.source} />}
               </Instrument>
               <td className={NUM}>{row.qty}</td>
               <td className={NUM}>{num(row.entry_price)}</td>
@@ -432,6 +461,14 @@ function ClosedRows({
                 }`}
               >
                 {row.realised_unattributed ? 'unattributed — check Kite' : inr(row.realised_pnl)}
+                {row.r_gross != null && !row.realised_unattributed && (
+                  <span
+                    title="Result in R before charges"
+                    className="ml-1.5 text-[11px] font-normal text-on-surface-variant"
+                  >
+                    {rMultiple(row.r_gross)}
+                  </span>
+                )}
               </td>
               <td className={`${NUM} whitespace-nowrap ${pnlClass(row.stock_day_total)}`}>
                 {row.pnl_mismatch && (
@@ -485,7 +522,7 @@ function SkippedRows({
             className={`${ROW} bg-surface`}
           >
             <Instrument symbol={row.tradingsymbol}>
-              <Tier tier={row.vwap_classification} />
+              {row.source ? <SourceBadge source={row.source} /> : <Tier tier={row.vwap_classification} />}
             </Instrument>
             <td className={CELL}>{reasonLabel(row.skip_reason)}</td>
             <td className={`${CELL} text-on-surface-variant`}>{stateLabel(row.state)}</td>

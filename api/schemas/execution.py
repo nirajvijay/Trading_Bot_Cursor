@@ -7,11 +7,14 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from engine_config import (
+    ARB_DEFAULT_TOTAL_CAPITAL_RUPEES,
+    ARB_UNLOCKED_SCALE,
     DEFAULT_DAILY_LOSS_CAP_RUPEES,
     DEFAULT_LEVERAGE_FACTOR,
     DEFAULT_PER_TRADE_CAP_RUPEES,
     DEFAULT_PER_TRADE_CAP_VWAP_LIMITED_RUPEES,
     DEFAULT_TOTAL_CAPITAL_RUPEES,
+    STRATEGY_LEGACY_VWAP,
 )
 
 
@@ -33,6 +36,44 @@ class ExecutionStartRequest(BaseModel):
     caps: SessionCaps = Field(default_factory=SessionCaps)
     session_date: Optional[str] = None
     live_orders: bool = False
+    # "legacy_vwap" (default) or "arb". In ARB only the stage and the capital
+    # are chosen at start; the per-trade and daily caps above are not used.
+    strategy_mode: str = STRATEGY_LEGACY_VWAP
+    arb_risk_scale: float = ARB_UNLOCKED_SCALE
+
+
+class ArbStageView(BaseModel):
+    """One rollout stage, with the rupee figures it trades at."""
+
+    key: str
+    risk_scale: float
+    unlocked: bool
+    orb_risk: float
+    funnel_risks: List[float]
+    open_risk_cap: float
+    min_risk: float
+    hard_day_stop: float
+    day_lock_arm: float
+    closed_loss_backstop: float
+
+
+class ExecutionSettingsView(BaseModel):
+    """What the 09:15 autostart launches, and the stages ARB can run at."""
+
+    autostart_strategy: str = STRATEGY_LEGACY_VWAP
+    arb_risk_scale: float = ARB_UNLOCKED_SCALE
+    arb_total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+    unlocked_scale: float = ARB_UNLOCKED_SCALE
+    day_lock_keep: float = 0.0
+    stages: List[ArbStageView] = Field(default_factory=list)
+
+
+class ExecutionSettingsRequest(BaseModel):
+    autostart_strategy: str
+    arb_risk_scale: float = ARB_UNLOCKED_SCALE
+    arb_total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
 
 
 class ExecutionStartResponse(BaseModel):
@@ -102,6 +143,10 @@ class ExecutionStatusResponse(BaseModel):
     live_pnl_order_updates: Optional[int] = None
     last_error: Optional[str] = None
     escalations: Dict[str, str] = Field(default_factory=dict)
+    # "legacy_vwap" or "arb": what the running (or last) session was started as.
+    strategy_mode: str = STRATEGY_LEGACY_VWAP
+    # ARB's day state, written by the engine every tick (engine_core.arb_snapshot).
+    arb: Optional[Dict[str, Any]] = None
 
 
 class PositionView(BaseModel):
@@ -150,6 +195,22 @@ class PositionView(BaseModel):
     manual_review: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    # --- ARB (None / False on a trade ARB did not take) ---
+    # "ORB", or "F0".."F3" by funnel score.
+    source: Optional[str] = None
+    # What ARB decided at entry: base and used risk, half size, score parts.
+    arb: Optional[Dict[str, Any]] = None
+    # The price the backtest assumed (trigger price; the level for ORB), and
+    # how much worse the fill was, in basis points.
+    signal_price: Optional[float] = None
+    entry_slippage_bps: Optional[float] = None
+    # "initial" | "locked" (+0.25R) | "giveback" (25% of the peak gain), read
+    # from the stop Kite holds.
+    lock_stage: Optional[str] = None
+    # The stop is at or beyond entry: the trade no longer uses the open-risk budget.
+    risk_freed: bool = False
+    # Closed trades: the result in R before charges.
+    r_gross: Optional[float] = None
 
 
 class PositionsResponse(BaseModel):

@@ -24,6 +24,22 @@ Research report · built 26 Sep 2026 · backtest data: 1-minute candles, Jan–S
 > - Five other rules that a live system could follow gave ₹34k–₹42k a month. None beat the simple one.
 > - Everywhere below, "top 3 by RVOL" should be read as "top 3 by RVOL at 09:20". The tables below are unchanged and still show the original run. Details and the reproduction script (`code/orb_selection_check.py`) are in `PR_B_PLAN.md`.
 
+> **Second correction, 13 Oct 2026: the exits a live engine can make give ₹39,532 a month, not ₹41,944.**
+> Two things in the backtest's lock exit cannot be done live. Both were found while porting it (`PR_C_PLAN.md`).
+>
+> | Jan–Sep 2026, after charges | Live ORB rule (above) | **Live ORB rule and live exits, 3 bps** | 5 bps |
+> |---|--:|--:|--:|
+> | Average per month | ₹41,944 | **₹39,532** | ₹33,230 |
+> | Profitable months | 9 / 9 | 9 / 9 | 9 / 9 |
+> | Weakest month | +₹8,063 | +₹7,825 | +₹4,150 |
+> | Green days | 60% | 59% | 59% |
+> | Worst day | −₹5,970 | −₹5,970 | −₹6,330 |
+> | Max drawdown | −₹26,146 | −₹26,741 | −₹31,302 |
+>
+> - **Stops must be on the tick grid (about −₹1,100 a month).** The backtest left ORB stops off the grid, for example 377.0025. Kite only accepts stops on the grid, and the engine rounds them away from the market.
+> - **Three trades were floating-point luck (about −₹1,300 a month).** "Peak at least +1R" was tested in floating point. When the peak touched +1R exactly, rounding error sometimes read it as "not yet", and three such trades went on to +8.4R, +5.3R and +4.9R. The rule as written locks at exactly +1R, and that is what the live engine does.
+> - **₹39,532 is the number to compare live results with.** It is still nine profitable months out of nine and the same worst day. The reproduction script is `code/export_lock_golden.py`.
+
 ---
 
 ## 1. Summary
