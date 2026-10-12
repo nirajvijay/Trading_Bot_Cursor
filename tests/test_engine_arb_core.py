@@ -24,6 +24,7 @@ from engine_core import (
 )
 from engine_exit import CloseReason
 from engine_feed import FeedHealth
+from engine_lock import LockBar
 from engine_risk import RiskPolicy
 from engine_sizing import RiskCappedSizing
 from engine_store import SqlitePositionStore
@@ -75,6 +76,19 @@ class StubContext:
         self.by_setup: Dict[str, FunnelFeatures] = {}
         self.error: Optional[Exception] = None
         self.calls: List[str] = []
+        # Completed 1-minute bars per instrument token, for the lock rule.
+        self.bars: Dict[int, List[LockBar]] = {}
+        self.bars_error: Optional[Exception] = None
+        self.bar_reads: List[tuple] = []
+
+    def lock_bars(self, *, instrument_token, since_minute, after_minute=None) -> List[LockBar]:
+        self.bar_reads.append((instrument_token, since_minute, after_minute))
+        if self.bars_error is not None:
+            raise self.bars_error
+        return [
+            bar for bar in self.bars.get(int(instrument_token), [])
+            if bar.minute >= since_minute and bar.minute > (after_minute or "")
+        ]
 
     def features_for(self, candidate: TriggerCandidate, stop_price) -> FunnelFeatures:
         self.calls.append(candidate.setup_id)

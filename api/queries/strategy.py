@@ -312,3 +312,125 @@ def _funnel_row(candidate, context: LiveArbContext, settings: ArbSettings) -> Di
         base_risk=verdict.base_risk_rupees if verdict.ok else None,
     )
     return row
+
+
+_NEVER_HELD_STATES = ("rejected", "cancelled")
+
+
+def fetch_engine_decisions(engine_db: Path, session_date: str) -> Dict[str, Dict[str, Any]]:
+    """What the engine did with each signal of the day, keyed by setup id.
+
+    Read-only against the engine DB. Empty when the engine has never run, or
+    the DB cannot be read: the Strategy tab then simply shows no decision.
+    """
+    import json
+
+    import arb_metrics
+
+    if not Path(engine_db).exists():
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        conn = sqlite3.connect(f"file:{engine_db}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT setup_id, state, qty, entry_price, extra_json FROM positions "
+                "WHERE session_date = ?",
+                (session_date,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    for setup_id, state, qty, entry_price, extra_json in rows:
+        try:
+            extra = json.loads(str(extra_json or "{}"))
+        except (ValueError, TypeError):
+            extra = {}
+        if not isinstance(extra, dict):
+            extra = {}
+        arb = extra.get("arb") if isinstance(extra.get("arb"), dict) else {}
+        held = str(state) not in _NEVER_HELD_STATES
+        out[str(setup_id)] = {
+            "decision": "entered" if held else "skipped",
+            "state": str(state),
+            "reason": None if held else (
+                extra.get("skip_reason") or extra.get("reject_reason") or extra.get("cancel_reason")
+            ),
+            "source": arb_metrics.source_label(arb),
+            "base_risk": arb.get("base_risk"),
+            "risk_used": arb.get("risk_used") if held else None,
+            "half_size": arb.get("half_size"),
+            "qty": int(qty or 0) if held else None,
+            "entry_price": entry_price if held else None,
+            "close_reason": extra.get("close_reason"),
+        }
+    return out
+
+
+_BREADTH_SQL = """
+SELECT tradingsymbol, candle_time, open, close
+FROM live_1m_candles
+WHERE session_date = ?
+ORDER BY candle_time ASC
+"""
+
+
+def fetch_breadth(live_db: Path, session_date: str) -> Dict[str, Any]:
+    """How far the watchlist has moved from its open, overall and by sector.
+
+    The same arithmetic the funnel score uses (engine_arb_context.alignment):
+    each stock's latest 1-minute close against its first open of the day,
+    averaged. A funnel trade scores a point when the market has moved more
+    than 0.2% against it, so the response says which side that is right now.
+    """
+    from engine_arb import ArbSettings
+    from engine_arb_context import sector_lookup
+
+    threshold = abs(ArbSettings().score_market_against_pct)
+    empty: Dict[str, Any] = {
+        "session_date": session_date, "as_of": None, "stocks": 0, "market_pct": None,
+        "threshold_pct": threshold, "scores_for": None, "sectors": [],
+    }
+    conn = _connect(live_db)
+    if conn is None:
+        return empty
+    first_open: Dict[str, float] = {}
+    last_close: Dict[str, float] = {}
+    as_of = None
+    try:
+        for symbol, minute, open_, close in _rows(conn, _BREADTH_SQL, (session_date,)):
+            first_open.setdefault(str(symbol), float(open_))
+            last_close[str(symbol)] = float(close)
+            as_of = str(minute)
+    finally:
+        conn.close()
+    moves = {
+        symbol: (close / first_open[symbol] - 1.0) * 100.0
+        for symbol, close in last_close.items()
+        if first_open.get(symbol, 0) > 0
+    }
+    if not moves:
+        return empty
+    market = sum(moves.values()) / len(moves)
+    sector_of = sector_lookup()
+    by_sector: Dict[str, List[float]] = {}
+    for symbol, move in moves.items():
+        by_sector.setdefault(sector_of.get(symbol, "Other"), []).append(move)
+    return {
+        "session_date": session_date,
+        "as_of": as_of,
+        "stocks": len(moves),
+        "market_pct": round(market, 4),
+        "threshold_pct": threshold,
+        # Longs score when the market is down more than the threshold; shorts when up.
+        "scores_for": "UP" if market < -threshold else ("DOWN" if market > threshold else None),
+        "sectors": sorted(
+            (
+                {"sector": name, "pct": round(sum(values) / len(values), 4), "stocks": len(values)}
+                for name, values in by_sector.items()
+            ),
+            key=lambda item: item["pct"],
+            reverse=True,
+        ),
+    }

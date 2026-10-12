@@ -1,7 +1,7 @@
 import { marketStatusNow } from '../lib/format'
 import type { RunnerStatus, SessionCoverage } from '../api/types'
 
-export type AppTab = 'radar' | 'checklist' | 'auth' | 'trading' | 'charges' | 'strategy'
+export type AppTab = 'radar' | 'checklist' | 'auth' | 'trading' | 'charges' | 'strategy' | 'performance'
 
 interface Props {
   activeTab: AppTab
@@ -63,7 +63,9 @@ export function TopAppBar({
                 ? 'trading engine'
                 : activeTab === 'strategy'
                   ? 'strategy signals'
-                  : 'observation only'}
+                  : activeTab === 'performance'
+                    ? 'forward test'
+                    : 'observation only'}
         </span>
         {username && (
           <span className="label-caps text-on-surface-variant hidden md:inline truncate max-w-[8rem]">

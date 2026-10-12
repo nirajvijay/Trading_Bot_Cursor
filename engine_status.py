@@ -66,6 +66,13 @@ class EngineStatus:
     stopped_on_purpose: bool = False
     stop_reason: Optional[str] = None
     stopped_at: Optional[str] = None
+    # What the session was started with, so the desk shows the real numbers
+    # rather than the defaults.
+    strategy_mode: str = "legacy_vwap"
+    total_capital: float = 0.0
+    leverage: float = 0.0
+    # ARB's day state (engine_core.arb_snapshot); None in a legacy session.
+    arb: Optional[Dict[str, Any]] = None
 
 
 def _utc_now_iso() -> str:

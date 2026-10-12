@@ -59,6 +59,33 @@ class FrontendRouteContracts(unittest.TestCase):
     def test_strategy_tab_endpoints_are_registered(self):
         self._assert_calls('fetchStrategyOrb', '/strategy/orb')
         self._assert_calls('fetchStrategyFunnel', '/strategy/funnel')
+        self._assert_calls('fetchStrategyBreadth', '/strategy/breadth')
+
+    def test_arb_desk_and_performance_endpoints_are_registered(self):
+        self._assert_calls('fetchExecutionSettings', '/execution/settings')
+        self._assert_calls('postExecutionSettings', '/execution/settings')
+        self._assert_calls('fetchPerformance', '/performance/summary')
+        self._assert_calls('postPerformanceCheck', '/performance/check')
+        methods = app.openapi()['paths']['/api/v1/execution/settings']
+        self.assertEqual(set(methods), {'get', 'post'})
+
+    def test_new_routes_need_a_website_session(self):
+        from api.auth.deps import require_web_session, require_web_session_mutating
+
+        def guards(path: str, method: str):
+            route = next(
+                r for r in app.routes
+                if getattr(r, 'path', None) == path and method in getattr(r, 'methods', ())
+            )
+            return [d.call for d in route.dependant.dependencies]
+
+        for path in ('/api/v1/performance/summary', '/api/v1/strategy/breadth',
+                     '/api/v1/execution/settings'):
+            with self.subTest(path=path):
+                self.assertIn(require_web_session, guards(path, 'GET'))
+        # Choosing what autostart launches changes what trades tomorrow.
+        self.assertIn(require_web_session_mutating, guards('/api/v1/execution/settings', 'POST'))
+        self.assertIn(require_web_session_mutating, guards('/api/v1/performance/check', 'POST'))
 
     def test_observation_endpoints_are_unchanged(self):
         # fetchSessionClock is deliberately not asserted: the client has never

@@ -41,6 +41,7 @@ def _view(item: TradeCharges) -> TradeChargesView:
         qty=trade.qty,
         closed_at=trade.closed_at,
         close_reason=trade.close_reason,
+        source=trade.source,
         entry_avg=_r(item.entry_avg),
         exit_avg=_r(item.exit_avg),
         gross_pnl=_r(trade.realised_pnl),

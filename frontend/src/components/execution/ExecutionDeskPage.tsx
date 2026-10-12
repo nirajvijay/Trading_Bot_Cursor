@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import type { ExecutionPosition } from '../../api/types'
 import { useExecutionEngine } from '../../hooks/useExecutionEngine'
+import { ArbBudgetStrip } from './ArbBudgetStrip'
 import { DangerZone } from './DangerZone'
 import { EngineStateBar } from './EngineStateBar'
 import { EventDrawer } from './EventDrawer'
@@ -59,7 +60,9 @@ export function ExecutionDeskPage({ sessionDate }: { sessionDate: string }) {
               Execution Desk
             </h1>
             <p className="text-[12px] text-on-surface-variant">
-              Entries stop at 14:00 · every position is squared off at 14:50 IST
+              {status?.strategy_mode === 'arb' && running
+                ? 'ARB: ORB entries until 11:00, funnel until 13:00 · every position is squared off at 14:50 IST'
+                : 'Entries stop at 14:00 · every position is squared off at 14:50 IST'}
             </p>
           </div>
           <SessionTimeline />
@@ -100,12 +103,18 @@ export function ExecutionDeskPage({ sessionDate }: { sessionDate: string }) {
             preflight={engine.preflight}
             busy={engine.busy === 'start'}
             onStart={engine.start}
+            settings={engine.settings}
+            savingSettings={engine.busy === 'settings'}
+            onSaveAutostart={engine.saveAutostart}
           />
         )}
 
         <div className="flex flex-wrap gap-3.5 items-start">
           <div className="flex-[999_1_680px] min-w-0 flex flex-col gap-3.5">
             {running && <PnlSummary status={status} open={open} />}
+            {status?.strategy_mode === 'arb' && status.arb && (running || status.arb.halted_reason) && (
+              <ArbBudgetStrip arb={status.arb} />
+            )}
             <PositionsCard
               open={open}
               closed={positions?.closed ?? []}

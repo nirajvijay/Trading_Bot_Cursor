@@ -9,7 +9,9 @@ tick; the API only ever reads that file and never talks to the running process.
 """
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -19,7 +21,13 @@ from typing import List, Optional, Tuple
 
 import engine_clock
 from api import config
-from engine_config import InvalidSessionConfig, SessionRiskConfig, validate
+from engine_config import (
+    STRATEGY_ARB,
+    STRATEGY_LEGACY_VWAP,
+    InvalidSessionConfig,
+    SessionRiskConfig,
+    validate_start,
+)
 from engine_status import (
     LivenessVerdict,
     assess,
@@ -141,14 +149,81 @@ def preflight(
 
     if config_values is not None:
         try:
-            validate(config_values)
+            validate_start(config_values)
             checks.append(Precondition("risk_config", True, "caps are sane"))
         except InvalidSessionConfig as exc:
             checks.append(Precondition("risk_config", False, str(exc)))
+        conflict = strategy_day_conflict(
+            engine_clock.to_ist(moment).strftime("%Y-%m-%d"), config_values.strategy_mode
+        )
+        checks.append(
+            Precondition(
+                "one_strategy_per_day",
+                conflict is None,
+                conflict or f"{config_values.strategy_mode} is the only strategy today",
+            )
+        )
 
     return Preflight(
         can_start=all(c.ok for c in checks), checks=checks, engine=verdict
     )
+
+
+# Rows in these states never held shares, so they do not make a strategy "used".
+_NEVER_HELD_STATES = ("rejected", "cancelled")
+
+
+def strategy_day_conflict(
+    session_date: str, strategy_mode: str, *, db_path: Optional[Path] = None
+) -> Optional[str]:
+    """Why ``strategy_mode`` must not start today, or None.
+
+    One strategy per day. ARB's budget, its count of losers and its day stop
+    all read every trade of the day, so a legacy trade earlier would distort
+    them; and a legacy session must never trade on a day ARB has already
+    stopped. Read-only against the engine DB. If the DB cannot be read the
+    answer is a refusal, never a guess.
+    """
+    path = Path(db_path) if db_path is not None else config.execution_engine_db_path()
+    if not path.exists():
+        return None
+    used = set()
+    halted = None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            tables = {
+                row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if "positions" in tables:
+                for state, extra_json in conn.execute(
+                    "SELECT state, extra_json FROM positions WHERE session_date = ?",
+                    (session_date,),
+                ):
+                    if str(state) in _NEVER_HELD_STATES:
+                        continue
+                    try:
+                        extra = json.loads(str(extra_json or "{}"))
+                    except (ValueError, TypeError):
+                        extra = {}
+                    used.add(STRATEGY_ARB if isinstance(extra, dict) and "arb" in extra
+                             else STRATEGY_LEGACY_VWAP)
+            if "arb_day_state" in tables:
+                row = conn.execute(
+                    "SELECT halted_reason FROM arb_day_state WHERE session_date = ?",
+                    (session_date,),
+                ).fetchone()
+                halted = row[0] if row else None
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return f"engine db unreadable ({exc}); cannot confirm which strategy traded today"
+    if strategy_mode != STRATEGY_ARB and halted:
+        return f"ARB stopped for the day ({halted}); no other strategy may trade today"
+    others = sorted(used - {strategy_mode})
+    if others:
+        return f"{others[0]} already traded today; one strategy per day"
+    return None
 
 
 def build_command(
@@ -185,7 +260,11 @@ def build_command(
         str(session_config.total_capital_rupees),
         "--leverage",
         str(session_config.leverage_factor),
-    ] + (["--live-orders"] if live_orders else [])
+        "--strategy-mode",
+        session_config.strategy_mode,
+    ] + (
+        ["--arb-risk-scale", str(session_config.arb.risk_scale)] if session_config.is_arb else []
+    ) + (["--live-orders"] if live_orders else [])
 
 
 def start_engine(
@@ -211,6 +290,11 @@ def _start_engine(
 ) -> Tuple[bool, str, Optional[int]]:
     """Spawn the engine, or refuse with the specific reason."""
     from uuid import uuid4
+
+    if session_config.is_arb and not live_orders:
+        # ARB is tested with real Kite orders at micro size; there is no paper
+        # ARB. Refused before anything else: it is wrong at any time of day.
+        return False, "arb_requires_live_orders", None
 
     day = session_date or engine_clock.to_ist(now).strftime("%Y-%m-%d")
     checks = preflight(session_config, now=now)

@@ -16,6 +16,7 @@ import { VwapHealthPage } from './components/VwapHealthPage'
 import { ExecutionDeskPage } from './components/execution/ExecutionDeskPage'
 import { ChargesPage } from './components/charges/ChargesPage'
 import { StrategyPage } from './components/strategy/StrategyPage'
+import { PerformancePage } from './components/performance/PerformancePage'
 import { StationConsoleShell } from './components/StationConsoleShell'
 import { type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
@@ -294,6 +295,8 @@ export default function App() {
           <ChargesPage sessionDate={sessionDate} />
         ) : activeTab === 'strategy' ? (
           <StrategyPage sessionDate={sessionDate} />
+        ) : activeTab === 'performance' ? (
+          <PerformancePage />
         ) : (
           <VwapHealthPage />
         )}

@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState } from 'react'
 import type { ChargeBreakdown, TradeChargesRow } from '../../api/types'
 import { useTradeCharges } from '../../hooks/useTradeCharges'
+import { SourceBadge } from '../execution/ArbBudgetStrip'
 import { Side } from '../execution/PositionTables'
-import { inr, num, pnlClass, timeIst } from '../execution/format'
+import { inr, num, pnlClass, reasonLabel, timeIst } from '../execution/format'
 
 /**
  * Charges tab: Kite's charges and net P&L per closed trade.
@@ -151,6 +152,7 @@ export function ChargesPage({ sessionDate }: { sessionDate: string }) {
               <tr>
                 <th className={`${TH} text-left`}>Closed</th>
                 <th className={`${TH} text-left`}>Symbol</th>
+                <th className={`${TH} text-left`}>Closed by</th>
                 <th className={`${TH} text-right`}>Qty</th>
                 <th className={`${TH} text-right`}>Entry avg</th>
                 <th className={`${TH} text-right`}>Exit avg</th>
@@ -163,7 +165,7 @@ export function ChargesPage({ sessionDate }: { sessionDate: string }) {
             <tbody>
               {trades.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-7 text-center text-on-surface-variant">
+                  <td colSpan={10} className="px-3 py-7 text-center text-on-surface-variant">
                     {loading ? 'Loading…' : 'No closed trades on this day.'}
                   </td>
                 </tr>
@@ -183,8 +185,10 @@ export function ChargesPage({ sessionDate }: { sessionDate: string }) {
                         <span className="inline-flex items-center gap-2">
                           <Side direction={row.direction} />
                           <span className="font-bold">{row.tradingsymbol}</span>
+                          {row.source && <SourceBadge source={row.source} />}
                         </span>
                       </td>
+                      <td className={`${CELL} whitespace-nowrap`}>{reasonLabel(row.close_reason)}</td>
                       <td className={NUM}>{row.qty}</td>
                       <td className={NUM}>{num(row.entry_avg)}</td>
                       <td className={NUM}>{num(row.exit_avg)}</td>
@@ -197,7 +201,7 @@ export function ChargesPage({ sessionDate }: { sessionDate: string }) {
                     </tr>
                     {expanded && row.charges && (
                       <tr className="border-b border-[#eef0f4] bg-surface-container-low/60">
-                        <td colSpan={9} className="px-3 py-2.5">
+                        <td colSpan={10} className="px-3 py-2.5">
                           <div className="flex flex-wrap gap-x-6 gap-y-1 text-[12px]">
                             {BREAKDOWN.map(([key, label]) => (
                               <span key={key}>

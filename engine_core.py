@@ -27,6 +27,7 @@ from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 import engine_arb
 import engine_clock
+import engine_lock
 from engine_arb import (
     ARB_EXTRA_KEY,
     STRATEGY_FUNNEL,
@@ -111,6 +112,7 @@ from engine_trailing import (
     auto_target,
     bump_mod_count,
     initial_stop_of,
+    is_tighter,
     move_stop,
     nudge_target,
     resolve_stop,
@@ -179,6 +181,9 @@ REASON_ARB_PAST_ORB_CUTOFF = "arb_past_orb_cutoff"
 # A legacy (VWAP) session was handed a trigger from a strategy it does not run.
 REASON_STRATEGY_NOT_ENABLED = "strategy_not_enabled"
 REASON_ARB_DAY_CHECK_FAILED = "arb_day_check_failed"
+# When the entry fill was applied (engine clock). The lock rule counts bars
+# from this minute; set once, in ARB mode only.
+ENTRY_FILLED_AT_KEY = "entry_filled_at"
 
 
 class PositionStore(Protocol):
@@ -271,6 +276,9 @@ class ExecutionEngine:
         self._arb_prices: Dict[str, Tuple[float, datetime]] = {}
         self._arb_lock = DayLockTracker(self.arb_settings)
         self._arb_halt_restored = False
+        # Lock-rule state per open trade: (what it was computed from, state).
+        # Only a cache of engine_lock.fold over stored bars; safe to lose.
+        self._lock_cache: Dict[str, Tuple[tuple, engine_lock.LockState]] = {}
         if self.arb_mode:
             self._init_arb()
 
@@ -538,6 +546,9 @@ class ExecutionEngine:
         self, position: Position, verdict: Optional[FillVerdict]
     ) -> None:
         """Protect it, or -- past 1.5x the cap -- skip the stop and flatten."""
+        if self.arb_mode and ENTRY_FILLED_AT_KEY not in position.extra:
+            # Saved with whichever write follows (protection, or the flatten).
+            position.extra[ENTRY_FILLED_AT_KEY] = self.now_fn().isoformat()
         if verdict is FillVerdict.FLATTEN_ABNORMAL_SLIPPAGE:
             flatten(
                 position,
@@ -1479,7 +1490,12 @@ class ExecutionEngine:
         Fails safe and loud: a broker failure leaves that stop where it was,
         the other positions are still tried, and the step then raises so the
         failure tracker counts it.
+
+        An ARB session trails by the lock rule instead (engine_lock).
         """
+        if self.arb_mode:
+            self._advance_lock_trailing(positions)
+            return
         failures: List[str] = []
         for position in positions:
             if not position.extra.get(TRAIL_ENABLED_KEY):
@@ -1515,6 +1531,122 @@ class ExecutionEngine:
             failures.append(f"ltp read failed: {self._stop_price_error}")
         if failures:
             raise RuntimeError("trail failed: " + "; ".join(failures))
+
+    def _advance_lock_trailing(self, positions: List[Position]) -> None:
+        """ARB's lock rule, for every position with auto-trail on.
+
+        The target comes from completed 1-minute bars only (engine_lock); the
+        Kite LTP read this tick is used for one thing, refusing a stop at or
+        through the market. Such a stop is simply tried again next tick. In
+        the backtest only 2 of 1,183 trades ever exited on a stop that close.
+        """
+        failures: List[str] = []
+        open_ids = {position.trade_id for position in positions}
+        for trade_id in list(self._lock_cache):
+            if trade_id not in open_ids:
+                del self._lock_cache[trade_id]
+        for position in positions:
+            if not position.extra.get(TRAIL_ENABLED_KEY):
+                continue
+            if self._stop_movable(position) is not None:
+                continue
+            if position.stop_price is None or position.entry_price is None:
+                continue
+            try:
+                state = self._lock_state(position)
+            except Exception as exc:  # noqa: BLE001 - this stop stays put; the rest are tried
+                failures.append(f"{position.trade_id}: lock bars: {exc}")
+                continue
+            direction = position.candidate.direction
+            if state.target is None or not is_tighter(
+                state.target, float(position.stop_price), direction
+            ):
+                continue
+            ltp = self._fresh_ltp(position)
+            if ltp is None:
+                continue  # never move a stop without this tick's price
+            decision = resolve_stop(
+                direction=direction,
+                current=float(position.stop_price),
+                candidate=float(state.target),
+                floor=float(initial_stop_of(position)),
+                tick_size=float(tick_size_of(position)),
+                auto_on=True,
+                ltp=ltp,
+            )
+            if not decision.ok:
+                continue
+            outcome = move_stop(
+                position,
+                float(decision.target),
+                source=SOURCE_AUTO,
+                broker=self.broker,
+                store=self.store,
+                detail={
+                    "ltp": ltp,
+                    "rule": "lock",
+                    "stage": state.stage,
+                    "peak": state.peak,
+                    "bar": state.last_minute,
+                },
+            )
+            if outcome.failed:
+                failures.append(f"{position.trade_id}: {outcome.reason}")
+        if self._stop_prices_tick == self.tick_count and self._stop_price_error:
+            failures.append(f"ltp read failed: {self._stop_price_error}")
+        if failures:
+            raise RuntimeError("trail failed: " + "; ".join(failures))
+
+    def _lock_entry_minute(self, position: Position) -> Optional[str]:
+        """The minute the trade was entered in, as a bar key, or None.
+
+        The fill time the engine stamped; for a position without one (taken
+        by an earlier, non-ARB run) the trigger's own time. Never a guess: a
+        timestamp without a zone is not used.
+        """
+        for raw in (
+            position.extra.get(ENTRY_FILLED_AT_KEY),
+            position.candidate.trigger_exchange_ts,
+            position.candidate.created_at,
+        ):
+            parsed = parse_timestamp_text(raw)
+            if parsed is not None and parsed.tzinfo is not None:
+                return engine_lock.minute_key(parsed)
+        return None
+
+    def _lock_state(self, position: Position) -> engine_lock.LockState:
+        """Where the lock rule stands for this trade, from the bars so far.
+
+        Only bars newer than the last one folded are read. The cache is
+        dropped whenever what it was built from changes; after a restart it
+        is simply rebuilt from the entry minute, with the same result.
+        """
+        entry_minute = self._lock_entry_minute(position)
+        if entry_minute is None:
+            raise ValueError("entry time unknown")
+        entry = float(position.entry_price)
+        initial = float(initial_stop_of(position))
+        tick = float(tick_size_of(position))
+        direction = position.candidate.direction
+        key = (entry, initial, tick, direction, entry_minute)
+        cached = self._lock_cache.get(position.trade_id)
+        state = cached[1] if cached is not None and cached[0] == key else None
+        bars = self.arb_context.lock_bars(
+            instrument_token=int(position.candidate.instrument_token),
+            since_minute=entry_minute,
+            after_minute=None if state is None else state.last_minute,
+        )
+        state = engine_lock.fold(
+            bars,
+            direction=direction,
+            entry=entry,
+            initial_stop=initial,
+            tick_size=tick,
+            entry_minute=entry_minute,
+            state=state,
+        )
+        self._lock_cache[position.trade_id] = (key, state)
+        return state
 
     def _apply_move_stop(self, command, position: Position) -> None:
         blocked = self._stop_movable(position)
@@ -1705,6 +1837,9 @@ class ExecutionEngine:
         """Refuse to run ARB half-wired, then restore the day's peak."""
         if self.arb_context is None:
             raise ValueError("ARB mode needs an arb_context (observation DB reader)")
+        for name in ("features_for", "lock_bars"):
+            if not callable(getattr(self.arb_context, name, None)):
+                raise ValueError(f"ARB mode needs an arb_context with {name}()")
         for name in ("load_arb_day", "save_arb_day", "closed_today"):
             if not callable(getattr(self.store, name, None)):
                 raise ValueError(f"ARB mode needs a store with {name}()")
@@ -1853,6 +1988,7 @@ class ExecutionEngine:
         info = {
             "strategy": STRATEGY_FUNNEL,
             "risk_scale": settings.risk_scale,
+            "capital": self.session_config.total_capital_rupees,
             "features": features.as_dict(),
             "score": verdict.score,
             "score_parts": dict(verdict.score_parts),
@@ -1878,6 +2014,7 @@ class ExecutionEngine:
         info = {
             "strategy": STRATEGY_ORB,
             "risk_scale": settings.risk_scale,
+            "capital": self.session_config.total_capital_rupees,
             "orb": {
                 "level": candidate.orb_level,
                 "rvol": candidate.orb_rvol,
@@ -1960,6 +2097,63 @@ class ExecutionEngine:
         except BrokerSessionExpired:
             self._hold_for_dead_session()
             return None
+
+    def arb_snapshot(self) -> Optional[dict]:
+        """ARB's day state for the desk (display only). None outside ARB.
+
+        Built from what this tick already computed plus two store reads; it
+        makes no broker call and decides nothing.
+        """
+        if not self.arb_mode:
+            return None
+        settings = self.arb_settings
+        closed = self.store.closed_today(self.session_date)
+        open_positions = self.store.open_positions()
+        losers = engine_arb.count_losers(closed)
+        live_risk = sum(engine_arb.position_live_risk(p) for p in open_positions)
+        day = self.arb_day if self._arb_day_tick == self.tick_count else None
+        mtm = None if day is None else float(day.mtm)
+        house = max(0.0, mtm or 0.0) * settings.house_money_mult
+        cap = settings.open_risk_cap_rupees()
+        score0_used = sum(
+            1
+            for p in list(closed) + list(open_positions)
+            if (p.extra.get(ARB_EXTRA_KEY) or {}).get("score") == 0
+            and (p.extra.get(ARB_EXTRA_KEY) or {}).get("strategy") == STRATEGY_FUNNEL
+        )
+        record = self.store.load_arb_day(self.session_date) or {}
+        return {
+            "risk_scale": settings.risk_scale,
+            "day_mtm": mtm,
+            "closed_net": None if day is None else day.closed_net,
+            "open_net": None if day is None else day.open_net,
+            "prices_complete": None if day is None else day.complete,
+            "stale_symbols": [] if day is None else list(day.stale_symbols),
+            "day_check_ok": bool(self._arb_day_ok),
+            "peak_mtm": self._arb_lock.peak,
+            "lock_armed": self._arb_lock.armed,
+            "lock_line": self._arb_lock.lock_line,
+            "lock_arm_at": settings.day_lock_arm_rupees(),
+            "lock_keep": settings.day_lock_keep,
+            "hard_day_stop": settings.hard_day_stop_rupees(),
+            "closed_loss_backstop": settings.closed_loss_backstop_rupees(),
+            "open_risk_cap": cap,
+            "house_money": round(house, 2),
+            "live_risk": round(live_risk, 2),
+            "room": round(cap + house - live_risk, 2),
+            "min_risk": settings.min_risk_rupees(),
+            "losers_today": losers,
+            "half_size": losers >= settings.cut_after_losers,
+            "score0_used": score0_used,
+            "score0_max": settings.max_score0_per_day,
+            "orb_risk": settings.orb_risk_rupees(),
+            "funnel_risks": [settings.funnel_risk_rupees(i) for i in range(4)],
+            "orb_cutoff": settings.orb_cutoff.strftime("%H:%M"),
+            "funnel_cutoff": settings.funnel_cutoff.strftime("%H:%M"),
+            "halted_reason": record.get("halted_reason"),
+            "halted_at": record.get("halted_at"),
+            "halted_mtm": record.get("halted_mtm"),
+        }
 
     # ------------------------------------------------------------------
     # Helpers

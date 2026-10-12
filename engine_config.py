@@ -37,6 +37,20 @@ STRATEGY_LEGACY_VWAP = "legacy_vwap"
 STRATEGY_ARB = "arb"
 STRATEGY_MODES = (STRATEGY_LEGACY_VWAP, STRATEGY_ARB)
 
+# ARB's rollout stages, smallest first, and the largest one a session may be
+# started at. Raising ARB_UNLOCKED_SCALE is a deliberate code change, made
+# only after the promotion gates for the next stage have passed
+# (Reference/arb_strategy_2026-09/IMPLEMENTATION_IDEA.md section 6.4).
+ARB_STAGES = (
+    ("micro", 0.05),
+    ("quarter", 0.25),
+    ("half", 0.5),
+    ("full", 1.0),
+)
+ARB_UNLOCKED_SCALE = 0.05
+# ARB was tested on Rs 5L of capital at 5x.
+ARB_DEFAULT_TOTAL_CAPITAL_RUPEES = 500_000.0
+
 
 class InvalidSessionConfig(ValueError):
     """A start was attempted with numbers that cannot be traded safely."""
@@ -154,3 +168,33 @@ def validate(config: SessionRiskConfig) -> None:
                 f"{name} ({value:g}) must not exceed "
                 f"daily_loss_cap_rupees ({config.daily_loss_cap_rupees:g})"
             )
+
+
+def validate_start(config: SessionRiskConfig) -> None:
+    """``validate``, plus the rollout rule: ARB may not start above the
+    unlocked stage. Every way of starting an engine goes through this."""
+    validate(config)
+    if config.is_arb and float(config.arb.risk_scale) > ARB_UNLOCKED_SCALE + 1e-9:
+        raise InvalidSessionConfig(
+            f"arb: stage {config.arb.risk_scale:g} is locked; the largest stage that "
+            f"can be started is {ARB_UNLOCKED_SCALE:g}"
+        )
+
+
+def arb_session_config(
+    *,
+    risk_scale: float = ARB_UNLOCKED_SCALE,
+    total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES,
+    leverage_factor: float = DEFAULT_LEVERAGE_FACTOR,
+) -> SessionRiskConfig:
+    """An ARB session: only the stage and the capital are chosen at start.
+
+    Every other ARB number is the tested setting in engine_arb.ArbSettings;
+    they are changed in code, not at start.
+    """
+    return SessionRiskConfig(
+        total_capital_rupees=float(total_capital_rupees),
+        leverage_factor=float(leverage_factor),
+        strategy_mode=STRATEGY_ARB,
+        arb=ArbSettings(risk_scale=float(risk_scale)),
+    )

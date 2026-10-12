@@ -30,6 +30,7 @@ from api.routers.checklist import router as checklist_router
 from api.routers.execution import router as execution_router
 from api.routers.observation import router as observation_router
 from api.routers.sessions import router
+from api.routers.performance import router as performance_router
 from api.routers.strategy import router as strategy_router
 from api.services.execution_autostart import start_background as start_execution_autostart
 from api.services.observation_autostart import start_background as start_observation_autostart
@@ -75,3 +76,4 @@ app.include_router(observation_router, prefix="/api/v1")
 app.include_router(execution_router, prefix="/api/v1")
 app.include_router(charges_router, prefix="/api/v1")
 app.include_router(strategy_router, prefix="/api/v1")
+app.include_router(performance_router, prefix="/api/v1")

@@ -3,8 +3,10 @@ import {
   fetchExecutionCommand,
   fetchExecutionPositions,
   fetchExecutionPreflight,
+  fetchExecutionSettings,
   fetchExecutionStatus,
   postExecutionCommand,
+  postExecutionSettings,
   postExecutionStart,
 } from '../api/client'
 import type {
@@ -14,8 +16,16 @@ import type {
   ExecutionPositions,
   ExecutionPreflight,
   ExecutionSessionCaps,
+  ExecutionSettings,
   ExecutionStatus,
+  StrategyMode,
 } from '../api/types'
+
+/** What a start is asked for beyond the caps: the strategy, and ARB's stage. */
+export interface StartChoice {
+  strategyMode: StrategyMode
+  arbRiskScale: number
+}
 
 // Matches the engine's own 1s tick while it is live, so the desk is never
 // more than about a second behind the loop it is watching.
@@ -35,6 +45,7 @@ export function useExecutionEngine(sessionDate: string, enabled: boolean) {
   const [status, setStatus] = useState<ExecutionStatus | null>(null)
   const [positions, setPositions] = useState<ExecutionPositions | null>(null)
   const [preflight, setPreflight] = useState<ExecutionPreflight | null>(null)
+  const [settings, setSettings] = useState<ExecutionSettings | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -54,7 +65,12 @@ export function useExecutionEngine(sessionDate: string, enabled: boolean) {
       // Preconditions only matter while stopped, and asking for them every
       // second while running would poll the observation runner for nothing.
       if (st.engine_state !== 'running') {
-        setPreflight(await fetchExecutionPreflight())
+        const [pre, saved] = await Promise.all([
+          fetchExecutionPreflight(),
+          fetchExecutionSettings(),
+        ])
+        setPreflight(pre)
+        setSettings(saved)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load execution engine')
@@ -117,7 +133,7 @@ export function useExecutionEngine(sessionDate: string, enabled: boolean) {
   )
 
   const start = useCallback(
-    async (caps: ExecutionSessionCaps, liveOrders: boolean) => {
+    async (caps: ExecutionSessionCaps, liveOrders: boolean, choice?: StartChoice) => {
       setBusy('start')
       setActionError(null)
       try {
@@ -125,6 +141,8 @@ export function useExecutionEngine(sessionDate: string, enabled: boolean) {
           caps,
           session_date: sessionDate,
           live_orders: liveOrders,
+          strategy_mode: choice?.strategyMode ?? 'legacy_vwap',
+          ...(choice?.strategyMode === 'arb' ? { arb_risk_scale: choice.arbRiskScale } : {}),
         })
         await refresh()
         return true
@@ -138,10 +156,35 @@ export function useExecutionEngine(sessionDate: string, enabled: boolean) {
     [refresh, sessionDate],
   )
 
+  const saveAutostart = useCallback(
+    async (strategy: StrategyMode, arbRiskScale: number, arbCapital: number) => {
+      setBusy('settings')
+      setActionError(null)
+      try {
+        setSettings(
+          await postExecutionSettings({
+            autostart_strategy: strategy,
+            arb_risk_scale: arbRiskScale,
+            arb_total_capital_rupees: arbCapital,
+          }),
+        )
+        return true
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : 'Could not save the autostart choice')
+        return false
+      } finally {
+        setBusy(null)
+      }
+    },
+    [],
+  )
+
   return {
     status,
     positions,
     preflight,
+    settings,
+    saveAutostart,
     error,
     actionError,
     busy,

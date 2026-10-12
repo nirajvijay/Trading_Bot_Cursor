@@ -1,12 +1,51 @@
-import { useMemo, useState } from 'react'
-import type { ExecutionPreflight, ExecutionSessionCaps } from '../../api/types'
-import { DEFAULT_CAPS } from '../../hooks/useExecutionEngine'
-import { inr, lakhs, preconditionLabel } from './format'
+import { useEffect, useMemo, useState } from 'react'
+import type {
+  ArbStage,
+  ExecutionPreflight,
+  ExecutionSessionCaps,
+  ExecutionSettings,
+  StrategyMode,
+} from '../../api/types'
+import { DEFAULT_CAPS, type StartChoice } from '../../hooks/useExecutionEngine'
+import { inr, lakhs, preconditionLabel, stageLabel } from './format'
 
 interface Props {
   preflight: ExecutionPreflight | null
   busy: boolean
-  onStart: (caps: ExecutionSessionCaps, liveOrders: boolean) => Promise<boolean>
+  onStart: (
+    caps: ExecutionSessionCaps,
+    liveOrders: boolean,
+    choice?: StartChoice,
+  ) => Promise<boolean>
+  /** The ARB stages and what autostart launches. Null until loaded. */
+  settings: ExecutionSettings | null
+  savingSettings: boolean
+  onSaveAutostart: (
+    strategy: StrategyMode,
+    arbRiskScale: number,
+    arbCapital: number,
+  ) => Promise<boolean>
+}
+
+const ARB_DEFAULT_CAPITAL = 500000
+
+/** What ARB trades at on one stage, as the rows of the confirm dialog. */
+function stageRows(stage: ArbStage, keep: number): [string, string][] {
+  return [
+    ['Risk per ORB trade', inr(stage.orb_risk, 0)],
+    [
+      'Risk per funnel trade, score 0 / 1 / 2 / 3',
+      stage.funnel_risks.map((r) => inr(r, 0)).join(' / '),
+    ],
+    ['Open-risk cap (plus the day\'s profit)', inr(stage.open_risk_cap, 0)],
+    ['Smallest trade taken', inr(stage.min_risk, 0)],
+    ['Hard day stop (day P&L after charges)', `−${inr(stage.hard_day_stop, 0)}`],
+    [
+      'Day lock',
+      `arms at ${inr(stage.day_lock_arm, 0)}, keeps ${Math.round(keep * 100)}% of the peak`,
+    ],
+    ['Closed-loss backstop', inr(stage.closed_loss_backstop, 0)],
+  ]
 }
 
 type Draft = Record<keyof ExecutionSessionCaps, string>
@@ -95,10 +134,37 @@ function Hover({
   )
 }
 
-export function StartPanel({ preflight, busy, onStart }: Props) {
+export function StartPanel({
+  preflight,
+  busy,
+  onStart,
+  settings,
+  savingSettings,
+  onSaveAutostart,
+}: Props) {
   const [draft, setDraft] = useState<Draft>(() => toDraft(DEFAULT_CAPS))
   const [liveOrders, setLiveOrders] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [mode, setMode] = useState<StrategyMode>('legacy_vwap')
+  const [arbCapital, setArbCapital] = useState(String(ARB_DEFAULT_CAPITAL))
+  const [arbScale, setArbScale] = useState<number | null>(null)
+
+  // Open on whatever autostart is set to, once, when the settings arrive.
+  const loaded = settings !== null
+  useEffect(() => {
+    if (!settings) return
+    setMode(settings.autostart_strategy)
+    setArbCapital(String(settings.arb_total_capital_rupees))
+    setArbScale(settings.arb_risk_scale)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded])
+
+  const arb = mode === 'arb'
+  const stages = settings?.stages ?? []
+  const stage =
+    stages.find((s) => s.risk_scale === arbScale && s.unlocked) ??
+    stages.find((s) => s.unlocked) ??
+    null
 
   const caps: ExecutionSessionCaps = useMemo(
     () => ({
@@ -111,9 +177,24 @@ export function StartPanel({ preflight, busy, onStart }: Props) {
     [draft],
   )
 
-  const capsError = validate(caps)
+  const arbCaps: ExecutionSessionCaps = useMemo(
+    () => ({ ...DEFAULT_CAPS, total_capital_rupees: Number(arbCapital) }),
+    [arbCapital],
+  )
+  const arbError = !stage
+    ? 'The ARB stages have not loaded yet.'
+    : !Number.isFinite(arbCaps.total_capital_rupees) || arbCaps.total_capital_rupees <= 0
+      ? 'Total capital must be greater than zero.'
+      : null
+  const capsError = arb ? arbError : validate(caps)
   const blocked = preflight ? !preflight.can_start : false
   const canStart = !capsError && !blocked && !busy
+  const autostartDirty =
+    !!settings &&
+    (settings.autostart_strategy !== mode ||
+      (arb &&
+        (settings.arb_total_capital_rupees !== arbCaps.total_capital_rupees ||
+          settings.arb_risk_scale !== (stage?.risk_scale ?? settings.arb_risk_scale))))
   const checks = preflight?.checks ?? []
   const passed = checks.filter((c) => c.ok).length
   const allOk = preflight ? passed === checks.length : false
@@ -127,6 +208,27 @@ export function StartPanel({ preflight, busy, onStart }: Props) {
         <h2 className="text-[13px] font-extrabold uppercase tracking-tight">Start a session</h2>
         <span className="text-[11px] text-on-surface-variant">
           Read once at start and fixed for the session.
+        </span>
+        <span className="inline-flex rounded border border-outline-variant overflow-hidden">
+          {(
+            [
+              ['legacy_vwap', 'Legacy VWAP'],
+              ['arb', 'ARB'],
+            ] as [StrategyMode, string][]
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setMode(value)}
+              className={`label-caps px-2.5 py-[5px] ${
+                mode === value
+                  ? 'bg-primary text-white'
+                  : 'bg-surface text-on-surface-variant hover:bg-surface-container-low'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </span>
 
         {preflight && (
@@ -175,6 +277,66 @@ export function StartPanel({ preflight, busy, onStart }: Props) {
         )}
       </div>
 
+      {arb && (
+        <div className="flex flex-wrap items-end gap-x-3 gap-y-2.5">
+          <div className="flex flex-col gap-1">
+            <span className="label-caps text-on-surface-variant">Stage</span>
+            <span className="inline-flex rounded border border-outline-variant overflow-hidden">
+              {stages.map((s) => (
+                <button
+                  key={s.key}
+                  type="button"
+                  disabled={!s.unlocked}
+                  title={
+                    s.unlocked
+                      ? undefined
+                      : 'Locked until the promotion gates on the Performance tab pass'
+                  }
+                  onClick={() => setArbScale(s.risk_scale)}
+                  className={`label-caps px-2.5 py-[7px] ${
+                    stage?.key === s.key
+                      ? 'bg-primary text-white'
+                      : 'bg-surface text-on-surface-variant'
+                  } disabled:bg-surface-container disabled:text-[#a3a8b3] disabled:cursor-not-allowed`}
+                >
+                  {stageLabel(s.risk_scale)}
+                  {!s.unlocked && ' 🔒'}
+                </button>
+              ))}
+            </span>
+          </div>
+          <CapField label="Total capital" value={arbCapital} onChange={setArbCapital} wide />
+          <div className="flex flex-col gap-1 shrink-0">
+            <span className="label-caps text-on-surface-variant">Buying power</span>
+            <span className="font-data text-[13px] py-1.5 whitespace-nowrap">
+              <span className="font-bold text-primary">
+                {lakhs(arbCaps.total_capital_rupees * arbCaps.leverage_factor)}
+              </span>
+              <span className="text-on-surface-variant"> · {arbCaps.leverage_factor}x</span>
+            </span>
+          </div>
+          <span className="label-caps text-negative py-[9px]">Real Kite orders</span>
+          <button
+            type="button"
+            disabled={!canStart}
+            onClick={() => setConfirming(true)}
+            className="shrink-0 label-caps px-[18px] py-[9px] rounded bg-primary text-white disabled:bg-surface-container disabled:text-on-surface-variant disabled:cursor-not-allowed"
+          >
+            {busy ? 'Starting…' : 'Start ARB'}
+          </button>
+        </div>
+      )}
+      {arb && stage && (
+        <p className="text-[11px] text-on-surface-variant text-pretty">
+          ORB and the funnel through one risk budget. At {stageLabel(stage.risk_scale)}: ORB{' '}
+          {inr(stage.orb_risk, 0)} a trade, funnel{' '}
+          {stage.funnel_risks.map((r) => inr(r, 0)).join(' / ')} by score, open-risk cap{' '}
+          {inr(stage.open_risk_cap, 0)}, hard day stop −{inr(stage.hard_day_stop, 0)}. There is
+          no paper ARB: every order is a real Kite order at this size.
+        </p>
+      )}
+
+      {!arb && (
       <div className="flex flex-wrap items-end gap-x-3 gap-y-2.5">
         <CapField
           label="Risk · ACCEPT"
@@ -238,6 +400,45 @@ export function StartPanel({ preflight, busy, onStart }: Props) {
           {busy ? 'Starting…' : 'Start engine'}
         </button>
       </div>
+      )}
+
+      {settings && (
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 pt-2 border-t border-[#eef0f4] text-[11px]">
+          <span className="label-caps text-on-surface-variant">09:15 autostart</span>
+          <span>
+            launches{' '}
+            <span className="font-semibold">
+              {settings.autostart_strategy === 'arb'
+                ? `ARB at ${stageLabel(settings.arb_risk_scale)} on ${lakhs(settings.arb_total_capital_rupees)}`
+                : 'Legacy VWAP with the default caps'}
+            </span>
+            , with real Kite orders.
+          </span>
+          {autostartDirty && !capsError && (
+            <button
+              type="button"
+              disabled={savingSettings}
+              onClick={() =>
+                void onSaveAutostart(
+                  mode,
+                  stage?.risk_scale ?? settings.arb_risk_scale,
+                  arb ? arbCaps.total_capital_rupees : settings.arb_total_capital_rupees,
+                )
+              }
+              className="label-caps px-2 py-[3px] rounded border border-outline-variant bg-surface hover:bg-surface-container-low disabled:opacity-50"
+            >
+              {savingSettings
+                ? 'Saving…'
+                : `Autostart ${arb ? `ARB at ${stageLabel(stage?.risk_scale ?? settings.arb_risk_scale)}` : 'Legacy VWAP'} instead`}
+            </button>
+          )}
+          {settings.autostart_strategy === 'arb' && (
+            <span className="text-on-surface-variant">
+              ORB breakouts start at 09:20, so an ARB day needs the engine up before then.
+            </span>
+          )}
+        </div>
+      )}
 
       {capsError && (
         <p className="px-2.5 py-1.5 bg-red-50 border border-red-200 rounded text-[12px] text-negative">
@@ -249,25 +450,36 @@ export function StartPanel({ preflight, busy, onStart }: Props) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="bg-surface border border-outline-variant rounded-md max-w-md w-full shadow-lg">
             <h3 className="px-4 py-[13px] border-b border-outline-variant text-[13px] font-extrabold uppercase tracking-tight">
-              Confirm session limits
+              {arb && stage ? `Confirm ARB at ${stageLabel(stage.risk_scale)}` : 'Confirm session limits'}
             </h3>
             <dl className="px-4 py-3 flex flex-col gap-[7px] text-[12px]">
-              {[
-                ['Risk per trade · ACCEPT', inr(caps.per_trade_cap_rupees)],
-                ['Risk per trade · LIMITED', inr(caps.per_trade_cap_vwap_limited_rupees)],
-                ['Daily loss cap', inr(caps.daily_loss_cap_rupees)],
-                ['Total capital', inr(caps.total_capital_rupees, 0)],
-                [
-                  'Buying power',
-                  lakhs(caps.total_capital_rupees * caps.leverage_factor),
-                ],
-                ['Orders', liveOrders ? 'REAL Kite orders' : 'Internal broker only'],
-              ].map(([label, value]) => (
+              {(arb && stage
+                ? [
+                    ...stageRows(stage, settings?.day_lock_keep ?? 0.4),
+                    ['Total capital', inr(arbCaps.total_capital_rupees, 0)],
+                    [
+                      'Buying power',
+                      lakhs(arbCaps.total_capital_rupees * arbCaps.leverage_factor),
+                    ],
+                    ['Orders', 'REAL Kite orders'],
+                  ]
+                : [
+                    ['Risk per trade · ACCEPT', inr(caps.per_trade_cap_rupees)],
+                    ['Risk per trade · LIMITED', inr(caps.per_trade_cap_vwap_limited_rupees)],
+                    ['Daily loss cap', inr(caps.daily_loss_cap_rupees)],
+                    ['Total capital', inr(caps.total_capital_rupees, 0)],
+                    [
+                      'Buying power',
+                      lakhs(caps.total_capital_rupees * caps.leverage_factor),
+                    ],
+                    ['Orders', liveOrders ? 'REAL Kite orders' : 'Internal broker only'],
+                  ]
+              ).map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-4">
                   <dt className="text-on-surface-variant">{label}</dt>
                   <dd
-                    className={`font-data tabular-nums ${
-                      label === 'Orders' && liveOrders
+                    className={`font-data tabular-nums text-right ${
+                      label === 'Orders' && (liveOrders || arb)
                         ? 'text-negative font-bold'
                         : ''
                     }`}
@@ -290,10 +502,17 @@ export function StartPanel({ preflight, busy, onStart }: Props) {
                 className="label-caps px-3 py-[9px] rounded bg-primary text-white"
                 onClick={async () => {
                   setConfirming(false)
-                  await onStart(caps, liveOrders)
+                  if (arb && stage) {
+                    await onStart(arbCaps, true, {
+                      strategyMode: 'arb',
+                      arbRiskScale: stage.risk_scale,
+                    })
+                  } else {
+                    await onStart(caps, liveOrders)
+                  }
                 }}
               >
-                Start with these limits
+                {arb ? 'Start ARB with real orders' : 'Start with these limits'}
               </button>
             </div>
           </div>

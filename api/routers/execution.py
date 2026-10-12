@@ -17,11 +17,14 @@ import engine_clock
 from api import config
 from api.auth.deps import require_web_session, require_web_session_mutating, WebAuthContext
 from api.schemas.execution import (
+    ArbStageView,
     CapitalView,
     EventsResponse,
     EventView,
     ExecutionCommandRequest,
     ExecutionCommandResponse,
+    ExecutionSettingsRequest,
+    ExecutionSettingsView,
     ExecutionStartRequest,
     ExecutionStartResponse,
     ExecutionStatusResponse,
@@ -31,6 +34,8 @@ from api.schemas.execution import (
     PreflightResponse,
     SessionCaps,
 )
+import arb_metrics
+from api.services import execution_settings
 from api.services.desk_pnl import DeskPnl, DeskRow, build_desk_pnl
 from api.services.execution_engine_runner import (
     engine_is_running,
@@ -40,8 +45,19 @@ from api.services.execution_engine_runner import (
     preflight,
     start_engine,
 )
+from engine_arb import ARB_EXTRA_KEY, ArbSettings
 from engine_commands import POSITION_SCOPED, CommandKind, CommandQueue
-from engine_config import SessionRiskConfig, margin_used_rupees
+from engine_config import (
+    ARB_STAGES,
+    ARB_UNLOCKED_SCALE,
+    STRATEGY_ARB,
+    STRATEGY_MODES,
+    InvalidSessionConfig,
+    SessionRiskConfig,
+    arb_session_config,
+    margin_used_rupees,
+)
+from engine_lock import stage_of_stop
 from engine_status import heartbeat_age_seconds
 from engine_store import SqlitePositionStore
 from engine_trailing import (
@@ -80,6 +96,106 @@ def _queue(*, read_only: bool = False) -> CommandQueue:
     path = config.execution_engine_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     return CommandQueue(path, read_only=read_only and path.exists())
+
+
+def _session_config_from(body: ExecutionStartRequest) -> SessionRiskConfig:
+    """ARB takes only its stage and the capital; legacy takes the caps."""
+    if body.strategy_mode == STRATEGY_ARB:
+        return arb_session_config(
+            risk_scale=body.arb_risk_scale,
+            total_capital_rupees=body.caps.total_capital_rupees,
+            leverage_factor=body.caps.leverage_factor,
+        )
+    return _caps_from(body.caps)
+
+
+def _candidate(row) -> dict:
+    try:
+        data = json.loads(str(row["candidate_json"] or "{}"))
+    except (ValueError, TypeError, KeyError, IndexError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _arb_fields(row, extra: dict) -> dict:
+    """The ARB columns of a desk row. Empty for a trade ARB did not stamp."""
+    arb = extra.get(ARB_EXTRA_KEY)
+    if not isinstance(arb, dict):
+        return {}
+    candidate = _candidate(row)
+    state = str(row["state"])
+    held = state in _OPEN_STATES or state == "closed"
+    entry = row["entry_price"] if held else None
+    initial = extra.get(INITIAL_STOP_KEY)
+    risk_now = (
+        current_risk_rupees(
+            direction=str(row["direction"]),
+            entry=row["entry_price"],
+            stop=row["stop_price"],
+            qty=int(row["qty"] or 0),
+        )
+        if state in _OPEN_STATES
+        else None
+    )
+    return {
+        "source": arb_metrics.source_label(arb),
+        "arb": arb,
+        "signal_price": arb_metrics.signal_price(candidate),
+        "entry_slippage_bps": (
+            arb_metrics.entry_slippage_bps(candidate, entry) if entry is not None else None
+        ),
+        "lock_stage": (
+            stage_of_stop(
+                direction=str(row["direction"]),
+                entry=row["entry_price"],
+                initial_stop=initial,
+                stop=row["stop_price"],
+                tick_size=candidate.get("tick_size"),
+            )
+            if state in ("protected", "trailing")
+            else None
+        ),
+        "risk_freed": risk_now is not None and risk_now <= 0,
+        "r_gross": (
+            arb_metrics.r_gross(row["entry_price"], initial, row["qty"], row["realised_pnl"])
+            if state == "closed"
+            else None
+        ),
+    }
+
+
+def _stage_views() -> List[ArbStageView]:
+    views = []
+    for stage_key, scale in ARB_STAGES:
+        settings = ArbSettings(risk_scale=scale)
+        views.append(
+            ArbStageView(
+                key=stage_key,
+                risk_scale=scale,
+                unlocked=scale <= ARB_UNLOCKED_SCALE + 1e-9,
+                orb_risk=settings.orb_risk_rupees(),
+                funnel_risks=[settings.funnel_risk_rupees(i) for i in range(4)],
+                open_risk_cap=settings.open_risk_cap_rupees(),
+                min_risk=settings.min_risk_rupees(),
+                hard_day_stop=settings.hard_day_stop_rupees(),
+                day_lock_arm=settings.day_lock_arm_rupees(),
+                closed_loss_backstop=settings.closed_loss_backstop_rupees(),
+            )
+        )
+    return views
+
+
+def _settings_view(settings: execution_settings.ExecutionSettings) -> ExecutionSettingsView:
+    return ExecutionSettingsView(
+        autostart_strategy=settings.autostart_strategy,
+        arb_risk_scale=settings.arb_risk_scale,
+        arb_total_capital_rupees=settings.arb_total_capital_rupees,
+        updated_at=settings.updated_at,
+        updated_by=settings.updated_by,
+        unlocked_scale=ARB_UNLOCKED_SCALE,
+        day_lock_keep=ArbSettings().day_lock_keep,
+        stages=_stage_views(),
+    )
 
 
 def _caps_from(config_values: SessionCaps) -> SessionRiskConfig:
@@ -222,6 +338,7 @@ def _to_view(
         manual_review=extra.get("manual_review"),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        **_arb_fields(row, extra),
     )
 
 
@@ -272,8 +389,14 @@ def execution_status() -> ExecutionStatusResponse:
                 _desk_rows(store.list_positions(_today())),
                 dict(marks.get("pnl") or {}),
             )
+            defaults = SessionRiskConfig()
             session_config = SessionRiskConfig(
-                daily_loss_cap_rupees=caps.daily_loss_cap_rupees
+                daily_loss_cap_rupees=caps.daily_loss_cap_rupees,
+                # What the session was started with, once the engine has
+                # written it; the defaults before that.
+                total_capital_rupees=float(data.get("total_capital") or 0.0)
+                or defaults.total_capital_rupees,
+                leverage_factor=float(data.get("leverage") or 0.0) or defaults.leverage_factor,
             )
             used = margin_used_rupees(
                 store.open_positions(), session_config.leverage_factor
@@ -320,6 +443,8 @@ def execution_status() -> ExecutionStatusResponse:
         **_feed_fields(marks),
         last_error=data.get("last_error"),
         escalations=dict(data.get("escalations") or {}),
+        strategy_mode=str(data.get("strategy_mode") or "legacy_vwap"),
+        arb=data.get("arb") if isinstance(data.get("arb"), dict) else None,
     )
 
 
@@ -422,8 +547,10 @@ def execution_start(
 
     Refusals are outright and specific; nothing queues waiting for a window.
     """
+    if body.strategy_mode not in STRATEGY_MODES:
+        raise HTTPException(status_code=400, detail="unknown_strategy_mode")
     success, message, pid = start_engine(
-        session_config=_caps_from(body.caps),
+        session_config=_session_config_from(body),
         session_date=body.session_date,
         live_orders=body.live_orders,
     )
@@ -431,6 +558,39 @@ def execution_start(
         status = 409 if "already running" in message else 400
         raise HTTPException(status_code=status, detail=message)
     return ExecutionStartResponse(success=True, message=message, pid=pid)
+
+
+@router.get(
+    "/settings",
+    response_model=ExecutionSettingsView,
+    dependencies=[Depends(require_web_session)],
+)
+def execution_settings_read() -> ExecutionSettingsView:
+    """What autostart launches, and the ARB stages with their rupee figures."""
+    return _settings_view(execution_settings.load())
+
+
+@router.post("/settings", response_model=ExecutionSettingsView)
+def execution_settings_write(
+    body: ExecutionSettingsRequest,
+    ctx: WebAuthContext = Depends(require_web_session_mutating),
+) -> ExecutionSettingsView:
+    """Choose what the next 09:15 autostart launches. A running engine is not
+    touched: a session's strategy is fixed when it starts."""
+    from datetime import datetime, timezone
+
+    candidate = execution_settings.ExecutionSettings(
+        autostart_strategy=str(body.autostart_strategy),
+        arb_risk_scale=float(body.arb_risk_scale),
+        arb_total_capital_rupees=float(body.arb_total_capital_rupees),
+        updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        updated_by=(ctx.session.username if ctx and ctx.session else None) or "owner",
+    )
+    try:
+        saved = execution_settings.save(candidate)
+    except (InvalidSessionConfig, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _settings_view(saved)
 
 
 @router.post(
