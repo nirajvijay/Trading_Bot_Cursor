@@ -2,7 +2,7 @@
 
 Written 26 Sep 2026, against `production` at 71efa9a (#51). It builds on `REPORT.md` in this folder.
 
-**Built so far:** PR A (`PR_A_PLAN.md`) and PR B (`PR_B_PLAN.md`). Where a PR plan and this document differ, the PR plan is what was built. Section 3.3 was rewritten on 12 Oct 2026 to match PR B.
+**Built so far:** PR A (`PR_A_PLAN.md`), PR B (`PR_B_PLAN.md`) and PR C (`PR_C_PLAN.md`). Where a PR plan and this document differ, the PR plan is what was built. Section 3.3 was rewritten on 12 Oct 2026 to match PR B. PR C built sections 2.1, 3.6, 3.7 and 4; its plan also corrects the backtest figure to ₹39,532 a month (stops on the tick grid, thresholds compared exactly).
 
 ## 0. The gap in one table
 
@@ -92,7 +92,7 @@ Pass the ARB config through CLI args and the start endpoint. The admin-config sn
 
 Everything else in the module stays as it is: `resolve_stop`, favourable-only, the floor, the 25-modification cap handling and `move_stop`. The rule moves the stop less often than the 0.5R ladder does, which also eases the Kite modification cap.
 
-Why bar closes and not LTP: the ₹43.8k/month figure was tested on 1-minute closes. A tick-level version is a different, untested strategy. The 0.5R ladder stays selectable for legacy mode.
+Why bar closes and not LTP: the backtest figure was tested on 1-minute closes. A tick-level version is a different, untested strategy. The 0.5R ladder stays selectable for legacy mode.
 
 ### 2.2 Day MTM becomes a decision number
 New `engine_day_pnl.py` (pure), fed each tick:
@@ -159,7 +159,7 @@ A resting SL-M entry order at Kite was considered and not recommended. It bypass
 New `arb_day_state` table in the engine DB (one row per session_date and run): mtm_peak, lock_armed_at, halted_reason, last_mtm. Written each tick when changed. On restart the peak is restored. Without it a mid-day restart would reset the peak and disarm the day lock.
 
 ### 3.6 Execution-quality log
-Per trade, record: signal price (level or trigger), signal time, order time, fill price, slippage in bps, and exit slippage vs the stop. The whole edge depends on slippage (3 bps → ₹41.9k/mo; 5 bps → ₹35.1k with the live ORB rule), so this is the most important forward-test measurement. For ORB the slippage that matters runs from the **level** to the fill: the backtest assumed a fill at the level, and the detector records how far past it the trigger tick was.
+Per trade, record: signal price (level or trigger), signal time, order time, fill price, slippage in bps, and exit slippage vs the stop. The whole edge depends on slippage (3 bps → ₹39.5k/mo; 5 bps → ₹33.2k with the live ORB rule and live exits), so this is the most important forward-test measurement. For ORB the slippage that matters runs from the **level** to the fill: the backtest assumed a fill at the level, and the detector records how far past it the trigger tick was.
 
 ### 3.7 Post-market parity check (no paper trading)
 There is no paper or shadow phase: ARB is tested with **real Kite orders at micro size** (section 6). To check the live engine is really running the backtested strategy, a new `scripts/arb_daily_check.py` runs after the close. It is read-only, places no orders and does not simulate a paper account.
@@ -198,7 +198,7 @@ Strategy (ORB / F0–F3), base → used risk (and why it was cut: half / cap), R
 - The confirm dialog lists the scaled ARB numbers (e.g. at Micro: ORB ₹125, hard stop ₹250) and that orders are LIVE. ARB mode can only start with live orders on; there is no paper ARB.
 
 ### 4.5 New tab: **Performance** (forward test vs backtest)
-- Month and day P&L after charges, green-day %, worst day, drawdown, against the backtest of the rule that is actually live (₹41.9k/mo, worst day −₹6.0k, ~60% green; see the correction at the top of `REPORT.md`).
+- Month and day P&L after charges, green-day %, worst day, drawdown, against the backtest of the rule that is actually live (₹39.5k/mo, worst day −₹6.0k, ~59% green; see the corrections at the top of `REPORT.md`).
 - R and P&L by source (ORB, F0–F3), against the report's source table.
 - **Slippage tracker:** median and mean entry/exit bps; alerts if the 20-trade rolling mean > 4 bps.
 - Day-control log: how many hard stops and day locks fired, and P&L at each.
@@ -254,7 +254,7 @@ Estimates, from re-sizing the 767 backtest trades (Jan–Sep 2026, 3 bps slippag
 |---|---|---|---|---|
 | Micro 5% | ~₹12.8k | ~+₹1.2k (3 of 9 months slightly red, −₹250 to −₹510) | ~−₹320 | ~0.20R |
 | 25% | ~₹68k | ~+₹8.5k | ~−₹1.5k | ~0.17R |
-| 100% | ~₹2.7L | ₹43.8k (report) | −₹5.7k | ~0.10R |
+| 100% | ~₹2.7L | ₹43.8k (report; ₹39.5k with the live rules) | −₹5.7k | ~0.10R |
 
 **Micro realistically costs at most a few thousand rupees in a bad month,** and it exercises every real path: Kite fills, SL-M/SL stops, modifications, day-control flattens and restarts.
 

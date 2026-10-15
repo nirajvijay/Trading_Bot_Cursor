@@ -54,6 +54,20 @@ export function AppFooter({
     )
   }
 
+  if (activeTab === 'performance') {
+    return (
+      <footer className="h-8 px-4 flex items-center justify-between border-t border-outline-variant bg-white text-[10px] text-on-surface-variant shrink-0">
+        <div className="flex items-center gap-4 font-data">
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+            PERFORMANCE
+          </span>
+        </div>
+        <span className="label-caps tracking-wider">Display only · the engine never reads these</span>
+      </footer>
+    )
+  }
+
   if (activeTab === 'strategy') {
     return (
       <footer className="h-8 px-4 flex items-center justify-between border-t border-outline-variant bg-white text-[10px] text-on-surface-variant shrink-0">

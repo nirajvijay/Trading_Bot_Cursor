@@ -29,7 +29,16 @@ from uuid import uuid4
 
 import engine_clock
 from engine_commands import CommandQueue
-from engine_config import SessionRiskConfig, validate
+from engine_arb_context import LiveArbContext
+from engine_config import (
+    ARB_UNLOCKED_SCALE,
+    STRATEGY_ARB,
+    STRATEGY_LEGACY_VWAP,
+    STRATEGY_MODES,
+    SessionRiskConfig,
+    arb_session_config,
+    validate_start,
+)
 from engine_core import ExecutionEngine
 from engine_feed import FeedMonitor
 from engine_live_marks import feed_state, first_reason
@@ -46,7 +55,7 @@ from engine_sizing import RiskCappedSizing
 from engine_status import EngineStatus, HeartbeatWriter, LiveMarkWriter
 from engine_store import SqlitePositionStore
 from engine_types import ExecutionState
-from trading_engine_handoff import fetch_triggered_with_vwap_since
+from trading_engine_handoff import fetch_arb_candidates_since, fetch_triggered_with_vwap_since
 
 # Feed staleness. The engine has no market connection of its own -- everything
 # it knows comes from what the observation runner writes -- so "feed stale" and
@@ -82,6 +91,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--daily-loss-cap", type=float, default=3000.0)
     parser.add_argument("--total-capital", type=float, default=300_000.0)
     parser.add_argument("--leverage", type=float, default=5.0)
+    parser.add_argument(
+        "--strategy-mode",
+        choices=STRATEGY_MODES,
+        default=STRATEGY_LEGACY_VWAP,
+        help="legacy_vwap (default) or arb (Adaptive Risk Budget: ORB + funnel)",
+    )
+    parser.add_argument(
+        "--arb-risk-scale",
+        type=float,
+        default=ARB_UNLOCKED_SCALE,
+        help="ARB rollout stage: every ARB rupee figure is multiplied by this",
+    )
     parser.add_argument("--live-orders", action="store_true")
     parser.add_argument("--tick-seconds", type=float, default=TICK_INTERVAL_SECONDS)
     parser.add_argument(
@@ -94,16 +115,24 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def build_config(args: argparse.Namespace) -> SessionRiskConfig:
-    config = SessionRiskConfig(
-        per_trade_cap_rupees=args.per_trade_cap,
-        per_trade_cap_vwap_limited_rupees=args.limited_per_trade_cap,
-        daily_loss_cap_rupees=args.daily_loss_cap,
-        total_capital_rupees=args.total_capital,
-        leverage_factor=args.leverage,
-    )
+    if args.strategy_mode == STRATEGY_ARB:
+        # ARB sizes from its own tested numbers; the legacy caps do not apply.
+        config = arb_session_config(
+            risk_scale=args.arb_risk_scale,
+            total_capital_rupees=args.total_capital,
+            leverage_factor=args.leverage,
+        )
+    else:
+        config = SessionRiskConfig(
+            per_trade_cap_rupees=args.per_trade_cap,
+            per_trade_cap_vwap_limited_rupees=args.limited_per_trade_cap,
+            daily_loss_cap_rupees=args.daily_loss_cap,
+            total_capital_rupees=args.total_capital,
+            leverage_factor=args.leverage,
+        )
     # Refuse an unsafe configuration here too, not only at the API. A process
-    # launched by hand must not bypass the guard.
-    validate(config)
+    # launched by hand must not bypass the guard (or ARB's stage limit).
+    validate_start(config)
     return config
 
 
@@ -197,6 +226,9 @@ def build_engine(
 ):
     config = build_config(args)
     session_date = args.session_date or engine_clock.to_ist().strftime("%Y-%m-%d")
+    # ARB reads both signal sources (continuation triggers and ORB breakouts)
+    # and the market context; a legacy session only ever sees continuation rows.
+    fetch = fetch_arb_candidates_since if config.is_arb else fetch_triggered_with_vwap_since
     return ExecutionEngine(
         broker=build_broker(live_orders=args.live_orders),
         store=store,
@@ -204,10 +236,11 @@ def build_engine(
         risk_policy=RiskPolicy(config.to_risk_limits()),
         sizing_policy=RiskCappedSizing(),
         candidate_source=partial(
-            fetch_triggered_with_vwap_since,
+            fetch,
             Path(args.live_db),
             created_at_gte=floor_iso,
         ),
+        arb_context=LiveArbContext(Path(args.live_db)) if config.is_arb else None,
         session_config=config,
         session_date=session_date,
         is_live=bool(args.live_orders),
@@ -223,6 +256,12 @@ def build_engine(
 def snapshot_status(engine: ExecutionEngine, *, state: str = "running") -> EngineStatus:
     open_positions = engine.store.open_positions()
     config = engine.session_config
+    # ARB's closed-loss backstop in an ARB session; the entered cap otherwise.
+    daily_cap = config.to_risk_limits().daily_loss_cap_rupees
+    try:
+        arb = engine.arb_snapshot()
+    except Exception as exc:  # noqa: BLE001 - display only; the heartbeat must still be written
+        arb = {"error": str(exc) or type(exc).__name__}
     return EngineStatus(
         run_id=str(engine.run_id or ""),
         session_date=engine.session_date,
@@ -239,12 +278,15 @@ def snapshot_status(engine: ExecutionEngine, *, state: str = "running") -> Engin
         entries_paused=engine.entries_paused,
         pause_reason=engine.pause_reason,
         realised_loss_today=float(getattr(engine, "realised_loss_today", 0.0)),
-        daily_loss_cap=config.daily_loss_cap_rupees,
+        daily_loss_cap=daily_cap,
         remaining_daily=max(
             0.0,
-            config.daily_loss_cap_rupees
-            - float(getattr(engine, "realised_loss_today", 0.0)),
+            daily_cap - float(getattr(engine, "realised_loss_today", 0.0)),
         ),
+        strategy_mode=config.strategy_mode,
+        total_capital=config.total_capital_rupees,
+        leverage=config.leverage_factor,
+        arb=arb,
         is_live=engine.is_live,
         last_error=engine.failures.last_error,
         step_failures=engine.failures.snapshot(),

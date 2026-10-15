@@ -1,8 +1,10 @@
 """Start the execution engine, with live Kite orders, once observation autostarted.
 
 Runs inside the long-lived API process and calls the same start path as the
-Execution Desk's Start button, with the default caps and live orders on, so
-the desk shows it exactly as if the button had been pressed. Tries at most
+Execution Desk's Start button, with live orders on, so the desk shows it
+exactly as if the button had been pressed. What it launches is the strategy
+saved on the desk (api.services.execution_settings): legacy VWAP with the
+default caps unless ARB was chosen there. Tries at most
 once per day, between the 09:15 open and 09:30, and only when the observation
 autostart itself launched observation today. A manual observation start, a
 missed observation window, or any refused precondition means no engine today.
@@ -44,7 +46,7 @@ def autostart_tick(now: Optional[datetime] = None) -> Optional[str]:
     from api.services.checklist_activity import workflow_busy
     from api.services.execution_engine_runner import start_engine
     from api.services.observation_autostart import autostarted_today
-    from engine_config import SessionRiskConfig
+    from api.services import execution_settings
     from morning_checklist import run_log
 
     now = (now or datetime.now(IST)).astimezone(IST)
@@ -60,10 +62,13 @@ def autostart_tick(now: Optional[datetime] = None) -> Optional[str]:
     if not _claim_today(day):
         return None
     try:
-        ok, message, pid = start_engine(session_config=SessionRiskConfig(), session_date=day,
+        session_config = execution_settings.session_config_for(execution_settings.load())
+        ok, message, pid = start_engine(session_config=session_config, session_date=day,
                                         live_orders=True, now=now)
-        outcome = (f"execution engine started with live Kite orders (pid {pid})" if ok
-                   else f"execution engine not started: {message}")
+        what = (f"execution engine (ARB, stage {session_config.arb.risk_scale:g})"
+                if session_config.is_arb else "execution engine")
+        outcome = (f"{what} started with live Kite orders (pid {pid})" if ok
+                   else f"{what} not started: {message}")
     except Exception as exc:
         outcome = f"execution engine not started: {type(exc).__name__}"
     run_log(f"execution autostart: {outcome}")

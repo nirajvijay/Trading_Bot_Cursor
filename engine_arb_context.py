@@ -16,6 +16,12 @@ reads). Two facts:
   Triggers are ordered by exchange time; a row with no exchange time sorts
   first, which can only make a trigger "not first" (a skip), never an entry.
 
+* **Lock bars (PR C).** The completed 1-minute bars of one stock since a
+  trade's entry minute, for the lock-rule stop (engine_lock). Bars the
+  candle builder marked partial (a feed gap inside the minute, or a flush at
+  shutdown) are left out: a bar that may be missing prices is never used to
+  move a stop.
+
 ``alignment`` is pure; ``LiveArbContext`` only adds the SQLite reads.
 """
 from __future__ import annotations
@@ -23,10 +29,11 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 import engine_clock
 from engine_arb import FunnelFeatures
+from engine_lock import LockBar
 from engine_priority import volume_ratio
 from engine_types import TriggerCandidate
 from trading_engine_broker import parse_timestamp_text
@@ -116,6 +123,13 @@ LIMIT 1
 """
 
 
+_LOCK_BARS_SQL = """
+SELECT candle_time, high, low, close
+FROM live_1m_candles
+WHERE instrument_token = ? AND candle_time >= ? AND candle_time > ? AND is_partial = 0
+ORDER BY candle_time ASC
+"""
+
 class LiveArbContext:
     def __init__(
         self,
@@ -130,6 +144,31 @@ class LiveArbContext:
         if not self.live_db.exists():
             raise ArbContextError("live db missing")
         return sqlite3.connect(f"file:{self.live_db}?mode=ro", uri=True)
+
+    def lock_bars(
+        self, *, instrument_token: int, since_minute: str, after_minute: Optional[str] = None
+    ) -> List[LockBar]:
+        """Completed bars of one instrument from ``since_minute`` on, oldest
+        first; with ``after_minute``, only bars later than that one.
+
+        Both are candle_time text (engine_lock.minute_key). The read uses the
+        table's primary key (instrument_token, candle_time).
+        """
+        try:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    _LOCK_BARS_SQL,
+                    (int(instrument_token), str(since_minute), str(after_minute or "")),
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise ArbContextError(f"observation db read failed: {exc}") from exc
+        return [
+            LockBar(minute=str(minute), high=float(high), low=float(low), close=float(close))
+            for minute, high, low, close in rows
+        ]
 
     def features_for(
         self, candidate: TriggerCandidate, stop_price: Optional[float]

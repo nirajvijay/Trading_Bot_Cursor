@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchStrategyFunnel, fetchStrategyOrb } from '../api/client'
-import type { FunnelFeed, OrbDay } from '../api/types'
+import { fetchStrategyBreadth, fetchStrategyFunnel, fetchStrategyOrb } from '../api/client'
+import type { FunnelFeed, MarketBreadth, OrbDay } from '../api/types'
 
 const POLL_MS = 5000
 
@@ -13,6 +13,7 @@ const POLL_MS = 5000
 export function useStrategy(sessionDate: string, live: boolean) {
   const [orb, setOrb] = useState<OrbDay | null>(null)
   const [funnel, setFunnel] = useState<FunnelFeed | null>(null)
+  const [breadth, setBreadth] = useState<MarketBreadth | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Drop a slow response for a date the user has already moved away from.
@@ -23,10 +24,15 @@ export function useStrategy(sessionDate: string, live: boolean) {
     const asked = sessionDate
     setLoading(true)
     try {
-      const [orbDay, feed] = await Promise.all([fetchStrategyOrb(asked), fetchStrategyFunnel(asked)])
+      const [orbDay, feed, market] = await Promise.all([
+        fetchStrategyOrb(asked),
+        fetchStrategyFunnel(asked),
+        fetchStrategyBreadth(asked),
+      ])
       if (latest.current !== asked) return
       setOrb(orbDay)
       setFunnel(feed)
+      setBreadth(market)
       setError(null)
     } catch (err) {
       if (latest.current !== asked) return
@@ -39,11 +45,12 @@ export function useStrategy(sessionDate: string, live: boolean) {
   useEffect(() => {
     setOrb(null)
     setFunnel(null)
+    setBreadth(null)
     void refresh()
     if (!live) return
     const timer = window.setInterval(() => void refresh(), POLL_MS)
     return () => window.clearInterval(timer)
   }, [refresh, live])
 
-  return { orb, funnel, loading, error, refresh }
+  return { orb, funnel, breadth, loading, error, refresh }
 }

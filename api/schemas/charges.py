@@ -24,6 +24,8 @@ class TradeChargesView(BaseModel):
     qty: int
     closed_at: Optional[str] = None
     close_reason: Optional[str] = None
+    # ARB only: "ORB", or "F0".."F3" by funnel score.
+    source: Optional[str] = None
     entry_avg: Optional[float] = None
     exit_avg: Optional[float] = None
     # The engine's realised P&L, unchanged: Kite's fills, before charges.

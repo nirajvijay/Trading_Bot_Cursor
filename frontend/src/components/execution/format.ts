@@ -123,6 +123,20 @@ const REASON_LABELS: Record<string, string> = {
   arb_orb_outside_window: 'ORB: outside the breakout window',
   arb_past_orb_cutoff: 'ORB: past the 11:00 cutoff',
   arb_unknown_strategy: 'Unknown strategy',
+  arb_no_trigger_time: 'Funnel: trigger time unknown',
+  arb_after_funnel_cutoff: 'Funnel: after the 13:00 cutoff',
+  arb_past_funnel_cutoff: 'Funnel: past the 13:00 cutoff',
+  arb_volume_below_min: 'Funnel: volume below 2×',
+  arb_no_structural_stop: 'Funnel: no structural stop',
+  arb_stop_below_min_pct: 'Funnel: stop closer than 0.25%',
+  arb_not_first_trigger_today: 'Funnel: not the stock\'s first trigger today',
+  arb_score0_limit: 'Funnel: two score-0 trades already taken',
+  arb_below_min_risk: 'Budget: no room for the smallest trade',
+  arb_trigger_stale: 'Signal older than 15s',
+  arb_context_unavailable: 'Market context unavailable',
+  arb_day_check_failed: 'Day controls not working',
+  day_halted: 'Day already stopped',
+  no_bars: 'No bars',
   // Why the live Open P&L fell back to Kite REST.
   ws_disconnected: 'WebSocket disconnected',
   ws_connecting: 'WebSocket connecting',
@@ -146,6 +160,7 @@ const PRECONDITION_LABELS: Record<string, string> = {
   observation_runner: 'Observation runner active',
   no_engine_running: 'No engine already running',
   risk_config: 'Risk caps are sane',
+  one_strategy_per_day: 'Only one strategy trades per day',
 }
 
 export function preconditionLabel(key: string): string {
@@ -174,4 +189,24 @@ export function mismatchTitle(m: {
     return `${gap}: the engine's own orders sold ${m.over_exit_qty} more shares than the trade held. Kite's figure is what counts toward the daily loss.`
   }
   return `${gap}: an order the engine did not mean to place, or a trade made outside the engine. Kite's figure is what counts toward the daily loss.`
+}
+
+
+/** An ARB rollout stage by its risk scale: "Micro 5%", "25%", "50%", "100%". */
+export function stageLabel(scale: number | null | undefined): string {
+  if (scale == null) return '—'
+  const pct = `${Math.round(scale * 100)}%`
+  return scale <= 0.05 + 1e-9 ? `Micro ${pct}` : pct
+}
+
+/** A signed R multiple, e.g. "+1.25R". */
+export function rMultiple(r: number | null | undefined, digits = 2): string {
+  if (r == null || !Number.isFinite(r)) return '—'
+  return `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(digits)}R`
+}
+
+/** Signed basis points, e.g. "+2.4 bps". Positive is worse than assumed. */
+export function bps(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(1)} bps`
 }

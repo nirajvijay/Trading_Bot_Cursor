@@ -453,6 +453,90 @@ export interface ExecutionStatus {
   live_pnl_order_updates?: number | null
   last_error: string | null
   escalations: Record<string, string>
+  /** What the running (or last) session was started as. */
+  strategy_mode?: StrategyMode
+  /** ARB's day state, written by the engine every tick. Null in a legacy session. */
+  arb?: ArbDayStatus | null
+}
+
+export type StrategyMode = 'legacy_vwap' | 'arb'
+
+/** engine_core.arb_snapshot: the Adaptive Risk Budget right now. */
+export interface ArbDayStatus {
+  error?: string
+  risk_scale: number
+  /** Day P&L after estimated charges, open positions marked at Kite LTP. */
+  day_mtm: number | null
+  closed_net: number | null
+  open_net: number | null
+  prices_complete: boolean | null
+  stale_symbols: string[]
+  day_check_ok: boolean
+  peak_mtm: number | null
+  lock_armed: boolean
+  lock_line: number | null
+  lock_arm_at: number
+  lock_keep: number
+  hard_day_stop: number
+  closed_loss_backstop: number
+  open_risk_cap: number
+  house_money: number
+  live_risk: number
+  room: number
+  min_risk: number
+  losers_today: number
+  half_size: boolean
+  score0_used: number
+  score0_max: number
+  orb_risk: number
+  funnel_risks: number[]
+  orb_cutoff: string
+  funnel_cutoff: string
+  halted_reason: string | null
+  halted_at: string | null
+  halted_mtm: number | null
+}
+
+export interface ArbStage {
+  key: string
+  risk_scale: number
+  unlocked: boolean
+  orb_risk: number
+  funnel_risks: number[]
+  open_risk_cap: number
+  min_risk: number
+  hard_day_stop: number
+  day_lock_arm: number
+  closed_loss_backstop: number
+}
+
+/** What the 09:15 autostart launches, and the stages ARB can run at. */
+export interface ExecutionSettings {
+  autostart_strategy: StrategyMode
+  arb_risk_scale: number
+  arb_total_capital_rupees: number
+  updated_at: string | null
+  updated_by: string | null
+  unlocked_scale: number
+  day_lock_keep: number
+  stages: ArbStage[]
+}
+
+/** What ARB decided when it took (or skipped) a signal. */
+export interface ArbTradeInfo {
+  strategy?: 'ORB' | 'FUNNEL'
+  risk_scale?: number
+  score?: number | null
+  score_parts?: Record<string, boolean>
+  base_risk?: number
+  risk_used?: number
+  risk_allowed?: number
+  half_size?: boolean
+  one_share_floor?: boolean
+  room?: number
+  losers_today?: number
+  live_risk?: number
+  day_mtm?: number
 }
 
 export interface ExecutionPosition {
@@ -501,6 +585,18 @@ export interface ExecutionPosition {
   manual_review: string | null
   created_at: string | null
   updated_at: string | null
+  /** ARB: "ORB", or "F0".."F3" by funnel score. Absent on a legacy trade. */
+  source?: string | null
+  arb?: ArbTradeInfo | null
+  /** The price the backtest assumed, and how much worse the fill was (bps). */
+  signal_price?: number | null
+  entry_slippage_bps?: number | null
+  /** "initial" | "locked" (+0.25R) | "giveback" (25% of the peak gain). */
+  lock_stage?: string | null
+  /** The stop is at or beyond entry: no longer uses the open-risk budget. */
+  risk_freed?: boolean
+  /** Closed trades: the result in R before charges. */
+  r_gross?: number | null
 }
 
 export interface ExecutionPositions {
@@ -586,6 +682,8 @@ export interface TradeChargesRow {
   qty: number
   closed_at: string | null
   close_reason: string | null
+  /** ARB only: "ORB", or "F0".."F3" by funnel score. */
+  source?: string | null
   entry_avg: number | null
   exit_avg: number | null
   gross_pnl: number | null
@@ -623,7 +721,23 @@ export interface OrbRules {
   max_overshoot_atr: number
 }
 
+/** What the execution engine did with a signal. */
+export interface EngineDecision {
+  decision: 'entered' | 'skipped'
+  state: string
+  reason: string | null
+  source: string | null
+  base_risk: number | null
+  risk_used: number | null
+  half_size: boolean | null
+  qty: number | null
+  entry_price: number | null
+  close_reason: string | null
+}
+
 export interface OrbArm {
+  /** Null when the engine has no row for this signal. */
+  engine?: EngineDecision | null
   setup_id: string
   symbol: string
   direction: string
@@ -682,6 +796,7 @@ export interface OrbDay {
 }
 
 export interface FunnelTrigger {
+  engine?: EngineDecision | null
   setup_id: string
   symbol: string
   direction: string
@@ -705,4 +820,142 @@ export interface FunnelFeed {
   session_date: string
   triggers: FunnelTrigger[]
   pending: number
+}
+
+
+/** GET /strategy/breadth: the market's move from the open (the funnel score's input). */
+export interface MarketBreadth {
+  session_date: string
+  as_of: string | null
+  stocks: number
+  market_pct: number | null
+  threshold_pct: number
+  /** Which side scores a point for "market against" right now. */
+  scores_for: 'UP' | 'DOWN' | null
+  sectors: { sector: string; pct: number; stocks: number }[]
+}
+
+// --- Performance tab (/performance) ------------------------------------------
+
+export interface PerformanceGate {
+  key: string
+  label: string
+  /** null = cannot be judged yet. */
+  ok: boolean | null
+  detail: string
+}
+
+export interface PerformanceDay {
+  session_date: string
+  trades: number
+  gross: number
+  charges: number
+  net: number
+  r_gross: number
+  cumulative_net: number
+  halted_reason: string | null
+}
+
+export interface PerformanceParityDay {
+  session_date: string
+  generated_at: string
+  candidates: number | null
+  matched: number | null
+  match_rate: number | null
+  live_entered: number | null
+  replay_entered: number | null
+  live_r: number | null
+  replay_r: number | null
+  halt_match: boolean | null
+  live_halt: { reason: string; minute: string | null } | null
+  replay_halt: { reason: string; minute: string | null } | null
+}
+
+export interface PerformanceMismatch {
+  setup_id: string
+  symbol: string
+  strategy: string
+  direction: string
+  time: string
+  why: string | null
+  live: { decision: string; reason?: string | null; risk_used?: number | null }
+  replay: { decision: string; reason?: string | null; risk_used?: number | null }
+}
+
+export interface SlippageStats {
+  trades: number
+  median: number | null
+  mean: number | null
+}
+
+export interface PerformanceSummary {
+  risk_scale: number
+  available_scales: number[]
+  stage: {
+    risk_scale: number
+    key: string
+    unlocked_scale: number
+    next_scale: number | null
+    next_key: string | null
+    days: number
+    trades: number
+    first_day: string | null
+    last_day: string | null
+    gates: PerformanceGate[]
+    all_gates_met: boolean
+    incidents: { session_date: string; symbol: string; close_reason: string }[]
+  }
+  totals: {
+    trades: number
+    wins: number
+    win_rate: number | null
+    gross: number
+    charges: number
+    net: number
+    r_gross: number
+    days: number
+    green_days: number
+    green_day_rate: number | null
+    worst_day: number | null
+    best_day: number | null
+    max_drawdown: number
+  }
+  days: PerformanceDay[]
+  months: { month: string; net: number; r_gross: number; trades: number; days: number; green_days: number }[]
+  sources: { source: string; trades: number; wins: number; net: number; r_gross: number; avg_r: number | null }[]
+  slippage: {
+    entry: SlippageStats
+    stop_exit: SlippageStats
+    rolling_trades: number
+    rolling_entry_mean: number | null
+    rolling_alert: boolean
+    rolling_demote: boolean
+    alert_bps: number
+    demote_bps: number
+  }
+  day_controls: {
+    session_date: string
+    reason: string
+    at: string | null
+    mtm: number | null
+    peak: number | null
+    day_net: number | null
+  }[]
+  parity: {
+    days: PerformanceParityDay[]
+    candidates: number
+    matched: number
+    match_rate: number | null
+    live_r: number
+    replay_r: number
+    unchecked_days: string[]
+    detail_date: string | null
+    detail_rows: PerformanceMismatch[]
+  }
+  reference: {
+    period: string
+    scaled_to: number
+    at_3bps: { net_per_month: number; worst_day: number; green_days: number; max_drawdown: number; trades_per_month: number }
+    at_5bps: { net_per_month: number; worst_day: number; green_days: number; max_drawdown: number; trades_per_month: number }
+  }
 }

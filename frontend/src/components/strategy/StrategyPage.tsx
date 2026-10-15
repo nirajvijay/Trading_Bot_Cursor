@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react'
-import type { FunnelTrigger, OrbArm, OrbDay, OrbRankedStock } from '../../api/types'
+import type {
+  EngineDecision,
+  FunnelTrigger,
+  MarketBreadth,
+  OrbArm,
+  OrbDay,
+  OrbRankedStock,
+} from '../../api/types'
 import { useStrategy } from '../../hooks/useStrategy'
 import { Side } from '../execution/PositionTables'
-import { inr, timeIst } from '../execution/format'
+import { inr, reasonLabel, timeIst } from '../execution/format'
 
 /**
  * Strategy tab: what the signal side sees today.
@@ -148,6 +155,87 @@ const CELL = 'px-3 py-2.5'
 const NUM = `${CELL} text-right font-data tabular-nums whitespace-nowrap`
 const TH = 'px-3 py-2 label-caps whitespace-nowrap border-b border-outline-variant'
 
+/** What the execution engine did with a signal, from its own records. */
+function EngineCell({ engine }: { engine?: EngineDecision | null }) {
+  if (!engine) {
+    return (
+      <span
+        className="text-on-surface-variant"
+        title="The engine has no record of this signal: it was not running in ARB mode, or was paused, stopped or halted"
+      >
+        —
+      </span>
+    )
+  }
+  if (engine.decision === 'entered') {
+    return (
+      <span
+        className="label-caps text-positive whitespace-nowrap"
+        title={`Base risk ${inr(engine.base_risk, 0)}${engine.half_size ? ', half size after a loser' : ''}`}
+      >
+        Entered {engine.risk_used != null ? inr(engine.risk_used, 0) : ''}
+      </span>
+    )
+  }
+  return <span className="text-[11px] text-on-surface-variant">{reasonLabel(engine.reason)}</span>
+}
+
+/** The market's move from the open: the input to the funnel's quality score. */
+function BreadthPanel({ breadth }: { breadth: MarketBreadth | null }) {
+  if (!breadth || breadth.market_pct === null) {
+    return (
+      <section className="bg-surface border border-outline-variant rounded-md px-4 py-3 text-[12px] text-on-surface-variant">
+        No 1-minute candles for this day yet.
+      </section>
+    )
+  }
+  const side =
+    breadth.scores_for === 'UP' ? 'Longs' : breadth.scores_for === 'DOWN' ? 'Shorts' : 'Neither side'
+  return (
+    <section className="bg-surface border border-outline-variant rounded-md px-4 py-3 flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+        <span>
+          <span className="label-caps text-on-surface-variant">Market from the open </span>
+          <span
+            className={`font-data tabular-nums text-[16px] font-semibold ${
+              breadth.market_pct < 0 ? 'text-negative' : 'text-positive'
+            }`}
+          >
+            {pct(breadth.market_pct)}
+          </span>
+        </span>
+        <span className="text-[12px]">
+          <span className="font-semibold">{side}</span>{' '}
+          {breadth.scores_for ? 'score' : 'scores'} a point for trading against the market
+          <span className="text-on-surface-variant">
+            {' '}
+            (needs more than {breadth.threshold_pct}% against the trade)
+          </span>
+        </span>
+        <span className="ml-auto text-[11px] text-on-surface-variant font-data">
+          {breadth.stocks} stocks · as of {timeIst(breadth.as_of)}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {breadth.sectors.map((sector) => (
+          <span
+            key={sector.sector}
+            title={`${sector.stocks} stocks`}
+            className={`px-2 py-1 rounded border text-[11px] font-data tabular-nums ${
+              sector.pct < 0
+                ? 'border-red-200 bg-red-50 text-negative'
+                : 'border-emerald-200 bg-emerald-50 text-positive'
+            }`}
+          >
+            <span className="font-sans font-semibold text-on-surface">{sector.sector}</span>{' '}
+            {pct(sector.pct)}
+          </span>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function ArmsTable({ orb, loading }: { orb: OrbDay | null; loading: boolean }) {
   const arms = orb?.arms ?? []
   const empty = loading && !orb
@@ -173,12 +261,13 @@ function ArmsTable({ orb, loading }: { orb: OrbDay | null; loading: boolean }) {
             </th>
             <th className={`${TH} text-right`}>Stop</th>
             <th className={`${TH} text-right`}>Past level</th>
+            <th className={`${TH} text-left`}>Engine</th>
           </tr>
         </thead>
         <tbody>
           {arms.length === 0 && (
             <tr>
-              <td colSpan={11} className="px-3 py-7 text-center text-on-surface-variant">
+              <td colSpan={12} className="px-3 py-7 text-center text-on-surface-variant">
                 {empty}
               </td>
             </tr>
@@ -218,6 +307,9 @@ function ArmsTable({ orb, loading }: { orb: OrbDay | null; loading: boolean }) {
               </td>
               <td className={NUM}>
                 {arm.overshoot_bps === null ? '—' : `${arm.overshoot_bps.toFixed(1)} bps`}
+              </td>
+              <td className={CELL}>
+                {arm.state === 'TRIGGERED' ? <EngineCell engine={arm.engine} /> : '—'}
               </td>
             </tr>
           ))}
@@ -285,12 +377,13 @@ function FunnelTable({ rows, pending, loading }: { rows: FunnelTrigger[]; pendin
             <th className={`${TH} text-left`}>Score</th>
             <th className={`${TH} text-right`}>Base risk</th>
             <th className={`${TH} text-left`}>Filters</th>
+            <th className={`${TH} text-left`}>Engine</th>
           </tr>
         </thead>
         <tbody>
           {rows.length === 0 && (
             <tr>
-              <td colSpan={10} className="px-3 py-7 text-center text-on-surface-variant">
+              <td colSpan={11} className="px-3 py-7 text-center text-on-surface-variant">
                 {loading ? 'Loading…' : 'No continuation triggers on this day.'}
               </td>
             </tr>
@@ -322,6 +415,9 @@ function FunnelTable({ rows, pending, loading }: { rows: FunnelTrigger[]; pendin
                   <span className="text-[11px] text-on-surface-variant">{label(FUNNEL_REASONS, row.reason)}</span>
                 )}
               </td>
+              <td className={CELL}>
+                <EngineCell engine={row.engine} />
+              </td>
             </tr>
           ))}
         </tbody>
@@ -339,7 +435,7 @@ export function StrategyPage({ sessionDate }: { sessionDate: string }) {
   const [date, setDate] = useState(sessionDate)
   // Follow the shell's session date when it rolls over (midnight IST).
   useEffect(() => setDate(sessionDate), [sessionDate])
-  const { orb, funnel, loading, error, refresh } = useStrategy(date, date === todayIstDate())
+  const { orb, funnel, breadth, loading, error, refresh } = useStrategy(date, date === todayIstDate())
 
   const headline = detectorHeadline(orb)
   const arms = orb?.arms ?? []
@@ -353,12 +449,12 @@ export function StrategyPage({ sessionDate }: { sessionDate: string }) {
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-4 flex flex-col gap-3">
+      <div className="max-w-[1500px] mx-auto px-4 sm:px-6 py-4 flex flex-col gap-3">
         <header className="flex flex-wrap items-end justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-[16px] font-extrabold text-on-surface">Strategy signals</h1>
             <p className="text-[12px] text-on-surface-variant">
-              What ARB’s two signal sources see today. Signals only: the engine does not trade ORB yet.
+              What ARB’s two signal sources see today, and what the engine did with each signal.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -445,11 +541,14 @@ export function StrategyPage({ sessionDate }: { sessionDate: string }) {
           </section>
         ) : null}
 
+        <h2 className="label-caps text-on-surface-variant mt-2">Market breadth</h2>
+        <BreadthPanel breadth={breadth} />
+
         <div className="flex flex-wrap items-baseline justify-between gap-2 mt-2">
           <h2 className="label-caps text-on-surface-variant">Funnel: continuation triggers</h2>
           <span className="text-[11px] text-on-surface-variant">
             {triggers.length > 0 ? `${passing} of ${triggers.length} pass the filters · ` : ''}
-            Shown before the ARB budget and the two-a-day limit on score 0
+Filters and score are shown before the ARB budget; the Engine column is what was really done
           </span>
         </div>
         <FunnelTable rows={triggers} pending={funnel?.pending ?? 0} loading={loading && !funnel} />
