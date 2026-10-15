@@ -115,6 +115,10 @@ CommandKind = Literal[
 
 STOP_ORDER_TYPES: FrozenSet[str] = frozenset({"SL", "SL-M"})
 
+# TriggerCandidate.strategy values.
+STRATEGY_FUNNEL = "FUNNEL"
+STRATEGY_ORB = "ORB"
+
 
 @dataclass(frozen=True)
 class TriggerCandidate:
@@ -140,6 +144,18 @@ class TriggerCandidate:
     # construction site stays valid.
     breakout_candle_volume: Optional[int] = None
     avg_prior_3_1m_volume: Optional[float] = None
+    # Which signal produced this trigger. Continuation triggers are ARB's
+    # "funnel"; ORB triggers come from orb_detector and are only ever routed
+    # by an engine running in ARB mode.
+    strategy: str = STRATEGY_FUNNEL
+    # ORB only: the stop the detector fixed when the breakout fired, 0.35 x
+    # ATR14 from the trigger price and already on the tick grid. The stop is
+    # never derived from pullback swings for an ORB trigger.
+    planned_stop: Optional[float] = None
+    orb_level: Optional[float] = None
+    orb_rvol: Optional[float] = None
+    orb_atr14: Optional[float] = None
+    orb_rank: Optional[int] = None
 
 
 @dataclass

@@ -1,0 +1,11 @@
+{
+ "days": 182,
+ "armed": 431,
+ "broke_out": 314,
+ "first_backtest_candidates": 387,
+ "rule": {
+  "min_rvol": 3.0,
+  "top_n": 3,
+  "stop_atr_mult": 0.35
+ }
+}

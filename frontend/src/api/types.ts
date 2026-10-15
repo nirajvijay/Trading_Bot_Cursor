@@ -605,3 +605,104 @@ export interface TradeChargesDay {
   live_closed_count: number
   kite_error: string | null
 }
+
+// ---------------------------------------------------------------------------
+// Strategy tab (display only): the ORB board and the funnel feed
+// ---------------------------------------------------------------------------
+
+export type OrbDetectorState = 'collecting' | 'ranked' | 'done' | 'disabled'
+export type OrbArmState = 'ARMED' | 'TRIGGERED' | 'MISSED' | 'EXPIRED'
+
+export interface OrbRules {
+  rule_version: string
+  range: string
+  min_rvol: number
+  top_n: number
+  stop_atr_mult: number
+  trigger_end: string
+  max_overshoot_atr: number
+}
+
+export interface OrbArm {
+  setup_id: string
+  symbol: string
+  direction: string
+  rank: number
+  rvol: number
+  level: number
+  atr14: number
+  stop_distance: number
+  stop_at_level: number | null
+  or_open: number
+  or_high: number
+  or_low: number
+  or_close: number
+  or_volume: number
+  avg_or_volume: number
+  state: OrbArmState
+  reason: string | null
+  decided_at: string | null
+  trigger_price: number | null
+  planned_stop: number | null
+  overshoot: number | null
+  overshoot_bps: number | null
+}
+
+export interface OrbRankedStock {
+  symbol: string
+  direction: string | null
+  rank: number | null
+  rvol: number | null
+  level: number | null
+  reason: string | null
+}
+
+export interface OrbDay {
+  session_date: string
+  rules: OrbRules
+  status: {
+    state: OrbDetectorState
+    reason: string | null
+    updated_at: string
+    restored: boolean
+  } | null
+  baselines: {
+    ready: number
+    total: number
+    as_of: string | null
+    not_ready: { symbol: string; reason: string | null; detail: string | null }[]
+  }
+  ranked: boolean
+  ranked_at: string | null
+  arms: OrbArm[]
+  in_play_not_armed: OrbRankedStock[]
+  near_misses: OrbRankedStock[]
+  valid_count: number
+  unusable: Record<string, number>
+}
+
+export interface FunnelTrigger {
+  setup_id: string
+  symbol: string
+  direction: string
+  trigger_time: string | null
+  trigger_price: number
+  stop: number | null
+  vwap_classification: string | null
+  volume_ratio: number | null
+  stop_pct: number | null
+  is_first_trigger_today: boolean | null
+  align_market_pct: number | null
+  align_sector_pct: number | null
+  passes: boolean
+  reason: string | null
+  score: number | null
+  score_parts: Record<string, boolean>
+  base_risk: number | null
+}
+
+export interface FunnelFeed {
+  session_date: string
+  triggers: FunnelTrigger[]
+  pending: number
+}

@@ -22,7 +22,7 @@ reconciliation and protection of existing positions running.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 import engine_arb
@@ -30,6 +30,7 @@ import engine_clock
 from engine_arb import (
     ARB_EXTRA_KEY,
     STRATEGY_FUNNEL,
+    STRATEGY_ORB,
     ArbSettings,
     DayLockTracker,
     DayMtm,
@@ -174,6 +175,9 @@ EVENT_ARB_DAY_HALT = "arb_day_halt"
 REASON_ARB_TRIGGER_STALE = "arb_trigger_stale"
 REASON_ARB_CONTEXT_UNAVAILABLE = "arb_context_unavailable"
 REASON_ARB_PAST_CUTOFF = "arb_past_funnel_cutoff"
+REASON_ARB_PAST_ORB_CUTOFF = "arb_past_orb_cutoff"
+# A legacy (VWAP) session was handed a trigger from a strategy it does not run.
+REASON_STRATEGY_NOT_ENABLED = "strategy_not_enabled"
 REASON_ARB_DAY_CHECK_FAILED = "arb_day_check_failed"
 
 
@@ -422,6 +426,12 @@ class ExecutionEngine:
             return None
         if self.arb_mode:
             return self._handle_arb_trigger(candidate)
+        if candidate.strategy != STRATEGY_FUNNEL:
+            # Only continuation triggers are traded outside ARB. The legacy
+            # candidate source never returns anything else; this is the guard
+            # if one ever arrives.
+            self._skip(candidate, REASON_STRATEGY_NOT_ENABLED)
+            return None
 
         classification = candidate.vwap_classification
         if classification is None:
@@ -561,8 +571,10 @@ class ExecutionEngine:
         if not self.feed_monitor.check().healthy:
             return "feed_stale"
         if self.arb_mode:
-            if engine_clock.ist_time(self.now_fn()) >= self.arb_settings.funnel_cutoff:
-                return REASON_ARB_PAST_CUTOFF
+            is_orb = candidate.strategy == STRATEGY_ORB
+            cutoff = self.arb_settings.orb_cutoff if is_orb else self.arb_settings.funnel_cutoff
+            if engine_clock.ist_time(self.now_fn()) >= cutoff:
+                return REASON_ARB_PAST_ORB_CUTOFF if is_orb else REASON_ARB_PAST_CUTOFF
             if not self._arb_day_ok:
                 return REASON_ARB_DAY_CHECK_FAILED
         for position in self.store.open_positions():
@@ -1798,14 +1810,23 @@ class ExecutionEngine:
         }
 
     def _handle_arb_trigger(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
-        """Filters, score, then the ARB budget decides the rupee risk (D9-D12)."""
+        """Route an ARB trigger: the funnel's filters and score, or ORB's fixed
+        risk; then the ARB budget decides the rupee risk (D9-D12)."""
         if not self._arb_day_ok:
             # Not stored: without a working day check no ARB entry is safe.
             # The trigger reappears next tick and goes stale if this persists.
             return None
-        if self._candidate_age_seconds(candidate) > ARB_MAX_TRIGGER_AGE_SECONDS:
+        age = self._arb_trigger_age_seconds(candidate)
+        if age is None or age > ARB_MAX_TRIGGER_AGE_SECONDS:
+            # A trigger that cannot be dated is treated as old, never as new.
             self._skip(candidate, REASON_ARB_TRIGGER_STALE)
             return None
+        if candidate.strategy == STRATEGY_ORB:
+            return self._handle_arb_orb(candidate)
+        if candidate.strategy != STRATEGY_FUNNEL:
+            self._skip(candidate, engine_arb.REASON_UNKNOWN_STRATEGY)
+            return None
+
         settings = self.arb_settings
         stop = compute_stop_price(candidate)
         try:
@@ -1839,13 +1860,71 @@ class ExecutionEngine:
         if not verdict.ok:
             self._skip(candidate, str(verdict.reason), extra={ARB_EXTRA_KEY: info})
             return None
+        return self._arb_size_and_enter(
+            candidate,
+            stop=stop,
+            base_rupees=verdict.base_risk_rupees,
+            info=info,
+            closed=closed,
+            open_positions=open_positions,
+        )
 
+    def _handle_arb_orb(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
+        """An ORB breakout: no filters and no score. The detector already
+        chose the stock (top three by opening RVOL) and fixed the stop; the
+        base risk is the flat ORB amount, then the same budget as the funnel.
+        """
+        settings = self.arb_settings
+        info = {
+            "strategy": STRATEGY_ORB,
+            "risk_scale": settings.risk_scale,
+            "orb": {
+                "level": candidate.orb_level,
+                "rvol": candidate.orb_rvol,
+                "atr14": candidate.orb_atr14,
+                "rank": candidate.orb_rank,
+                "trigger_price": float(candidate.trigger_price),
+                "planned_stop": candidate.planned_stop,
+            },
+        }
+        fired_at = _exchange_time_ist(candidate)
+        if fired_at is None or fired_at >= settings.orb_cutoff:
+            # The detector stops at the cutoff too; this is the engine's own check.
+            self._skip(
+                candidate, engine_arb.REASON_ORB_OUTSIDE_WINDOW, extra={ARB_EXTRA_KEY: info}
+            )
+            return None
+        stop = compute_stop_price(candidate)
+        if stop is None:
+            self._skip(candidate, engine_arb.REASON_ORB_NO_STOP, extra={ARB_EXTRA_KEY: info})
+            return None
+        return self._arb_size_and_enter(
+            candidate,
+            stop=stop,
+            base_rupees=settings.orb_risk_rupees(),
+            info=info,
+            closed=self.store.closed_today(self.session_date),
+            open_positions=self.store.open_positions(),
+        )
+
+    def _arb_size_and_enter(
+        self,
+        candidate: TriggerCandidate,
+        *,
+        stop: Optional[float],
+        base_rupees: float,
+        info: dict,
+        closed: List[Position],
+        open_positions: List[Position],
+    ) -> Optional[EntryOutcome]:
+        """The ARB budget (D10), the micro one-share floor (D12), the entry."""
+        settings = self.arb_settings
         losers = engine_arb.count_losers(closed)
         live_risk = sum(engine_arb.position_live_risk(p) for p in open_positions)
         day = self._arb_day_now(self.now_fn())
         decision = engine_arb.allowed_risk(
             settings,
-            base_rupees=verdict.base_risk_rupees,
+            base_rupees=base_rupees,
             losers_today=losers,
             day_mtm_rupees=day.mtm,
             live_risk_rupees=live_risk,
@@ -1906,6 +1985,16 @@ class ExecutionEngine:
         )
         self.store.save_with_event(position, "skipped", {"reason": reason})
 
+    def _arb_trigger_age_seconds(self, candidate: TriggerCandidate) -> Optional[float]:
+        """Seconds since the trigger was recorded, or None if that is unknown.
+
+        Unlike the legacy helper below, an unreadable timestamp is not given a
+        default age: ARB must be able to tell "recent" from "cannot say".
+        """
+        if parse_timestamp_text(candidate.created_at) is None:
+            return None
+        return self._candidate_age_seconds(candidate)
+
     def _candidate_age_seconds(self, candidate: TriggerCandidate) -> float:
         created_at = parse_timestamp_text(candidate.created_at)
         if created_at is None:
@@ -1916,6 +2005,18 @@ class ExecutionEngine:
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
         return (now - created_at.astimezone(timezone.utc)).total_seconds()
+
+
+def _exchange_time_ist(candidate: TriggerCandidate) -> Optional[time]:
+    """The IST clock time of the tick that fired the trigger, if it is known.
+
+    A timestamp without a zone is not trusted: no zone is ever guessed for a
+    decision input.
+    """
+    parsed = parse_timestamp_text(candidate.trigger_exchange_ts)
+    if parsed is None or parsed.tzinfo is None:
+        return None
+    return engine_clock.to_ist(parsed).time().replace(tzinfo=None)
 
 
 def _arb_holding(position: Position) -> bool:

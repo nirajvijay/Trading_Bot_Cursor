@@ -15,6 +15,7 @@ import { RadarHeatMap } from './components/RadarHeatMap'
 import { VwapHealthPage } from './components/VwapHealthPage'
 import { ExecutionDeskPage } from './components/execution/ExecutionDeskPage'
 import { ChargesPage } from './components/charges/ChargesPage'
+import { StrategyPage } from './components/strategy/StrategyPage'
 import { StationConsoleShell } from './components/StationConsoleShell'
 import { type AppTab } from './components/TopAppBar'
 import { todayIst } from './lib/format'
@@ -291,6 +292,8 @@ export default function App() {
           <ExecutionDeskPage sessionDate={sessionDate} />
         ) : activeTab === 'charges' ? (
           <ChargesPage sessionDate={sessionDate} />
+        ) : activeTab === 'strategy' ? (
+          <StrategyPage sessionDate={sessionDate} />
         ) : (
           <VwapHealthPage />
         )}

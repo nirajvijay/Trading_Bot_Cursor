@@ -2,6 +2,8 @@
 
 Written 26 Sep 2026, against `production` at 71efa9a (#51). It builds on `REPORT.md` in this folder.
 
+**Built so far:** PR A (`PR_A_PLAN.md`) and PR B (`PR_B_PLAN.md`). Where a PR plan and this document differ, the PR plan is what was built. Section 3.3 was rewritten on 12 Oct 2026 to match PR B.
+
 ## 0. The gap in one table
 
 | Area | Production today | ARB needs |
@@ -136,11 +138,13 @@ Score = [align_mkt < −0.2%] + [align_mkt < −0.2% and align_sector > 0] + [vo
 Store the raw numbers on the position, not just the score, so live and backtest can be compared.
 
 ### 3.3 ORB detector (observation side): `orb_detector.py` + `orb_writer.py`
-It lives with signal detection, like the continuation engine, so execution only ever *consumes* triggers.
-- **Pre-market (morning checklist job):** for each stock, from the historical DB, compute `atr14_daily` and `avg_or_vol_14` (mean first-5-minute volume over 14 sessions). Store in a new `orb_baselines` table and show them on the checklist ("ORB baselines ready: 50/50").
-- **09:20:** from the first 5-minute bar (09:15–09:20): OR high/low, direction = sign(close − open), RVOL = OR volume / avg_or_vol_14. Keep RVOL ≥ 3 and the top 3 by RVOL. Write `live_orb_arms` (level, direction, ATR stop distance, rvol, rank).
-- **09:20–11:00:** on ticks, the first trade through the level writes a `TRIGGERED` row in `live_orb_decisions`. Unfired arms expire at 11:00 (`EXPIRED`).
-- **Entry:** the engine enters at MARKET on that row, exactly like a funnel trigger. It is a synthetic stop-entry. The backtest assumed a fill at the level + 3 bps; detection-to-fill latency is the main live risk, so it is measured per trade (3.6).
+It lives with signal detection, like the continuation engine, so execution only ever *consumes* triggers. Built in PR B; the decisions and the measurements behind them are in `PR_B_PLAN.md`.
+- **When observation starts:** for each stock, read-only from the historical DB, compute ATR14 (daily) and the average first-5-minute volume over 14 sessions. They are saved to `live_orb_baselines` and shown on the Strategy tab ("Baselines 100 / 100"). A stock with stale or cut-short history is left out for the day. No checklist stage is involved.
+- **09:15–09:20:** keep each stock's latest tick. The opening range is read from the exchange's own day open / high / low and cumulative volume on the last tick before 09:20:00, with the pre-open auction volume taken off. It is not built from the live 1-minute candles: those miss the true high and low and count the auction (measured in PR B).
+- **09:20:** direction = sign(close − open), RVOL = opening volume / 14-session average. Rank the stocks with RVOL ≥ 3 and arm the top 3. This is done on what is known at 09:20; the first backtest ranked among stocks that went on to break out. The ranking of every stock goes to `live_orb_ranges` and the armed ones to `live_orb_arms`, in one transaction.
+- **09:20–11:00:** the first tick at or beyond the level writes a `TRIGGERED` row in `live_orb_decisions`, with the stop (trigger price − 0.35 × ATR14, on the tick grid). A first tick more than 0.10 × ATR beyond the level is written as `MISSED` instead. Arms still waiting at 11:01:00 become `EXPIRED`.
+- **Entry:** the engine enters at MARKET on a `TRIGGERED` row, exactly like a funnel trigger. It is a synthetic stop-entry. The backtest assumed a fill at the level + 3 bps; detection-to-fill latency is the main live risk, so it is measured per trade (3.6), from the level to the fill.
+- **After the close:** `scripts/orb_parity_check.py` rebuilds the morning from Kite's candles, as the backtest does, and compares it with what the detector recorded.
 
 A resting SL-M entry order at Kite was considered and not recommended. It bypasses the engine's gates (budget, cut after a loser, hard stop) at the moment of fill, and it would sit unmanaged if the engine died.
 
@@ -155,7 +159,7 @@ A resting SL-M entry order at Kite was considered and not recommended. It bypass
 New `arb_day_state` table in the engine DB (one row per session_date and run): mtm_peak, lock_armed_at, halted_reason, last_mtm. Written each tick when changed. On restart the peak is restored. Without it a mid-day restart would reset the peak and disarm the day lock.
 
 ### 3.6 Execution-quality log
-Per trade, record: signal price (level or trigger), signal time, order time, fill price, slippage in bps, and exit slippage vs the stop. The whole edge depends on slippage (3 bps → ₹43.8k/mo; 5 bps → ₹31k), so this is the most important forward-test measurement.
+Per trade, record: signal price (level or trigger), signal time, order time, fill price, slippage in bps, and exit slippage vs the stop. The whole edge depends on slippage (3 bps → ₹41.9k/mo; 5 bps → ₹35.1k with the live ORB rule), so this is the most important forward-test measurement. For ORB the slippage that matters runs from the **level** to the fill: the backtest assumed a fill at the level, and the detector records how far past it the trigger tick was.
 
 ### 3.7 Post-market parity check (no paper trading)
 There is no paper or shadow phase: ARB is tested with **real Kite orders at micro size** (section 6). To check the live engine is really running the backtested strategy, a new `scripts/arb_daily_check.py` runs after the close. It is read-only, places no orders and does not simulate a paper account.
@@ -194,7 +198,7 @@ Strategy (ORB / F0–F3), base → used risk (and why it was cut: half / cap), R
 - The confirm dialog lists the scaled ARB numbers (e.g. at Micro: ORB ₹125, hard stop ₹250) and that orders are LIVE. ARB mode can only start with live orders on; there is no paper ARB.
 
 ### 4.5 New tab: **Performance** (forward test vs backtest)
-- Month and day P&L after charges, green-day %, worst day, drawdown, against the report's expectations (₹43.8k/mo, worst day −₹5.7k, ~62% green).
+- Month and day P&L after charges, green-day %, worst day, drawdown, against the backtest of the rule that is actually live (₹41.9k/mo, worst day −₹6.0k, ~60% green; see the correction at the top of `REPORT.md`).
 - R and P&L by source (ORB, F0–F3), against the report's source table.
 - **Slippage tracker:** median and mean entry/exit bps; alerts if the 20-trade rolling mean > 4 bps.
 - Day-control log: how many hard stops and day locks fired, and P&L at each.
@@ -225,7 +229,7 @@ No paper or shadow phase. The first ARB trade is a real Kite MIS order, just a v
 | PR | What | Behaviour in production |
 |---|---|---|
 | A | Types, config, `engine_arb`, `engine_context`, day MTM + `arb_day_state`, close reasons, unit + golden parity tests | Legacy mode stays the default: unchanged |
-| B | ORB baselines + detector + writer + handoff; Strategy tab | ORB arms and triggers show on the Strategy tab; the engine does not trade them yet |
+| B | ORB baselines + detector + writer + handoff; Strategy tab; post-market ORB parity check | ORB arms and triggers show on the Strategy tab; the engine does not trade them yet |
 | C | Lock-rule trailing, ARB desk strip, positions columns, start panel with stage, Performance tab, `arb_daily_check` | ARB can be started, at Micro only |
 
 After C is deployed (after hours, with approval), the next session starts ARB at Micro with live orders.

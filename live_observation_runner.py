@@ -1,5 +1,6 @@
 """
-Live observation runner: Kite ticks → 1m/5m candles → spike → pullback → continuation.
+Live observation runner: Kite ticks → 1m/5m candles → spike → pullback → continuation,
+plus the ORB detector (opening range breakout) on the same ticks.
 
 Observation only. No orders, risk, or execution.
 Default run duration: 60 minutes (or --until-session-close for full session to 15:30 IST).
@@ -18,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from api.runner_status import write_runner_status
@@ -49,6 +50,11 @@ from live_five_minute_candle_writer import LiveFiveMinuteCandleWriter
 from live_one_minute_candle_writer import DEFAULT_DB_PATH, LiveOneMinuteCandleWriter
 from login import check_access_token
 from market_data_coordinator import MarketDataCoordinator
+from orb_baselines import load_orb_baselines, ready_count
+from orb_config import DEFAULT_ORB_CONFIG
+from orb_detector import OrbDetector
+from orb_types import DECISION_TRIGGERED
+from orb_writer import OrbWriter
 from pullback_ema_seed import DEFAULT_HISTORICAL_DB, PullbackEmaSeedStore
 from pullback_indicators import Ema20State
 from spike_types import IntradaySpikeEvent
@@ -167,6 +173,95 @@ def _print_coverage(
         )
     print("5m incomplete buckets discarded: %d" % five_incomplete, flush=True)
     print(flush=True)
+
+
+def start_orb_detector(
+    *,
+    db_path: Path,
+    historical_db: Path,
+    session_date: str,
+    token_to_symbol: Dict[int, str],
+    tick_sizes: Dict[int, float],
+) -> Tuple[Optional[OrbWriter], Optional[OrbDetector]]:
+    """Build the ORB detector. Observation runs with or without it.
+
+    ORB is additive: whatever goes wrong here is logged and the runner carries
+    on exactly as before, with no ORB signals that day.
+    """
+    writer: Optional[OrbWriter] = None
+    try:
+        config = DEFAULT_ORB_CONFIG
+        baselines = load_orb_baselines(historical_db, session_date, token_to_symbol, config=config)
+        writer = OrbWriter(db_path)
+        writer.save_baselines(session_date, config.rule_version, baselines.values())
+
+        def on_ranked(ranked, arms) -> None:
+            print(
+                "ORB_RANKED in_play=%d armed=[%s]"
+                % (
+                    sum(1 for entry in ranked if entry.rank is not None),
+                    ", ".join(
+                        "%s %s level=%.2f rvol=%.2f"
+                        % (arm.tradingsymbol, arm.direction, arm.level, arm.rvol)
+                        for arm in arms
+                    ),
+                ),
+                flush=True,
+            )
+
+        def on_decision(arm, decision) -> None:
+            if decision.decision_type == DECISION_TRIGGERED:
+                print(
+                    "ORB_TRIGGERED %s %s px=%.2f level=%.2f stop=%.2f"
+                    % (
+                        arm.tradingsymbol,
+                        arm.direction,
+                        decision.trigger_price,
+                        arm.level,
+                        decision.planned_stop,
+                    ),
+                    flush=True,
+                )
+            else:
+                print(
+                    "ORB_%s %s reason=%s"
+                    % (decision.decision_type, arm.tradingsymbol, decision.reason or "-"),
+                    flush=True,
+                )
+
+        detector = OrbDetector(
+            session_date=session_date,
+            token_to_symbol=token_to_symbol,
+            tick_sizes=tick_sizes,
+            baselines=baselines,
+            writer=writer,
+            config=config,
+            on_ranked=on_ranked,
+            on_decision=on_decision,
+        )
+    except Exception:  # noqa: BLE001 - never let ORB stop observation
+        logger.exception("ORB detector could not start; observation continues without it")
+        print("ORB detector: OFF (failed to start; see log)", flush=True)
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return None, None
+
+    as_of = sorted({b.history_as_of for b in baselines.values() if b.ready and b.history_as_of})
+    print(
+        "ORB baselines ready: %d / %d (history as of %s) | detector state=%s%s"
+        % (
+            ready_count(baselines),
+            len(baselines),
+            as_of[-1] if as_of else "-",
+            detector.state,
+            " (restored)" if detector.restored else "",
+        ),
+        flush=True,
+    )
+    return writer, detector
 
 
 def _db_counts(db_path: Path, session_date: str) -> Dict[str, int]:
@@ -473,6 +568,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
     print("tick_size preflight OK for %d tokens" % len(tokens), flush=True)
 
+    orb_writer, orb_detector = start_orb_detector(
+        db_path=args.db,
+        historical_db=args.historical_db,
+        session_date=session_date,
+        token_to_symbol=token_to_symbol,
+        tick_sizes=dict(tick_sizes.by_token),
+    )
+
     def on_lifecycle(
         tradingsymbol: str,
         setup_id: str,
@@ -645,11 +748,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         five_minute_builder=five_builder,
         five_minute_writer=five_writer,
         five_minute_consumers=[track_5m],
-        closeables=[spike_writer, pullback_writer, continuation_writer, vwap_engine, vwap_writer],
+        closeables=[spike_writer, pullback_writer, continuation_writer, vwap_engine, vwap_writer]
+        + ([orb_writer] if orb_writer is not None else []),
     )
+    # Order matters: the candle builder, then continuation, then ORB. ORB only
+    # reads ticks; it never feeds or delays the other two.
     pipeline = LiveCandlePipeline(
         coordinator=coordinator,
-        tick_consumers=[continuation.on_tick],
+        tick_consumers=[continuation.on_tick]
+        + ([orb_detector.on_tick] if orb_detector is not None else []),
     )
 
     def on_feed_ready(restored_at) -> None:
@@ -905,6 +1012,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         ),
         flush=True,
     )
+
+    if orb_detector is not None:
+        orb = orb_detector.status()
+        print("=== ORB detector ===", flush=True)
+        print(
+            "  state=%s reason=%s arms=%d triggered=%d missed=%d expired=%d "
+            "tick_failures=%d write_failures=%d"
+            % (
+                orb["state"],
+                orb["reason"] or "-",
+                orb["arms"],
+                orb["triggered"],
+                orb["missed"],
+                orb["expired"],
+                orb["tick_failures"],
+                orb["write_failures"],
+            ),
+            flush=True,
+        )
 
     print("=== Spike → pullback once check ===", flush=True)
     print(
