@@ -35,22 +35,32 @@ def repair_plan(session_date: str) -> list[tuple[StockToken, str]]:
         raise ValueError("Instrument universe incomplete; generate instruments first.")
     pending = []
     with closing(sqlite3.connect(f"{config.HISTORICAL_DB_PATH.resolve().as_uri()}?mode=ro", uri=True)) as conn:
-        for symbol in NIFTY_100_SYMBOLS:
-            stock = StockToken(symbol, tokens[symbol])
+        stocks = [StockToken(symbol, tokens[symbol]) for symbol in NIFTY_100_SYMBOLS]
+        quality = {(stock.instrument_token, day): evaluate_symbol_session(conn, stock.instrument_token, day)
+                   for stock in stocks for day in sessions}
+        # A session no stock has a single candle for was never fetched (a morning
+        # the preparation did not run). It is repaired like the prior session, not
+        # tolerated as an old incomplete day: ORB and the baselines read it.
+        never_fetched = {day for day in sessions
+                         if all(quality[(stock.instrument_token, day)].minute_count == 0 for stock in stocks)}
+        for stock in stocks:
             deficient = []
             completed = discover_completed_sessions(conn, stock.instrument_token, as_of=sessions[0])
             missing_completed = max(0, LOOKBACK_COMPLETED_SESSIONS - len(completed))
             for day in sessions:
-                quality = evaluate_symbol_session(conn, stock.instrument_token, day)
+                result = quality[(stock.instrument_token, day)]
                 # Stage 5 needs source data through 15:04, beyond baseline eligibility.
                 minutes = set(load_session_minutes(conn, stock.instrument_token, day)) if day == sessions[0] else set()
-                prior_deficient = day == sessions[0] and (not quality.is_completed or not set(range(555, 905)).issubset(minutes))
-                if prior_deficient or (not quality.is_completed and missing_completed > 0):
+                prior_deficient = day == sessions[0] and (not result.is_completed or not set(range(555, 905)).issubset(minutes))
+                if prior_deficient or day in never_fetched or (not result.is_completed and missing_completed > 0):
                     deficient.append(day)
-                    if not quality.is_completed:
+                    if not result.is_completed:
                         missing_completed = max(0, missing_completed - 1)
             if len(deficient) > 3 or missing_completed:
-                raise ValueError("Initial historical backfill required: more than three deficient sessions for a symbol.")
+                missing = sorted(never_fetched)
+                detail = f" ({len(missing)} sessions never fetched: {missing[0]} to {missing[-1]})" if missing else ""
+                raise ValueError("Initial historical backfill required: more than three deficient sessions "
+                                 f"for a symbol{detail}.")
             pending.extend((stock, day) for day in deficient)
     return pending
 

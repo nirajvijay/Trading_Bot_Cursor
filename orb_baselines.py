@@ -14,8 +14,9 @@ the same candles give the same floats:
   volume of the candles before 09:20.
 
 What the backtest did not need and live does: a baseline is only "ready" when
-its history is fresh and whole. Anything else leaves that stock out for the
-day rather than ranking it on a guess.
+its history is fresh and whole, with no trading session missing in between (a
+skipped day would fold weeks of movement into one true range). Anything else
+leaves that stock out for the day rather than ranking it on a guess.
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ from orb_config import DEFAULT_ORB_CONFIG, OrbConfig
 from orb_types import (
     BASELINE_CALENDAR,
     BASELINE_DEGENERATE,
+    BASELINE_GAP,
     BASELINE_INCOMPLETE,
     BASELINE_INSUFFICIENT,
     BASELINE_NO_HISTORY,
@@ -135,11 +137,14 @@ def baseline_from_days(
     days: Sequence[DaySummary],
     prior_session: Optional[str],
     config: OrbConfig = DEFAULT_ORB_CONFIG,
+    expected_sessions: Optional[Sequence[str]] = None,
 ) -> OrbBaseline:
     """Build one stock's baseline, or say exactly why it is not ready.
 
     ``days`` are that stock's sessions strictly before the live session,
     oldest first. ``prior_session`` is the calendar's previous trading day.
+    ``expected_sessions``, when given, are the trading sessions the window
+    must contain (expected_sessions_before); one without candles is a gap.
     """
 
     def not_ready(reason: str, detail: str) -> OrbBaseline:
@@ -165,6 +170,12 @@ def baseline_from_days(
         return not_ready(
             BASELINE_STALE, f"latest candles {latest}, expected {prior_session}"
         )
+    if expected_sessions is not None:
+        have = {day.session_date for day in days}
+        missing = [session for session in expected_sessions if session not in have]
+        if missing:
+            more = f" and {len(missing) - 1} more" if len(missing) > 1 else ""
+            return not_ready(BASELINE_GAP, f"no candles for {missing[0]}{more}")
     min_last_bar = config.history_min_last_bar.strftime("%H:%M")
     for day in window:
         if day.last_bar < min_last_bar:
@@ -208,13 +219,13 @@ def load_orb_baselines(
     observation must start regardless, and ORB simply stays off for the day.
     """
 
-    def all_not_ready(detail: str) -> Dict[int, OrbBaseline]:
+    def all_not_ready(detail: str, reason: str = BASELINE_NO_HISTORY) -> Dict[int, OrbBaseline]:
         return {
             int(token): OrbBaseline(
                 instrument_token=int(token),
                 tradingsymbol=str(symbol),
                 ready=False,
-                reason=BASELINE_NO_HISTORY,
+                reason=reason,
                 detail=detail,
             )
             for token, symbol in token_to_symbol.items()
@@ -229,6 +240,11 @@ def load_orb_baselines(
         return all_not_ready(f"bad session date {session_date!r}")
     lower = (session_day - timedelta(days=config.history_lookback_calendar_days)).isoformat()
     prior_session = prior_session_fn(session_date)
+    expected = expected_sessions_before(
+        session_date, config.sessions_needed, prior_session_fn, is_special_fn
+    )
+    if prior_session is not None and expected is None:
+        return all_not_ready("calendar does not reach back far enough", BASELINE_CALENDAR)
 
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -259,10 +275,33 @@ def load_orb_baselines(
                 days=days,
                 prior_session=prior_session,
                 config=config,
+                expected_sessions=expected,
             )
     finally:
         conn.close()
     return out
+
+
+def expected_sessions_before(
+    session_date: str,
+    count: int,
+    prior_session_fn: Callable[[str], Optional[str]] = prior_nse_trading_session,
+    is_special_fn: Callable[[date], bool] = is_special_session_day,
+) -> Optional[Tuple[str, ...]]:
+    """The ``count`` regular trading sessions before ``session_date``, oldest
+    first; None when the calendar cannot say (the baseline is then not ready)."""
+    out: List[str] = []
+    day = session_date
+    for _ in range(count * 4):  # far more steps than holidays can ever need
+        previous = prior_session_fn(day)
+        if previous is None:
+            return None
+        day = previous
+        if not _is_special(day, is_special_fn):
+            out.append(day)
+            if len(out) == count:
+                return tuple(reversed(out))
+    return None
 
 
 def _is_special(session_date: str, is_special_fn: Callable[[date], bool]) -> bool:

@@ -12,7 +12,7 @@ from unittest import mock
 import live_observation_runner as runner
 from live_candle_pipeline import LiveCandlePipeline
 from orb_detector import STATE_COLLECTING
-from tests.test_orb_baselines import weekdays_before
+from tests.test_orb_baselines import sessions_before
 
 DAY = "2026-09-25"
 SYMBOLS = {1: "AAA", 2: "BBB"}
@@ -25,7 +25,7 @@ def build_history(path: Path) -> None:
         "candle_time TEXT NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, "
         "close REAL NOT NULL, volume INTEGER NOT NULL, PRIMARY KEY (instrument_token, candle_time))"
     )
-    for day in weekdays_before(DAY, 15):
+    for day in sessions_before(DAY, 15):
         for hm in ("09:15", "09:16", "09:17", "09:18", "09:19", "15:29"):
             conn.execute("INSERT INTO candles VALUES (1, 'AAA', ?, 100, 110, 100, 105, 200)",
                          (f"{day}T{hm}:00+05:30",))

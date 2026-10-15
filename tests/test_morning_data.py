@@ -49,8 +49,42 @@ class MorningDataTests(unittest.TestCase):
         from nse_trading_calendar import prior_nse_trading_session
         with sqlite3.connect(self.hist) as conn:
             self.seed(conn, prior_nse_trading_session(self.sessions[-1]))
-            conn.execute("DELETE FROM candles WHERE substr(candle_time,1,10)=?", (self.sessions[5],))
+            # Fetched but cut short (a provider quirk), unlike a day never fetched.
+            conn.execute("DELETE FROM candles WHERE substr(candle_time,1,10)=? AND substr(candle_time,12,5)>='12:00'",
+                         (self.sessions[5],))
         self.assertEqual(data.repair_plan(self.day), [], '21 completed sessions can exclude an older incomplete day')
+
+    def test_a_session_never_fetched_is_repaired_even_with_21_completed_sessions(self):
+        # The morning preparation did not run that day: no stock has a candle.
+        from nse_trading_calendar import prior_nse_trading_session
+        with sqlite3.connect(self.hist) as conn:
+            self.seed(conn, prior_nse_trading_session(self.sessions[-1]))
+            for day in (self.sessions[3], self.sessions[4]):
+                conn.execute("DELETE FROM candles WHERE substr(candle_time,1,10)=?", (day,))
+        pending = data.repair_plan(self.day)
+        self.assertEqual([(stock.tradingsymbol, day) for stock, day in pending],
+                         [("TEST", self.sessions[3]), ("TEST", self.sessions[4])])
+
+    def test_a_day_only_one_stock_lacks_keeps_the_old_tolerance(self):
+        from nse_trading_calendar import prior_nse_trading_session
+        with sqlite3.connect(self.inst) as conn:
+            conn.execute("INSERT INTO nifty50_instruments VALUES ('OTHER', 2)")
+        with sqlite3.connect(self.hist) as conn:
+            for day in self.sessions + [prior_nse_trading_session(self.sessions[-1])]:
+                self.seed(conn, day)
+                conn.execute("INSERT OR REPLACE INTO candles SELECT 2,'OTHER',candle_time,open,high,low,close,volume "
+                             "FROM candles WHERE instrument_token=1 AND substr(candle_time,1,10)=?", (day,))
+            conn.execute("DELETE FROM candles WHERE instrument_token=1 AND substr(candle_time,1,10)=?",
+                         (self.sessions[5],))
+        with patch.object(data, "NIFTY_100_SYMBOLS", ("TEST", "OTHER")):
+            self.assertEqual(data.repair_plan(self.day), [])
+
+    def test_a_long_outage_names_the_missing_sessions(self):
+        with sqlite3.connect(self.hist) as conn:
+            for day in self.sessions[2:7]:
+                conn.execute("DELETE FROM candles WHERE substr(candle_time,1,10)=?", (day,))
+        with self.assertRaisesRegex(ValueError, f"5 sessions never fetched: {self.sessions[6]} to {self.sessions[2]}"):
+            data.repair_plan(self.day)
 
     def test_gap_in_prior_session_is_repaired_even_if_baseline_quality_passes(self):
         with sqlite3.connect(self.hist) as conn:

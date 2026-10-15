@@ -19,6 +19,7 @@ from orb_config import DEFAULT_ORB_CONFIG
 from orb_types import (
     BASELINE_CALENDAR,
     BASELINE_DEGENERATE,
+    BASELINE_GAP,
     BASELINE_INCOMPLETE,
     BASELINE_INSUFFICIENT,
     BASELINE_NO_HISTORY,
@@ -37,6 +38,18 @@ def weekdays_before(end: str, count: int) -> List[str]:
         day -= timedelta(days=1)
         if day.weekday() < 5:
             out.append(day.isoformat())
+    return list(reversed(out))
+
+
+def sessions_before(end: str, count: int) -> List[str]:
+    """The ``count`` NSE trading sessions strictly before ``end``, oldest first."""
+    from nse_trading_calendar import prior_nse_trading_session
+
+    out: List[str] = []
+    day = end
+    while len(out) < count:
+        day = prior_nse_trading_session(day)
+        out.append(day)
     return list(reversed(out))
 
 
@@ -198,7 +211,7 @@ class LoaderTests(unittest.TestCase):
         return load_orb_baselines(self.db, session, {TOKEN: SYMBOL}, **kwargs)[TOKEN]
 
     def test_reads_only_sessions_before_today(self) -> None:
-        for day in weekdays_before("2026-09-25", 15):
+        for day in sessions_before("2026-09-25", 15):
             self.add_day(day)
         self.add_day("2026-09-25", volume=10**9)  # today's candles must not be used
         baseline = self.load()
@@ -208,19 +221,19 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(baseline.history_as_of, "2026-09-24")
 
     def test_stale_when_the_previous_trading_day_is_missing(self) -> None:
-        for day in weekdays_before("2026-09-24", 15):
+        for day in sessions_before("2026-09-24", 15):
             self.add_day(day)
         self.assertEqual(self.load().reason, BASELINE_STALE)
 
     def test_previous_trading_day_skips_the_holiday(self) -> None:
         # 14 Sep 2026 is an NSE holiday: on the 15th, Friday the 11th is fresh.
-        days = [d for d in weekdays_before("2026-09-15", 16) if d != "2026-09-14"]
+        days = [d for d in sessions_before("2026-09-15", 16) if d != "2026-09-14"]
         for day in days:
             self.add_day(day)
         self.assertTrue(self.load("2026-09-15").ready)
 
     def test_special_sessions_are_left_out_of_the_window(self) -> None:
-        for day in weekdays_before("2026-09-25", 15):
+        for day in sessions_before("2026-09-25", 15):
             self.add_day(day)
         self.add_day("2026-09-20", volume=10**9)  # a Sunday special session
         with_special = self.load()
@@ -228,8 +241,38 @@ class LoaderTests(unittest.TestCase):
         skipped = self.load(is_special_fn=lambda d: d.isoformat() == "2026-09-20")
         self.assertEqual(skipped.avg_or_volume, 1000.0)
 
+    def test_a_trading_session_missing_mid_window_is_a_gap(self) -> None:
+        # The server's history stopped for three weeks: yesterday is fresh, but
+        # ATR14 would fold those weeks into one true range.
+        days = sessions_before("2026-09-25", 15)
+        for day in days[:-1]:
+            if day not in (days[5], days[6]):
+                self.add_day(day)
+        self.add_day(days[-1])
+        for day in sessions_before(days[0], 5):  # older history still fills 15 rows
+            self.add_day(day)
+        baseline = self.load()
+        self.assertFalse(baseline.ready)
+        self.assertEqual(baseline.reason, BASELINE_GAP)
+        self.assertEqual(baseline.detail, f"no candles for {days[5]} and 1 more")
+
+    def test_the_gap_check_follows_the_calendar_not_weekdays(self) -> None:
+        # 14 Sep 2026 is a holiday: no candles that day is not a gap.
+        days = sessions_before("2026-09-25", 15)
+        self.assertNotIn("2026-09-14", days)
+        for day in days:
+            self.add_day(day)
+        self.assertTrue(self.load().ready)
+
+    def test_a_calendar_that_cannot_reach_back_leaves_every_stock_out(self) -> None:
+        for day in sessions_before("2026-09-25", 15):
+            self.add_day(day)
+        calendar = {"2026-09-25": "2026-09-24", "2026-09-24": "2026-09-23"}
+        baseline = self.load(prior_session_fn=calendar.get)
+        self.assertEqual(baseline.reason, BASELINE_CALENDAR)
+
     def test_yesterday_cut_short_is_incomplete(self) -> None:
-        days = weekdays_before("2026-09-25", 15)
+        days = sessions_before("2026-09-25", 15)
         for day in days[:-1]:
             self.add_day(day)
         self.add_day(days[-1], last="12:40")
@@ -248,7 +291,7 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(out[TOKEN].reason, BASELINE_NO_HISTORY)
 
     def test_a_stock_with_no_rows_is_not_ready(self) -> None:
-        for day in weekdays_before("2026-09-25", 15):
+        for day in sessions_before("2026-09-25", 15):
             self.add_day(day)
         out = load_orb_baselines(self.db, "2026-09-25", {TOKEN: SYMBOL, 999: "ZZZ"})
         self.assertTrue(out[TOKEN].ready)

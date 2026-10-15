@@ -16,6 +16,7 @@ SOURCE_CANDLES = "candles"  # replay: Kite 1-minute candles, as the backtest
 BASELINE_NO_HISTORY = "no_history"
 BASELINE_INSUFFICIENT = "insufficient_history"
 BASELINE_STALE = "stale_history"
+BASELINE_GAP = "history_gap"
 BASELINE_INCOMPLETE = "incomplete_history"
 BASELINE_DEGENERATE = "degenerate_history"
 BASELINE_CALENDAR = "calendar_unconfigured"
