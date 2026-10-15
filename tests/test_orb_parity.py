@@ -16,7 +16,7 @@ from orb_detector import OrbDetector
 from orb_parity import ParityError, compare_day, format_report
 from orb_writer import OrbWriter
 from scripts import orb_parity_check
-from tests.test_orb_baselines import weekdays_before
+from tests.test_orb_baselines import sessions_before
 from tick_event import Ohlc, TickEvent
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -46,7 +46,7 @@ class ParityTestCase(unittest.TestCase):
         # a 20-point daily range (ATR 20).
         for token, symbol in SYMBOLS.items():
             base = OPENING[symbol][0]
-            for day in weekdays_before(DAY, 15):
+            for day in sessions_before(DAY, 15):
                 for i, hm in enumerate(["09:15", "09:16", "09:17", "09:18", "09:19", "15:29"]):
                     conn.execute(
                         "INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
