@@ -82,3 +82,11 @@ def rank_candidates(candidates: Sequence[TriggerCandidate]) -> List[TriggerCandi
     order they arrived in.
     """
     return sorted(candidates, key=_sort_key)
+
+
+def rank_fifo(candidates: Sequence[TriggerCandidate]) -> List[TriggerCandidate]:
+    """Arrival order only, for ARB: the backtest took candidates in time order.
+
+    Stable, so candidates with the same timestamp keep the order they came in.
+    """
+    return sorted(candidates, key=_created_at_key)

@@ -58,6 +58,9 @@ class CloseReason(str, Enum):
     UNPROTECTED_TIMEOUT = "unprotected_timeout"
     # Our stop-limit triggered but its limit did not fill in time.
     STOP_TRIGGERED_UNFILLED = "stop_triggered_unfilled"
+    # ARB day controls (engine_arb): flatten everything and stop for the day.
+    HARD_DAY_STOP = "hard_day_stop"
+    DAY_LOCK = "day_lock"
 
 
 # Reasons we ourselves initiate, stashed on the position when we send the exit
@@ -73,6 +76,8 @@ ACTIVE_EXIT_REASONS = frozenset(
         CloseReason.STOP_REPLACEMENT_CAP,
         CloseReason.UNPROTECTED_TIMEOUT,
         CloseReason.STOP_TRIGGERED_UNFILLED,
+        CloseReason.HARD_DAY_STOP,
+        CloseReason.DAY_LOCK,
     }
 )
 

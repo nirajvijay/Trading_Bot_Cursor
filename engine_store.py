@@ -109,6 +109,23 @@ ON CONFLICT(trade_id) DO UPDATE SET
     updated_at          = excluded.updated_at
 """
 
+# ARB's day state (engine_arb), one row per session: the day-lock peak and a
+# halt, so a mid-day restart neither forgets the peak nor re-opens a stopped
+# day. Written only by an engine running in ARB mode.
+CREATE_ARB_DAY_SQL = """
+CREATE TABLE IF NOT EXISTS arb_day_state (
+    session_date   TEXT PRIMARY KEY,
+    peak_mtm       REAL,
+    peak_at        TEXT,
+    halted_reason  TEXT,
+    halted_at      TEXT,
+    halted_mtm     REAL,
+    updated_at     TEXT NOT NULL
+);
+"""
+
+ARB_DAY_FIELDS = ("peak_mtm", "peak_at", "halted_reason", "halted_at", "halted_mtm")
+
 INSERT_EVENT_SQL = """
 INSERT INTO position_events (trade_id, at, event_type, payload_json)
 VALUES (?, ?, ?, ?)
@@ -166,6 +183,7 @@ class SqlitePositionStore:
         with self._conn:
             self._conn.execute(CREATE_POSITIONS_SQL)
             self._conn.execute(CREATE_EVENTS_SQL)
+            self._conn.execute(CREATE_ARB_DAY_SQL)
             for statement in CREATE_INDEXES_SQL:
                 self._conn.execute(statement)
 
@@ -255,6 +273,44 @@ class SqlitePositionStore:
             (session_date, ExecutionState.CLOSED.value),
         ).fetchall()
         return [self._row_to_position(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # ARB day state
+    # ------------------------------------------------------------------
+
+    def load_arb_day(self, session_date: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM arb_day_state WHERE session_date = ?", (session_date,)
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def save_arb_day(self, session_date: str, **fields: Any) -> None:
+        """Upsert the named fields; fields not named keep their stored value."""
+        unknown = set(fields) - set(ARB_DAY_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown arb_day_state fields: {sorted(unknown)}")
+        current = self.load_arb_day(session_date) or {}
+        merged = {name: current.get(name) for name in ARB_DAY_FIELDS}
+        merged.update(fields)
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO arb_day_state (session_date, peak_mtm, peak_at, "
+                "halted_reason, halted_at, halted_mtm, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_date) DO UPDATE SET "
+                "peak_mtm = excluded.peak_mtm, peak_at = excluded.peak_at, "
+                "halted_reason = excluded.halted_reason, halted_at = excluded.halted_at, "
+                "halted_mtm = excluded.halted_mtm, updated_at = excluded.updated_at",
+                (
+                    session_date,
+                    merged["peak_mtm"],
+                    merged["peak_at"],
+                    merged["halted_reason"],
+                    merged["halted_at"],
+                    merged["halted_mtm"],
+                    _utc_now_iso(),
+                ),
+            )
 
     def list_positions(self, session_date: Optional[str] = None) -> List[sqlite3.Row]:
         """Raw rows for the API, including created_at/updated_at."""

@@ -322,10 +322,15 @@ def submit_entry(
     is_live: bool = False,
     run_id: Optional[str] = None,
     trade_id: Optional[str] = None,
+    extra: Optional[dict] = None,
 ) -> EntryOutcome:
     """Run steps 1-8. Step 9 (placing the stop) belongs to engine_protection,
     so a filled-but-unprotected position is always visible in the store as
     ENTERED even if the process dies between the two.
+
+    ``extra`` is strategy metadata (e.g. ARB's score and budget) stamped on
+    the position and its entry_intent event. It can never override the
+    sizing keys this function writes itself.
     """
     # trade_id_value is the store identity (positions/events primary key, can
     # be arbitrarily long). broker_tag is the short, bounded value actually
@@ -373,6 +378,7 @@ def submit_entry(
         is_live=is_live,
         run_id=run_id,
         extra={
+            **dict(extra or {}),
             "risk_cap_rupees": float(risk_cap_rupees),
             "binding_constraint": decision.binding_constraint,
             "risk_based_qty": decision.risk_based_qty,
@@ -383,6 +389,7 @@ def submit_entry(
         position,
         "entry_intent",
         {
+            **dict(extra or {}),
             "qty": decision.qty,
             "stop_price": float(stop_price),
             "trigger_price": float(candidate.trigger_price),

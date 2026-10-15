@@ -104,6 +104,8 @@ const REASON_LABELS: Record<string, string> = {
   stop_replacement_cap: 'Stop kept vanishing',
   unprotected_timeout: 'No stop confirmed in time',
   unattributed: 'Unattributed',
+  hard_day_stop: 'ARB hard day stop',
+  day_lock: 'ARB day lock',
   vwap_reject: 'VWAP reject',
   vwap_unavailable: 'VWAP unavailable',
   vwap_limited: 'VWAP limited',

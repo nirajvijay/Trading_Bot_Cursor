@@ -23,9 +23,17 @@ reconciliation and protection of existing positions running.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Protocol
+from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
+import engine_arb
 import engine_clock
+from engine_arb import (
+    ARB_EXTRA_KEY,
+    STRATEGY_FUNNEL,
+    ArbSettings,
+    DayLockTracker,
+    DayMtm,
+)
 from engine_config import SessionRiskConfig, margin_used_rupees
 from engine_entry import (
     ENTRY_STALL_ESCALATE_SECONDS,
@@ -33,6 +41,7 @@ from engine_entry import (
     EntryResult,
     FillVerdict,
     apply_entry_fill,
+    compute_stop_price,
     submit_entry,
 )
 from engine_exit import (
@@ -62,7 +71,7 @@ from engine_live_marks import (
 from engine_live_ticks import NullTickFeed, TickFeedHealth
 from engine_entry import broker_tag_for
 from engine_orders import transition
-from engine_priority import VWAP_ENTRY_CLASSES, rank_candidates
+from engine_priority import VWAP_ENTRY_CLASSES, rank_candidates, rank_fifo
 from engine_protection import ensure_protected
 from engine_reconcile import (
     HOLDING_STATES,
@@ -77,6 +86,7 @@ from engine_reconcile import (
 )
 from engine_risk import RiskPolicy
 from engine_runloop import (
+    STEP_ARB_DAY,
     STEP_COMMANDS,
     STEP_INGEST,
     STEP_PROTECTION,
@@ -156,6 +166,16 @@ EXIT_PENDING_ESCALATE_SECONDS = 10.0
 STOP_TRIGGER_FILL_SECONDS = 3.0
 STOP_TRIGGERED_KEY = "stop_triggered"
 
+# --- ARB (engine_arb) ------------------------------------------------------------
+# A trigger older than this is not entered: the backtest entered at the
+# trigger price, and a late market order would not be that trade.
+ARB_MAX_TRIGGER_AGE_SECONDS = 15.0
+EVENT_ARB_DAY_HALT = "arb_day_halt"
+REASON_ARB_TRIGGER_STALE = "arb_trigger_stale"
+REASON_ARB_CONTEXT_UNAVAILABLE = "arb_context_unavailable"
+REASON_ARB_PAST_CUTOFF = "arb_past_funnel_cutoff"
+REASON_ARB_DAY_CHECK_FAILED = "arb_day_check_failed"
+
 
 class PositionStore(Protocol):
     def open_positions(self) -> List[Position]: ...
@@ -187,6 +207,7 @@ class ExecutionEngine:
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         command_source: Optional[Callable[[], list]] = None,
         tick_feed=None,
+        arb_context=None,
     ) -> None:
         self.broker = broker
         self.store = store
@@ -233,6 +254,21 @@ class ExecutionEngine:
         # human restarts the engine, whatever the feed does.
         self.safety_hold: Optional[str] = None
         self._session_expiry_escalated = False
+
+        # ARB (engine_arb). Inert unless the session was started in ARB mode.
+        self.arb_mode = self.session_config.is_arb
+        self.arb_settings: ArbSettings = self.session_config.arb
+        self.arb_context = arb_context
+        self.arb_day: Optional[DayMtm] = None
+        self._arb_day_tick: Optional[int] = None
+        # False until a day check has succeeded this tick: ARB fails closed.
+        self._arb_day_ok = False
+        # Last good Kite LTP per held symbol, and when it was read.
+        self._arb_prices: Dict[str, Tuple[float, datetime]] = {}
+        self._arb_lock = DayLockTracker(self.arb_settings)
+        self._arb_halt_restored = False
+        if self.arb_mode:
+            self._init_arb()
 
     # ------------------------------------------------------------------
     # Tick
@@ -294,6 +330,13 @@ class ExecutionEngine:
         )
 
         self._check_daily_loss()
+        if self.arb_mode:
+            self._arb_day_ok = run_step(
+                STEP_ARB_DAY,
+                lambda: self._check_arb_day(now),
+                tracker=self.failures,
+                on_escalate=self._on_escalate,
+            )
         if self.shutdown_reason is None and engine_clock.eod_squareoff_due(now):
             self._begin_shutdown(CloseReason.EOD_SQUAREOFF)
 
@@ -367,7 +410,8 @@ class ExecutionEngine:
             for candidate in self.candidate_source()
             if not self.store.exists(candidate.setup_id)
         ]
-        for candidate in rank_candidates(fresh):
+        ordered = rank_fifo(fresh) if self.arb_mode else rank_candidates(fresh)
+        for candidate in ordered:
             self.handle_trigger(candidate)
 
     def handle_trigger(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
@@ -376,6 +420,8 @@ class ExecutionEngine:
         self._hold_for_dead_session()
         if self.entries_paused or self.entries_stopped or self.shutdown_reason is not None:
             return None
+        if self.arb_mode:
+            return self._handle_arb_trigger(candidate)
 
         classification = candidate.vwap_classification
         if classification is None:
@@ -449,7 +495,11 @@ class ExecutionEngine:
         return True
 
     def _enter(
-        self, candidate: TriggerCandidate, *, risk_cap_rupees: float
+        self,
+        candidate: TriggerCandidate,
+        *,
+        risk_cap_rupees: float,
+        extra: Optional[dict] = None,
     ) -> EntryOutcome:
         config = self.session_config
         open_positions = self.store.open_positions()
@@ -468,6 +518,7 @@ class ExecutionEngine:
             margin_preflight=self._margin_preflight,
             is_live=self.is_live,
             run_id=self.run_id,
+            extra=extra,
         )
         if outcome.result is EntryResult.FILLED and outcome.position is not None:
             self._act_on_fill(outcome.position, outcome.verdict)
@@ -509,6 +560,11 @@ class ExecutionEngine:
             return "past_entry_cutoff"
         if not self.feed_monitor.check().healthy:
             return "feed_stale"
+        if self.arb_mode:
+            if engine_clock.ist_time(self.now_fn()) >= self.arb_settings.funnel_cutoff:
+                return REASON_ARB_PAST_CUTOFF
+            if not self._arb_day_ok:
+                return REASON_ARB_DAY_CHECK_FAILED
         for position in self.store.open_positions():
             if position.candidate.tradingsymbol == candidate.tradingsymbol:
                 return "symbol_already_open"
@@ -1382,13 +1438,21 @@ class ExecutionEngine:
             self._stop_prices_tick = self.tick_count
             self._stop_prices = {}
             self._stop_price_error = None
-            symbols = sorted(
-                {
+            open_positions = self.store.open_positions()
+            wanted = {
+                p.candidate.tradingsymbol
+                for p in open_positions
+                if self._stop_movable(p) is None
+            }
+            if self.arb_mode:
+                # ARB's day P&L prices every held position, not only the
+                # ones whose stop could move: still one read per tick.
+                wanted |= {
                     p.candidate.tradingsymbol
-                    for p in self.store.open_positions()
-                    if self._stop_movable(p) is None
+                    for p in open_positions
+                    if _arb_holding(p)
                 }
-            )
+            symbols = sorted(wanted)
             try:
                 prices = self.broker.ltps(symbols)
             except Exception as exc:  # noqa: BLE001 - no price means no move, not a crash
@@ -1622,6 +1686,203 @@ class ExecutionEngine:
         return progress
 
     # ------------------------------------------------------------------
+    # ARB: Adaptive Risk Budget (engine_arb; PR_A_PLAN.md D1-D16)
+    # ------------------------------------------------------------------
+
+    def _init_arb(self) -> None:
+        """Refuse to run ARB half-wired, then restore the day's peak."""
+        if self.arb_context is None:
+            raise ValueError("ARB mode needs an arb_context (observation DB reader)")
+        for name in ("load_arb_day", "save_arb_day", "closed_today"):
+            if not callable(getattr(self.store, name, None)):
+                raise ValueError(f"ARB mode needs a store with {name}()")
+        expected = self.session_config.to_risk_limits()
+        if self.risk_policy.limits != expected:
+            raise ValueError(
+                "ARB mode needs the risk policy built from its own settings "
+                f"(expected {expected}, got {self.risk_policy.limits})"
+            )
+        record = self.store.load_arb_day(self.session_date) or {}
+        if record.get("peak_mtm") is not None:
+            self._arb_lock.peak = float(record["peak_mtm"])
+
+    def _check_arb_day(self, now: datetime) -> None:
+        """Hard day stop every tick (D1); day lock once a minute (D2)."""
+        if not self._arb_halt_restored:
+            self._arb_halt_restored = True
+            record = self.store.load_arb_day(self.session_date) or {}
+            halted = record.get("halted_reason")
+            if halted and self.shutdown_reason is None:
+                try:
+                    reason = CloseReason(str(halted))
+                except ValueError:
+                    reason = CloseReason.HARD_DAY_STOP
+                self._arb_halt(reason, mtm=record.get("halted_mtm"), restored=True)
+        if self.shutdown_reason is not None:
+            return  # the day is already ending; square-off owns it
+        day = self._arb_day_now(now)
+        if engine_arb.hard_stop_hit(self.arb_settings, day.mtm):
+            self._arb_halt(CloseReason.HARD_DAY_STOP, mtm=day.mtm)
+            return
+        minute = engine_clock.to_ist(now).replace(second=0, microsecond=0)
+        peak_before = self._arb_lock.peak
+        lock_hit = self._arb_lock.observe(minute, day)
+        if self._arb_lock.peak != peak_before:
+            self.store.save_arb_day(
+                self.session_date,
+                peak_mtm=self._arb_lock.peak,
+                peak_at=minute.isoformat(),
+            )
+        if lock_hit:
+            self._arb_halt(CloseReason.DAY_LOCK, mtm=day.mtm)
+
+    def _arb_halt(self, reason: CloseReason, *, mtm, restored: bool = False) -> None:
+        """Flatten everything for the session, then persist the halt.
+
+        The shutdown starts first: _begin_shutdown sets shutdown_reason before
+        any write, so a failing store can never stop the flatten. The halt is
+        persisted even if the shutdown's own event write fails.
+        """
+        try:
+            self._begin_shutdown(reason)
+        finally:
+            if not restored:
+                self.store.save_arb_day(
+                    self.session_date,
+                    halted_reason=reason.value,
+                    halted_at=self.now_fn().isoformat(),
+                    halted_mtm=None if mtm is None else float(mtm),
+                )
+        self.store.append_event(
+            "__engine__",
+            EVENT_ARB_DAY_HALT,
+            {
+                "reason": reason.value,
+                "mtm": mtm,
+                "peak": self._arb_lock.peak,
+                "lock_line": self._arb_lock.lock_line,
+                "restored": restored,
+            },
+        )
+
+    def _arb_day_now(self, now: datetime) -> DayMtm:
+        """The day's net P&L, computed at most once per tick."""
+        if self._arb_day_tick == self.tick_count and self.arb_day is not None:
+            return self.arb_day
+        closed = self.store.closed_today(self.session_date)
+        open_positions = self.store.open_positions()
+        prices = self._arb_fresh_prices(open_positions, now)
+        self.arb_day = engine_arb.day_mtm(closed, open_positions, prices)
+        self._arb_day_tick = self.tick_count
+        return self.arb_day
+
+    def _arb_fresh_prices(self, open_positions: List[Position], now: datetime) -> Dict[str, float]:
+        """Kite LTPs no older than the stale limit, for every held position (D4).
+
+        A price read this tick refreshes its symbol; an older good price is
+        reused until it goes stale. Nothing here ever reads the websocket.
+        """
+        held = {p.candidate.tradingsymbol: p for p in open_positions if _arb_holding(p)}
+        for symbol, position in held.items():
+            ltp = self._fresh_ltp(position)
+            if _valid_price(ltp):
+                self._arb_prices[symbol] = (float(ltp), now)
+        for symbol in list(self._arb_prices):
+            if symbol not in held:
+                del self._arb_prices[symbol]
+        limit = float(self.arb_settings.stale_price_seconds)
+        return {
+            symbol: price
+            for symbol, (price, at) in self._arb_prices.items()
+            if 0.0 <= _seconds_between(at, now) <= limit
+        }
+
+    def _handle_arb_trigger(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
+        """Filters, score, then the ARB budget decides the rupee risk (D9-D12)."""
+        if not self._arb_day_ok:
+            # Not stored: without a working day check no ARB entry is safe.
+            # The trigger reappears next tick and goes stale if this persists.
+            return None
+        if self._candidate_age_seconds(candidate) > ARB_MAX_TRIGGER_AGE_SECONDS:
+            self._skip(candidate, REASON_ARB_TRIGGER_STALE)
+            return None
+        settings = self.arb_settings
+        stop = compute_stop_price(candidate)
+        try:
+            features = self.arb_context.features_for(candidate, stop)
+        except Exception as exc:  # noqa: BLE001 - no context means no trade, never a guess
+            self._skip(
+                candidate,
+                REASON_ARB_CONTEXT_UNAVAILABLE,
+                extra={ARB_EXTRA_KEY: {"error": str(exc) or type(exc).__name__}},
+            )
+            return None
+
+        closed = self.store.closed_today(self.session_date)
+        open_positions = self.store.open_positions()
+        score0_taken = sum(
+            1
+            for p in list(closed) + list(open_positions)
+            if (p.extra.get(ARB_EXTRA_KEY) or {}).get("score") == 0
+            and (p.extra.get(ARB_EXTRA_KEY) or {}).get("strategy") == STRATEGY_FUNNEL
+        )
+        verdict = engine_arb.classify_funnel(
+            features, settings, score0_taken_today=score0_taken
+        )
+        info = {
+            "strategy": STRATEGY_FUNNEL,
+            "risk_scale": settings.risk_scale,
+            "features": features.as_dict(),
+            "score": verdict.score,
+            "score_parts": dict(verdict.score_parts),
+        }
+        if not verdict.ok:
+            self._skip(candidate, str(verdict.reason), extra={ARB_EXTRA_KEY: info})
+            return None
+
+        losers = engine_arb.count_losers(closed)
+        live_risk = sum(engine_arb.position_live_risk(p) for p in open_positions)
+        day = self._arb_day_now(self.now_fn())
+        decision = engine_arb.allowed_risk(
+            settings,
+            base_rupees=verdict.base_risk_rupees,
+            losers_today=losers,
+            day_mtm_rupees=day.mtm,
+            live_risk_rupees=live_risk,
+        )
+        info.update(
+            {
+                "base_risk": decision.base_rupees,
+                "half_size": decision.cut,
+                "room": round(decision.room_rupees, 2),
+                "losers_today": losers,
+                "live_risk": round(live_risk, 2),
+                "day_mtm": day.mtm,
+                "day_mtm_complete": day.complete,
+                "risk_allowed": decision.risk_rupees,
+            }
+        )
+        if decision.risk_rupees <= 0:
+            self._skip(candidate, str(decision.reason), extra={ARB_EXTRA_KEY: info})
+            return None
+
+        risk = decision.risk_rupees
+        floored = False
+        if stop is not None:
+            risk, floored = engine_arb.apply_one_share_floor(
+                settings,
+                risk_rupees=risk,
+                risk_per_share=abs(float(candidate.trigger_price) - float(stop)),
+            )
+        info["one_share_floor"] = floored
+        info["risk_used"] = risk
+        try:
+            return self._enter(candidate, risk_cap_rupees=risk, extra={ARB_EXTRA_KEY: info})
+        except BrokerSessionExpired:
+            self._hold_for_dead_session()
+            return None
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -1632,14 +1893,16 @@ class ExecutionEngine:
             if p.state in (ExecutionState.ENTERED, ExecutionState.ENTRY_SUBMITTED)
         )
 
-    def _skip(self, candidate: TriggerCandidate, reason: str) -> None:
+    def _skip(
+        self, candidate: TriggerCandidate, reason: str, *, extra: Optional[dict] = None
+    ) -> None:
         position = Position(
             trade_id=candidate.setup_id,
             candidate=candidate,
             state=ExecutionState.REJECTED,
             is_live=self.is_live,
             run_id=self.run_id,
-            extra={"skip_reason": reason},
+            extra={**dict(extra or {}), "skip_reason": reason},
         )
         self.store.save_with_event(position, "skipped", {"reason": reason})
 
@@ -1653,3 +1916,28 @@ class ExecutionEngine:
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
         return (now - created_at.astimezone(timezone.utc)).total_seconds()
+
+
+def _arb_holding(position: Position) -> bool:
+    """A position that holds shares and a known entry, so it has a mark."""
+    return (
+        position.state in engine_arb.HOLDING_STATES
+        and int(position.qty or 0) > 0
+        and position.entry_price is not None
+    )
+
+
+def _valid_price(value) -> bool:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return False
+    return price > 0 and price == price and price != float("inf")
+
+
+def _seconds_between(earlier: datetime, later: datetime) -> float:
+    if earlier.tzinfo is None:
+        earlier = earlier.replace(tzinfo=timezone.utc)
+    if later.tzinfo is None:
+        later = later.replace(tzinfo=timezone.utc)
+    return (later - earlier).total_seconds()
