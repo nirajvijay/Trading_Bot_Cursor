@@ -10,10 +10,12 @@ tick; the API only ever reads that file and never talks to the running process.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +37,8 @@ from engine_status import (
     read_json,
     read_live_marks,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -332,7 +336,22 @@ def _start_engine(
     # Record the pid immediately, before the loop has written its first
     # heartbeat, so a start clicked twice in quick succession is still refused.
     _seed_pid(status_file, pid=proc.pid, session_date=day, run_id=run_id or "")
+    threading.Thread(
+        target=_reap_engine, args=(proc,), name=f"reap-engine-{proc.pid}", daemon=True
+    ).start()
     return True, f"execution engine started (pid {proc.pid})", proc.pid
+
+
+def _reap_engine(proc: subprocess.Popen) -> None:
+    """Wait for the engine so it cannot remain as a zombie of the API after exiting.
+
+    The engine writes its own final status; this only collects the exit code.
+    """
+    try:
+        exit_code = proc.wait()
+        logger.info("execution engine pid=%s exited with code %s", proc.pid, exit_code)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to reap execution engine pid=%s", proc.pid)
 
 
 def _seed_pid(status_file: Path, *, pid: int, session_date: str, run_id: str) -> None:

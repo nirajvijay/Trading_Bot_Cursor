@@ -167,11 +167,29 @@ def process_alive(pid: Optional[int]) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Exists, owned by someone else. Still alive.
-        return True
+        # Exists, owned by someone else. Still alive -- unless it is a zombie.
+        return not _is_zombie(int(pid))
     except OSError:
         return False
-    return True
+    # kill(pid, 0) also succeeds for an exited child its parent never reaped.
+    # On 2026-10-19 such a zombie engine blocked the 08:40 morning checklist.
+    return not _is_zombie(int(pid))
+
+
+def _is_zombie(pid: int) -> bool:
+    """True when /proc says the process has exited but was never reaped.
+
+    The state is the first field after the LAST ')' in /proc/<pid>/stat (the
+    command name in parentheses may itself contain ')'). Without /proc (macOS)
+    nothing can be told, so the process counts as alive, as before.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as handle:
+            stat = handle.read()
+    except OSError:
+        return False
+    fields = stat.rpartition(")")[2].split()
+    return bool(fields) and fields[0] in ("Z", "X")
 
 
 @dataclass(frozen=True)
