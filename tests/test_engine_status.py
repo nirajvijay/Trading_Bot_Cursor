@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
+import engine_status
 from engine_status import (
     HEARTBEAT_STALE_SECONDS,
     EngineStatus,
@@ -231,6 +236,40 @@ class ProcessLivenessTests(unittest.TestCase):
         # A stale record must never block a legitimate restart forever, which
         # is why liveness is probed rather than trusted.
         self.assertFalse(process_alive(999_999_998))
+
+    def test_a_zombie_is_not_alive(self) -> None:
+        # 2026-10-19: an exited, unreaped engine still answered kill(pid, 0)
+        # and blocked the 08:40 morning checklist.
+        with mock.patch("engine_status._is_zombie", return_value=True):
+            self.assertFalse(process_alive(os.getpid()))
+
+    def test_the_proc_state_is_read_after_the_last_parenthesis(self) -> None:
+        cases = {
+            "4242 (python) Z 1 4242 0": True,
+            "4242 (we (ird) x) Z 1 4242": True,
+            "4242 (python) S 1 4242 0": False,
+            "4242 (pyth) on) R 1 4242": False,
+        }
+        for stat, zombie in cases.items():
+            with mock.patch("builtins.open", mock.mock_open(read_data=stat)):
+                self.assertEqual(engine_status._is_zombie(4242), zombie, stat)
+
+    def test_without_proc_a_process_still_counts_as_alive(self) -> None:
+        # macOS has no /proc: behaviour is unchanged there.
+        with mock.patch("builtins.open", side_effect=FileNotFoundError):
+            self.assertFalse(engine_status._is_zombie(os.getpid()))
+
+    @unittest.skipUnless(os.path.isdir("/proc/self"), "needs /proc (Linux)")
+    def test_a_real_unreaped_child_is_not_alive(self) -> None:
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        try:
+            for _ in range(100):
+                if engine_status._is_zombie(proc.pid):
+                    break
+                time.sleep(0.05)
+            self.assertFalse(process_alive(proc.pid))
+        finally:
+            proc.wait()
 
 
 class LiveMarkTests(StatusTestCase):
