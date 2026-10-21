@@ -888,6 +888,34 @@ export interface SlippageStats {
   mean: number | null
 }
 
+export interface SlippageBySource {
+  source: string
+  trades: number
+  median: number | null
+  mean: number | null
+  worst: number
+  at_signal_mean: number | null
+  after_signal_mean: number | null
+  rupees: number
+  signal_to_engine_s: number | null
+  engine_to_fill_s: number | null
+}
+
+export interface SlippageTrade {
+  session_date: string
+  symbol: string
+  source: string | null
+  direction: string
+  qty: number
+  trigger_based_qty: number | null
+  bps: number
+  at_signal: number | null
+  after_signal: number | null
+  rupees: number | null
+  signal_to_engine_s: number | null
+  engine_to_fill_s: number | null
+}
+
 export interface PerformanceSummary {
   risk_scale: number
   available_scales: number[]
@@ -932,6 +960,9 @@ export interface PerformanceSummary {
     rolling_demote: boolean
     alert_bps: number
     demote_bps: number
+    entry_rupees?: number
+    by_source?: SlippageBySource[]
+    recent?: SlippageTrade[]
   }
   day_controls: {
     session_date: string

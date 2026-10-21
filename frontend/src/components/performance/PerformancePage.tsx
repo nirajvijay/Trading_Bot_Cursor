@@ -158,6 +158,106 @@ function CheckRunner({ onDone }: { onDone: (day: string) => void }) {
   )
 }
 
+function seconds(value: number | null | undefined): string {
+  return value == null ? '—' : `${value.toFixed(1)} s`
+}
+
+/** Where the entry slippage came from, per source and per recent trade. Display only. */
+function SlippageDetail({ slippage }: { slippage: PerformanceSummary['slippage'] }) {
+  const sources = slippage.by_source ?? []
+  const recent = slippage.recent ?? []
+  if (!sources.length) return null
+  return (
+    <div className="border-t border-outline-variant">
+      <div className="overflow-x-auto">
+        <table className="w-full text-[12px]">
+          <thead className="bg-surface-container-low text-on-surface-variant">
+            <tr>
+              <th className={`${TH} text-left`}>Entry slippage</th>
+              <th className={`${TH} text-right`}>Trades</th>
+              <th className={`${TH} text-right`}>Median</th>
+              <th className={`${TH} text-right`}>Mean</th>
+              <th className={`${TH} text-right`}>Worst</th>
+              <th className={`${TH} text-right`}>Already at signal</th>
+              <th className={`${TH} text-right`}>After signal</th>
+              <th className={`${TH} text-right`}>Cost</th>
+              <th className={`${TH} text-right`}>Signal → engine</th>
+              <th className={`${TH} text-right`}>Engine → fill</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sources.map((row) => (
+              <tr key={row.source} className="border-b border-[#eef0f4] last:border-b-0">
+                <td className={`${CELL} font-bold`}>{row.source}</td>
+                <td className={NUM}>{row.trades}</td>
+                <td className={NUM}>{bps(row.median)}</td>
+                <td className={NUM}>{bps(row.mean)}</td>
+                <td className={NUM}>{bps(row.worst)}</td>
+                <td className={NUM}>{bps(row.at_signal_mean)}</td>
+                <td className={NUM}>{bps(row.after_signal_mean)}</td>
+                <td className={NUM}>{inr(row.rupees, 0)}</td>
+                <td className={NUM}>{seconds(row.signal_to_engine_s)}</td>
+                <td className={NUM}>{seconds(row.engine_to_fill_s)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {recent.length > 0 && (
+        <details className="border-t border-outline-variant">
+          <summary className="px-4 py-2 text-[12px] font-bold cursor-pointer">
+            Recent trades ({recent.length}) · total cost {inr(slippage.entry_rupees ?? 0, 0)}
+          </summary>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12px]">
+              <thead className="bg-surface-container-low text-on-surface-variant">
+                <tr>
+                  <th className={`${TH} text-left`}>Day</th>
+                  <th className={`${TH} text-left`}>Stock</th>
+                  <th className={`${TH} text-left`}>Source</th>
+                  <th className={`${TH} text-right`}>Shares</th>
+                  <th className={`${TH} text-right`}>Slippage</th>
+                  <th className={`${TH} text-right`}>At signal</th>
+                  <th className={`${TH} text-right`}>After</th>
+                  <th className={`${TH} text-right`}>Cost</th>
+                  <th className={`${TH} text-right`}>Signal → engine</th>
+                  <th className={`${TH} text-right`}>Engine → fill</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map((row, i) => (
+                  <tr key={`${row.session_date}-${row.symbol}-${i}`} className="border-b border-[#eef0f4] last:border-b-0">
+                    <td className={CELL}>{row.session_date}</td>
+                    <td className={`${CELL} font-bold`}>{row.symbol}</td>
+                    <td className={CELL}>{row.source ?? '—'}</td>
+                    <td className={NUM}>
+                      {row.qty}
+                      {row.trigger_based_qty != null && row.trigger_based_qty !== row.qty && (
+                        <span className="text-on-surface-variant"> (was {row.trigger_based_qty})</span>
+                      )}
+                    </td>
+                    <td className={NUM}>{bps(row.bps)}</td>
+                    <td className={NUM}>{bps(row.at_signal)}</td>
+                    <td className={NUM}>{bps(row.after_signal)}</td>
+                    <td className={NUM}>{row.rupees == null ? '—' : inr(row.rupees, 0)}</td>
+                    <td className={NUM}>{seconds(row.signal_to_engine_s)}</td>
+                    <td className={NUM}>{seconds(row.engine_to_fill_s)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+      <p className="px-4 py-2.5 text-[11px] text-on-surface-variant text-pretty">
+        &ldquo;Already at signal&rdquo; is how far past the signal price the last trade was when the signal fired;
+        &ldquo;after signal&rdquo; is the rest, up to Kite&rsquo;s fill. Since 22 Oct shares are worked out from the
+        worse of the trigger and that last price (funnel plus 3 bps), so &ldquo;was&rdquo; shows the old size.
+      </p>
+    </div>
+  )
+}
+
 export function PerformancePage() {
   const [parityDate, setParityDate] = useState<string | null>(null)
   const { data, loading, error, refresh } = usePerformance(parityDate)
@@ -312,6 +412,7 @@ export function PerformancePage() {
               trade, the opening range level for ORB. Positive is worse. The backtest earns{' '}
               {inr(ref3.net_per_month, 0)} a month at 3 bps and {inr(ref5.net_per_month, 0)} at 5.
             </p>
+            <SlippageDetail slippage={slippage} />
           </section>
         </div>
 
