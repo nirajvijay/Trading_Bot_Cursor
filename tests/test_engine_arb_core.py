@@ -229,7 +229,9 @@ class EntryTests(ArbEngineTestCase):
         assert stored is not None
         self.assertEqual(stored.state, ExecutionState.PROTECTED)
         self.assertEqual(stored.extra["risk_cap_rupees"], 4500)
-        self.assertEqual(stored.qty, 1475)  # floor(4500 / (110 - 106.95))
+        # Funnel sizes from the trigger plus 3 bps: floor(4500 / (110 * 1.0003 - 106.95)).
+        self.assertEqual(stored.qty, 1459)
+        self.assertEqual(stored.extra["trigger_based_qty"], 1475)  # floor(4500 / (110 - 106.95))
         info = self.arb("s1")
         self.assertEqual((info["strategy"], info["score"], info["risk_used"]), ("FUNNEL", 2, 4500))
         self.assertFalse(info["half_size"])
@@ -315,10 +317,10 @@ class EntryTests(ArbEngineTestCase):
 
 class DayControlTests(ArbEngineTestCase):
     def open_two(self, engine: ExecutionEngine) -> None:
-        # AAA at Rs 4,500 (1,475 sh), then BBB with the Rs ~1,500 room left.
+        # AAA at Rs 4,500 (1,459 sh, live risk 4,449.95), then BBB with the Rs 1,550.05 left.
         self.run_triggers(engine, self.trigger("s1", "AAA", score=2))
         self.run_triggers(engine, self.trigger("s2", "BBB", score=2))
-        self.assertEqual(self.store.get("s2").qty, 492)
+        self.assertEqual(self.store.get("s2").qty, 502)  # floor(1550.05 / 3.083)
 
     def test_the_hard_day_stop_flattens_everything_and_is_persisted(self) -> None:
         engine = self.engine()
@@ -445,7 +447,7 @@ class MicroStageTests(ArbEngineTestCase):
         engine = self.engine()
         self.run_triggers(engine, self.trigger("s1", "AAA", score=2))
         self.assertAlmostEqual(self.store.get("s1").extra["risk_cap_rupees"], 225)
-        self.assertEqual(self.store.get("s1").qty, 73)  # floor(225 / 3.05)
+        self.assertEqual(self.store.get("s1").qty, 72)  # floor(225 / (110 * 1.0003 - 106.95))
 
     def test_micro_buys_one_share_when_the_size_rounds_to_zero(self) -> None:
         self.broker.last_prices["AAA"] = 5000.0
@@ -455,7 +457,8 @@ class MicroStageTests(ArbEngineTestCase):
         stored = self.store.get("s1")
         self.assertEqual(stored.qty, 1)
         self.assertTrue(self.arb("s1")["one_share_floor"])
-        self.assertAlmostEqual(stored.extra["risk_cap_rupees"], 60.0)
+        # One share at the sizing price 5000 * 1.0003 risks Rs 61.50.
+        self.assertAlmostEqual(stored.extra["risk_cap_rupees"], 61.5)
         self.assertEqual(stored.state, ExecutionState.PROTECTED)
 
     def test_micro_hard_stop_is_scaled(self) -> None:

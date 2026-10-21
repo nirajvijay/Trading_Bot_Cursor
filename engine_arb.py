@@ -482,6 +482,40 @@ def allowed_risk(
     return RiskDecision(risk, float(base_rupees), cut, room)
 
 
+# Fill-aware sizing (2026-10-22). Live funnel entries filled 3.4 bps worse
+# than the trigger at the median and up to 22.8 bps (CGPOWER, 16 Oct), most of
+# it already in the last price when the signal fired, so a trade sized off the
+# trigger took more risk than its budget. ORB filled at the trigger (+0.4 bps
+# mean) and gets no buffer: when its last price equals the trigger, its size is
+# exactly what it was before.
+FUNNEL_SIZING_BUFFER_BPS = 3.0
+ORB_SIZING_BUFFER_BPS = 0.0
+
+
+def sizing_price(
+    *, direction: str, trigger_price: float, last_price: Optional[float], strategy: str
+) -> float:
+    """The price a trade's share count is worked out from.
+
+    The worse of the trigger and the last traded price at the signal (higher
+    for a buy, lower for a short), moved a further buffer against the trade
+    for a funnel entry. Only the share count uses it: the stop, the order and
+    the decision to trade are unchanged.
+    """
+    price = float(trigger_price)
+    long = str(direction).upper() == "UP"
+    try:
+        last = float(last_price) if last_price is not None else None
+    except (TypeError, ValueError):
+        last = None
+    if last is not None and last > 0 and math.isfinite(last):
+        price = max(price, last) if long else min(price, last)
+    buffer_bps = FUNNEL_SIZING_BUFFER_BPS if strategy == STRATEGY_FUNNEL else ORB_SIZING_BUFFER_BPS
+    if buffer_bps:
+        price = price * (1 + buffer_bps / 1e4) if long else price * (1 - buffer_bps / 1e4)
+    return price
+
+
 def apply_one_share_floor(
     settings: ArbSettings, *, risk_rupees: float, risk_per_share: float
 ) -> Tuple[float, bool]:

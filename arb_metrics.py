@@ -120,3 +120,55 @@ def stop_exit_slippage_bps(
     """For a trade closed by its stop: how far past the stop it filled."""
     got = exit_price(direction, entry_price, qty, realised_pnl)
     return adverse_bps(direction, stop_price, got, entry=False)
+
+
+def entry_slippage_split(candidate: Mapping[str, Any], entry_price: Any) -> Optional[dict]:
+    """Where an entry's slippage happened, in bps against the signal price.
+
+    ``at_signal``: how far past the signal price the last traded price already
+    was when the signal fired (nothing the engine could have done about it).
+    ``after_signal``: the rest, from the signal to Kite's fill. The two add up
+    to ``entry_slippage_bps``. None when the signal carried no last price.
+    """
+    total = entry_slippage_bps(candidate, entry_price)
+    at_signal = adverse_bps(
+        candidate.get("direction"), signal_price(candidate), candidate.get("last_price"), entry=True
+    )
+    if total is None or at_signal is None:
+        return None
+    return {"at_signal": at_signal, "after_signal": round(total - at_signal, 2)}
+
+
+def entry_slippage_rupees(candidate: Mapping[str, Any], entry_price: Any, qty: Any) -> Optional[float]:
+    """The entry slippage in rupees: (fill - signal price) x shares, worse = positive."""
+    reference, entry = signal_price(candidate), _number(entry_price)
+    try:
+        shares = int(qty or 0)
+    except (TypeError, ValueError):
+        return None
+    if reference is None or entry is None or shares <= 0:
+        return None
+    return round((entry - reference) * _sign(candidate.get("direction")) * shares, 2)
+
+
+def _seconds_between(start: Any, end: Any) -> Optional[float]:
+    from datetime import datetime
+
+    try:
+        a, b = datetime.fromisoformat(str(start)), datetime.fromisoformat(str(end))
+    except (TypeError, ValueError):
+        return None
+    if (a.tzinfo is None) != (b.tzinfo is None):
+        return None
+    return round((b - a).total_seconds(), 2)
+
+
+def entry_timing(candidate: Mapping[str, Any], decided_at: Any, filled_at: Any) -> dict:
+    """Seconds from the exchange's signal tick to the engine, and on to the fill.
+
+    The signal time has one-second resolution, so the first figure is +/- 1 s.
+    """
+    return {
+        "signal_to_engine_s": _seconds_between(candidate.get("trigger_exchange_ts"), decided_at),
+        "engine_to_fill_s": _seconds_between(decided_at, filled_at),
+    }

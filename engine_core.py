@@ -517,6 +517,7 @@ class ExecutionEngine:
         candidate: TriggerCandidate,
         *,
         risk_cap_rupees: float,
+        sizing_price: Optional[float] = None,
         extra: Optional[dict] = None,
     ) -> EntryOutcome:
         config = self.session_config
@@ -532,6 +533,7 @@ class ExecutionEngine:
             risk_cap_rupees=risk_cap_rupees,
             available_capital_rupees=available_capital,
             leverage_factor=config.leverage_factor,
+            sizing_price=sizing_price,
             gate=self._entry_gate,
             margin_preflight=self._margin_preflight,
             is_live=self.is_live,
@@ -2084,16 +2086,30 @@ class ExecutionEngine:
 
         risk = decision.risk_rupees
         floored = False
+        sizing_price = engine_arb.sizing_price(
+            direction=candidate.direction,
+            trigger_price=float(candidate.trigger_price),
+            last_price=candidate.last_price,
+            strategy=candidate.strategy,
+        )
         if stop is not None:
+            # Whether the floor applies is judged on the trigger, as before.
             risk, floored = engine_arb.apply_one_share_floor(
                 settings,
                 risk_rupees=risk,
                 risk_per_share=abs(float(candidate.trigger_price) - float(stop)),
             )
+            if floored:
+                # ... and the one share it allows is still one share when the
+                # size is worked out from the (worse) sizing price.
+                risk = max(risk, abs(sizing_price - float(stop)))
         info["one_share_floor"] = floored
         info["risk_used"] = risk
+        info["sizing_price"] = round(sizing_price, 4)
         try:
-            return self._enter(candidate, risk_cap_rupees=risk, extra={ARB_EXTRA_KEY: info})
+            return self._enter(
+                candidate, risk_cap_rupees=risk, sizing_price=sizing_price, extra={ARB_EXTRA_KEY: info}
+            )
         except BrokerSessionExpired:
             self._hold_for_dead_session()
             return None

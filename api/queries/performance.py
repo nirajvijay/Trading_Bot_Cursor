@@ -151,6 +151,14 @@ def _trade(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "r_gross": arb_metrics.r_gross(entry, initial, qty, gross),
         "close_reason": reason,
         "entry_slippage_bps": arb_metrics.entry_slippage_bps(candidate, entry),
+        "entry_slippage_split": arb_metrics.entry_slippage_split(candidate, entry),
+        "entry_slippage_rupees": arb_metrics.entry_slippage_rupees(candidate, entry, qty),
+        "entry_timing": arb_metrics.entry_timing(
+            candidate, row.get("created_at"), extra.get("entry_filled_at")
+        ),
+        "sizing_price": extra.get("sizing_price"),
+        "trigger_based_qty": extra.get("trigger_based_qty"),
+        "qty": qty,
         "stop_exit_slippage_bps": (
             arb_metrics.stop_exit_slippage_bps(direction, row.get("stop_price"), entry, qty, gross)
             if reason == STOP_CLOSE_REASON
@@ -167,6 +175,76 @@ def _slippage(values: List[float]) -> Dict[str, Any]:
         "median": round(statistics.median(values), 2),
         "mean": round(statistics.fmean(values), 2),
     }
+
+
+def _mean(values: List[float]) -> Optional[float]:
+    return round(statistics.fmean(values), 2) if values else None
+
+
+def _median(values: List[float]) -> Optional[float]:
+    return round(statistics.median(values), 2) if values else None
+
+
+def _slippage_by_source(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Entry slippage per source: how much, where it happened, what it cost.
+
+    Display only (2026-10-22): measures whether slippage comes from the price
+    jumping past the trigger before the signal, or from the time we take after.
+    """
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for trade in trades:
+        if trade["entry_slippage_bps"] is not None:
+            grouped[trade["source"] or "?"].append(trade)
+    out = []
+    for name in list(arb_metrics.SOURCES) + sorted(set(grouped) - set(arb_metrics.SOURCES)):
+        items = grouped.get(name, [])
+        if not items:
+            continue
+        splits = [t["entry_slippage_split"] for t in items if t["entry_slippage_split"]]
+        timing = [t["entry_timing"] for t in items]
+        rupees = [t["entry_slippage_rupees"] for t in items if t["entry_slippage_rupees"] is not None]
+        bps = [t["entry_slippage_bps"] for t in items]
+        out.append(
+            {
+                "source": name,
+                "trades": len(items),
+                "median": _median(bps),
+                "mean": _mean(bps),
+                "worst": round(max(bps), 2),
+                "at_signal_mean": _mean([s["at_signal"] for s in splits]),
+                "after_signal_mean": _mean([s["after_signal"] for s in splits]),
+                "rupees": round(sum(rupees), 2),
+                "signal_to_engine_s": _median(
+                    [x["signal_to_engine_s"] for x in timing if x["signal_to_engine_s"] is not None]
+                ),
+                "engine_to_fill_s": _median(
+                    [x["engine_to_fill_s"] for x in timing if x["engine_to_fill_s"] is not None]
+                ),
+            }
+        )
+    return out
+
+
+def _slippage_trades(trades: List[Dict[str, Any]], limit: int = 30) -> List[Dict[str, Any]]:
+    """The most recent trades' entry slippage, newest first."""
+    rows = [t for t in trades if t["entry_slippage_bps"] is not None][-limit:]
+    return [
+        {
+            "session_date": t["session_date"],
+            "symbol": t["symbol"],
+            "source": t["source"],
+            "direction": t["direction"],
+            "qty": t["qty"],
+            "trigger_based_qty": t["trigger_based_qty"],
+            "bps": t["entry_slippage_bps"],
+            "at_signal": (t["entry_slippage_split"] or {}).get("at_signal"),
+            "after_signal": (t["entry_slippage_split"] or {}).get("after_signal"),
+            "rupees": t["entry_slippage_rupees"],
+            "signal_to_engine_s": t["entry_timing"]["signal_to_engine_s"],
+            "engine_to_fill_s": t["entry_timing"]["engine_to_fill_s"],
+        }
+        for t in reversed(rows)
+    ]
 
 
 def _gate(key: str, label: str, ok: Optional[bool], detail: str) -> Dict[str, Any]:
@@ -280,6 +358,11 @@ def fetch_performance(
         "rolling_demote": rolling is not None and rolling > ROLLING_DEMOTE_BPS,
         "alert_bps": ROLLING_ALERT_BPS,
         "demote_bps": ROLLING_DEMOTE_BPS,
+        "entry_rupees": round(
+            sum(t["entry_slippage_rupees"] for t in trades if t["entry_slippage_rupees"] is not None), 2
+        ),
+        "by_source": _slippage_by_source(trades),
+        "recent": _slippage_trades(trades),
     }
 
     # --- day controls -----------------------------------------------------------

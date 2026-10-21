@@ -358,6 +358,7 @@ def submit_entry(
     risk_cap_rupees: float,
     available_capital_rupees: float,
     leverage_factor: float,
+    sizing_price: Optional[float] = None,
     gate: Optional[EntryGate] = None,
     margin_preflight: Optional[Callable[[TriggerCandidate, int], Optional[str]]] = None,
     is_live: bool = False,
@@ -372,6 +373,11 @@ def submit_entry(
     ``extra`` is strategy metadata (e.g. ARB's score and budget) stamped on
     the position and its entry_intent event. It can never override the
     sizing keys this function writes itself.
+
+    ``sizing_price`` (ARB) is the price the share count is worked out from in
+    place of the trigger; nothing else uses it. It can make a trade smaller,
+    never skip one: if the trigger would have given at least one share, at
+    least one share is bought.
     """
     # trade_id_value is the store identity (positions/events primary key, can
     # be arbitrarily long). broker_tag is the short, bounded value actually
@@ -386,13 +392,31 @@ def submit_entry(
         return _skip(store, candidate, "no_structural_stop", is_live, run_id, trade_id_value)
 
     # Step 2 - quantity, from this tier's risk cap.
-    decision: SizeDecision = sizing_policy.decide(
-        entry_price=float(candidate.trigger_price),
-        stop_price=float(stop_price),
-        risk_cap_rupees=float(risk_cap_rupees),
-        available_capital_rupees=float(available_capital_rupees),
-        leverage_factor=float(leverage_factor),
-    )
+    def _size(price: float) -> SizeDecision:
+        return sizing_policy.decide(
+            entry_price=price,
+            stop_price=float(stop_price),
+            risk_cap_rupees=float(risk_cap_rupees),
+            available_capital_rupees=float(available_capital_rupees),
+            leverage_factor=float(leverage_factor),
+        )
+
+    trigger_decision: SizeDecision = _size(float(candidate.trigger_price))
+    decision = trigger_decision
+    sizing_keys: dict = {}
+    if sizing_price is not None:
+        decision = _size(float(sizing_price))
+        if decision.qty <= 0 < trigger_decision.qty:
+            decision = SizeDecision(
+                qty=1,
+                risk_based_qty=decision.risk_based_qty,
+                capital_based_qty=decision.capital_based_qty,
+                binding_constraint=decision.binding_constraint,
+            )
+        sizing_keys = {
+            "sizing_price": float(sizing_price),
+            "trigger_based_qty": trigger_decision.qty,
+        }
     if decision.qty <= 0:
         return _skip(store, candidate, "sized_to_zero", is_live, run_id, trade_id_value)
 
@@ -424,6 +448,7 @@ def submit_entry(
             "binding_constraint": decision.binding_constraint,
             "risk_based_qty": decision.risk_based_qty,
             "capital_based_qty": decision.capital_based_qty,
+            **sizing_keys,
         },
     )
     store.save_with_event(
@@ -431,6 +456,7 @@ def submit_entry(
         "entry_intent",
         {
             **dict(extra or {}),
+            **sizing_keys,
             "qty": decision.qty,
             "stop_price": float(stop_price),
             "trigger_price": float(candidate.trigger_price),
