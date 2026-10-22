@@ -63,21 +63,21 @@ class ConfigTests(unittest.TestCase):
     def test_an_arb_session_carries_only_stage_and_capital(self) -> None:
         config = arb_session_config()
         self.assertTrue(config.is_arb)
-        self.assertEqual((config.arb.risk_scale, config.total_capital_rupees), (0.05, 500_000.0))
+        self.assertEqual((config.arb.risk_scale, config.total_capital_rupees), (0.25, 500_000.0))
         validate_start(config)
         # The risk policy is ARB's scaled backstop, not the legacy caps.
-        self.assertEqual(config.to_risk_limits().daily_loss_cap_rupees, 300.0)
+        self.assertEqual(config.to_risk_limits().daily_loss_cap_rupees, 1500.0)
 
     def test_a_locked_stage_cannot_be_started_though_its_numbers_are_valid(self) -> None:
-        for scale in (0.25, 0.5, 1.0):
+        for scale in (0.5, 1.0):
             config = arb_session_config(risk_scale=scale)
             validate(config)   # the numbers themselves are fine
             with self.assertRaises(InvalidSessionConfig) as raised:
                 validate_start(config)
             self.assertIn("locked", str(raised.exception))
 
-    def test_the_unlocked_stage_is_micro(self) -> None:
-        self.assertEqual(ARB_UNLOCKED_SCALE, 0.05)
+    def test_the_unlocked_stage_is_quarter(self) -> None:
+        self.assertEqual(ARB_UNLOCKED_SCALE, 0.25)
 
     def test_legacy_starts_are_untouched_by_the_stage_rule(self) -> None:
         validate_start(SessionRiskConfig())
@@ -101,11 +101,11 @@ class CliTests(unittest.TestCase):
     def test_arb_mode_builds_an_arb_session(self) -> None:
         config = runner_cli.build_config(_args(self.tmp, "--strategy-mode", "arb", "--total-capital", "400000"))
         self.assertEqual((config.strategy_mode, config.arb.risk_scale, config.total_capital_rupees),
-                         (STRATEGY_ARB, 0.05, 400_000.0))
+                         (STRATEGY_ARB, 0.25, 400_000.0))
 
     def test_a_hand_launched_process_cannot_bypass_the_stage_limit(self) -> None:
         with self.assertRaises(InvalidSessionConfig):
-            runner_cli.build_config(_args(self.tmp, "--strategy-mode", "arb", "--arb-risk-scale", "0.25"))
+            runner_cli.build_config(_args(self.tmp, "--strategy-mode", "arb", "--arb-risk-scale", "0.5"))
         with self.assertRaises(InvalidSessionConfig):
             runner_cli.build_config(_args(self.tmp, "--strategy-mode", "arb", "--arb-risk-scale", "0.07"))
 
@@ -133,11 +133,11 @@ class CliTests(unittest.TestCase):
     def test_the_heartbeat_says_what_the_session_is(self) -> None:
         status = runner_cli.snapshot_status(self._engine("--strategy-mode", "arb"))
         self.assertEqual((status.strategy_mode, status.total_capital, status.leverage), ("arb", 300_000.0, 5.0))
-        self.assertEqual(status.daily_loss_cap, 300.0)           # the scaled closed-loss backstop
-        self.assertEqual(status.arb["risk_scale"], 0.05)
+        self.assertEqual(status.daily_loss_cap, 1500.0)           # the scaled closed-loss backstop
+        self.assertEqual(status.arb["risk_scale"], 0.25)
         self.assertEqual((status.arb["orb_risk"], status.arb["hard_day_stop"], status.arb["open_risk_cap"]),
-                         (125.0, 250.0, 300.0))
-        self.assertEqual(status.arb["funnel_risks"], [50.0, 125.0, 225.0, 300.0])
+                         (625.0, 1250.0, 1500.0))
+        self.assertEqual(status.arb["funnel_risks"], [250.0, 625.0, 1125.0, 1500.0])
         self.assertIsNone(status.arb["halted_reason"])
         legacy = runner_cli.snapshot_status(self._engine())
         self.assertEqual((legacy.strategy_mode, legacy.arb, legacy.daily_loss_cap), ("legacy_vwap", None, 3000.0))
@@ -166,7 +166,7 @@ class LauncherTests(unittest.TestCase):
         arb = launcher.build_command(session_config=arb_session_config(), session_date=DAY,
                                      run_id="r", live_orders=True)
         self.assertEqual(arb[arb.index("--strategy-mode") + 1], "arb")
-        self.assertEqual(arb[arb.index("--arb-risk-scale") + 1], "0.05")
+        self.assertEqual(arb[arb.index("--arb-risk-scale") + 1], "0.25")
         self.assertEqual(arb[-1], "--live-orders")
         legacy = launcher.build_command(session_config=SessionRiskConfig(), session_date=DAY,
                                         run_id="r", live_orders=False)
@@ -227,7 +227,7 @@ class LauncherTests(unittest.TestCase):
             self.assertFalse(checks["one_strategy_per_day"].ok)
             self.assertIn("one strategy per day", checks["one_strategy_per_day"].detail)
             self.assertTrue(checks["risk_config"].ok)
-            locked = {c.key: c for c in launcher.preflight(arb_session_config(risk_scale=0.25), now=now).checks}
+            locked = {c.key: c for c in launcher.preflight(arb_session_config(risk_scale=0.5), now=now).checks}
             self.assertFalse(locked["risk_config"].ok)
             self.assertIn("locked", locked["risk_config"].detail)
 
@@ -252,11 +252,11 @@ class SettingsTests(unittest.TestCase):
         config = execution_settings.session_config_for(settings)
         self.assertEqual((settings.autostart_strategy, settings.updated_by), ("arb", "nj"))
         self.assertEqual((config.strategy_mode, config.arb.risk_scale, config.total_capital_rupees),
-                         ("arb", 0.05, 450_000.0))
+                         ("arb", 0.25, 450_000.0))
 
     def test_a_locked_stage_or_unknown_strategy_cannot_be_saved(self) -> None:
         with self.assertRaises(ValueError):
-            execution_settings.save(ExecutionSettings(autostart_strategy="arb", arb_risk_scale=0.25), self.path)
+            execution_settings.save(ExecutionSettings(autostart_strategy="arb", arb_risk_scale=0.5), self.path)
         with self.assertRaises(ValueError):
             execution_settings.save(ExecutionSettings(autostart_strategy="martingale"), self.path)
         with self.assertRaises(ValueError):
@@ -290,9 +290,9 @@ class AutostartTests(unittest.TestCase):
                 outcome = autostart.autostart_tick(now)
                 sent = start.call_args.kwargs
                 self.assertTrue(sent["session_config"].is_arb)
-                self.assertEqual(sent["session_config"].arb.risk_scale, 0.05)
+                self.assertEqual(sent["session_config"].arb.risk_scale, 0.25)
                 self.assertTrue(sent["live_orders"])
-                self.assertEqual(outcome, "execution engine (ARB, stage 0.05) started with live Kite orders (pid 91)")
+                self.assertEqual(outcome, "execution engine (ARB, stage 0.25) started with live Kite orders (pid 91)")
 
 
 class StartApiTests(ExecutionApiTestCase):
@@ -323,7 +323,7 @@ class StartApiTests(ExecutionApiTestCase):
         sent = start.call_args.kwargs
         self.assertTrue(sent["session_config"].is_arb)
         self.assertEqual((sent["session_config"].arb.risk_scale, sent["session_config"].total_capital_rupees),
-                         (0.05, 450_000.0))
+                         (0.25, 450_000.0))
         self.assertTrue(sent["live_orders"])
 
     def test_a_plain_start_is_still_legacy(self) -> None:
@@ -334,10 +334,10 @@ class StartApiTests(ExecutionApiTestCase):
     def test_settings_show_the_stages_and_what_is_unlocked(self) -> None:
         body = self.client.get(f"{BASE}/settings").json()
         self.assertEqual((body["autostart_strategy"], body["unlocked_scale"], body["day_lock_keep"]),
-                         ("legacy_vwap", 0.05, 0.4))
+                         ("legacy_vwap", 0.25, 0.4))
         stages = {s["key"]: s for s in body["stages"]}
         self.assertEqual([s["key"] for s in body["stages"]], ["micro", "quarter", "half", "full"])
-        self.assertEqual([s["unlocked"] for s in body["stages"]], [True, False, False, False])
+        self.assertEqual([s["unlocked"] for s in body["stages"]], [True, True, False, False])
         self.assertEqual((stages["micro"]["orb_risk"], stages["micro"]["hard_day_stop"]), (125.0, 250.0))
         self.assertEqual(stages["full"]["funnel_risks"], [1000.0, 2500.0, 4500.0, 6000.0])
 
@@ -351,7 +351,7 @@ class StartApiTests(ExecutionApiTestCase):
         self.assertEqual((body["autostart_strategy"], body["arb_total_capital_rupees"]), ("arb", 400000.0))
         self.assertIsNotNone(body["updated_at"])
         refused = self.client.post(
-            f"{BASE}/settings", json={"autostart_strategy": "arb", "arb_risk_scale": 0.25}
+            f"{BASE}/settings", json={"autostart_strategy": "arb", "arb_risk_scale": 0.5}
         )
         self.assertEqual(refused.status_code, 400)
         self.assertEqual(self.client.get(f"{BASE}/settings").json()["arb_risk_scale"], 0.05)

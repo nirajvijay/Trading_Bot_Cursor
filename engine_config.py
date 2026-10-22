@@ -47,7 +47,7 @@ ARB_STAGES = (
     ("half", 0.5),
     ("full", 1.0),
 )
-ARB_UNLOCKED_SCALE = 0.05
+ARB_UNLOCKED_SCALE = 0.25
 # ARB was tested on Rs 5L of capital at 5x.
 ARB_DEFAULT_TOTAL_CAPITAL_RUPEES = 500_000.0
 
