@@ -82,8 +82,8 @@ class PerformanceTests(ExecutionApiTestCase):
 
     def test_before_any_arb_trade(self) -> None:
         body = self.client.get("/api/v1/performance/summary").json()
-        self.assertEqual((body["risk_scale"], body["totals"]["trades"], body["days"]), (0.25, 0, []))
-        self.assertEqual(body["stage"]["key"], "quarter")
+        self.assertEqual((body["risk_scale"], body["totals"]["trades"], body["days"]), (0.5, 0, []))
+        self.assertEqual(body["stage"]["key"], "half")
         self.assertFalse(body["stage"]["all_gates_met"])
         self.assertEqual([s["source"] for s in body["sources"]], ["ORB", "F0", "F1", "F2", "F3"])
         self.assertEqual(body["reference"]["at_3bps"]["net_per_month"], 39532.0)
