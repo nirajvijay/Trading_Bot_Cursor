@@ -103,6 +103,7 @@ const REASON_LABELS: Record<string, string> = {
   direction_mismatch_flatten: 'Flattened: Kite held opposite side',
   stop_replacement_cap: 'Stop kept vanishing',
   unprotected_timeout: 'No stop confirmed in time',
+  stop_triggered_unfilled: 'Stop part-filled, rest sold at market',
   unattributed: 'Unattributed',
   hard_day_stop: 'ARB hard day stop',
   day_lock: 'ARB day lock',

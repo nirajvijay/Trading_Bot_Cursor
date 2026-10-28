@@ -376,6 +376,9 @@ class TriggeredStopLimitTests(SafetyExitTestCase):
         closed = self.store.get("s1")
         assert closed is not None
         self.assertEqual(closed.state, ExecutionState.CLOSED)
+        # HINDZINC 2026-10-28: booked as "Closed in Kite" on 356 of 757 shares.
+        self.assertEqual(closed.extra.get("close_reason"), "stop_triggered_unfilled")
+        self.assertEqual(closed.qty, stored.qty)
 
     def test_a_part_filled_stop_never_over_sells_while_positions_lag(self) -> None:
         engine, stored = self.open_one()

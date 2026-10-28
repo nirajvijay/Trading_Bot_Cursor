@@ -265,6 +265,12 @@ def _closed_row_facts(view: PositionView, facts: Dict) -> PositionView:
     filled = (facts.get((view.trade_id, "entry_filled")) or {}).get("filled_qty")
     if filled:
         updates["qty"] = int(filled)
+        if view.r_gross is not None and int(filled) != view.qty:
+            # R over the shares the trade bought (HINDZINC 2026-10-28: -2.19R
+            # on an adopted 356 was -1.03R on the 757 bought).
+            updates["r_gross"] = arb_metrics.r_gross(
+                view.entry_price, view.initial_stop_price, int(filled), view.realised_pnl
+            )
     if view.initial_stop_price is None:
         # Trades from before trailing existed never moved their stop, so any
         # protection's stop price is the initial one.
