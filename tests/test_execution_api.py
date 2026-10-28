@@ -408,6 +408,39 @@ class PositionsTests(ExecutionApiTestCase):
         )
         self.assertAlmostEqual(body["total_realised_pnl"], -133.5)
 
+    def test_a_closed_row_s_r_uses_the_trade_s_own_qty(self) -> None:
+        """HINDZINC 2026-10-28 as stored: bought 757, closed on an adopted 356.
+        R is the loss over 757 x 1.5 (about -1.03R), not over 356 (-2.19R)."""
+        from engine_store import SqlitePositionStore
+        from engine_types import ExecutionState, Position, TriggerCandidate
+
+        store = SqlitePositionStore(self.db)
+        try:
+            store.save(
+                Position(
+                    trade_id="hz",
+                    candidate=TriggerCandidate(**_candidate_row("hz", "HINDZINC")),
+                    state=ExecutionState.CLOSED,
+                    qty=356,
+                    entry_price=503.0,
+                    stop_price=501.5,
+                    realised_pnl=-1171.1,
+                    run_id="run-1",
+                    extra={
+                        "arb": {"strategy": "FUNNEL", "risk_scale": 0.5},
+                        "initial_stop_price": 501.5,
+                        "close_reason": "manual_broker_intervention",
+                        "qty_adopted_from_broker": {"was": 361, "now": 356},
+                    },
+                )
+            )
+            store.append_event("hz", "entry_filled", {"fill_price": 503.0, "filled_qty": 757})
+        finally:
+            store.close()
+        row = self.client.get(f"{BASE}/positions?session_date=2026-09-22").json()["closed"][0]
+        self.assertEqual(row["qty"], 757)
+        self.assertAlmostEqual(row["r_gross"], -1171.1 / (757 * 1.5), places=3)
+
     def test_an_open_position_carries_the_numbers_the_desk_needs(self) -> None:
         self.seed_store()
         body = self.client.get(f"{BASE}/positions?session_date=2026-09-22").json()

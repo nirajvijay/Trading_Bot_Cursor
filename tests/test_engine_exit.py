@@ -154,6 +154,21 @@ class AttributionTests(unittest.TestCase):
             CloseReason.STOP_HIT,
         )
 
+    def test_a_triggered_stop_read_as_limit_is_still_a_stop_hit(self) -> None:
+        # HINDZINC 2026-10-28: Kite turned the triggered SL into a LIMIT, and
+        # our flatten had already cleared stop_order_id when the close was
+        # booked. Our own tag on a closing-side order is still our stop.
+        pos = position(
+            stop_order_id=None,
+            exit_order_id="xo1",
+            extra={"exit_reason": "stop_triggered_unfilled"},
+        )
+        stop = order(
+            order_id="so1", tag=broker_tag_for("s1"), order_type="LIMIT",
+            status="CANCELLED", qty=757, filled=401, avg=501.5,
+        )
+        self.assertEqual(attribute(pos, stop), CloseReason.STOP_HIT)
+
     def test_each_active_reason_is_named_from_what_we_recorded(self) -> None:
         for reason in (
             CloseReason.EOD_SQUAREOFF,
@@ -234,6 +249,31 @@ class ClosingOrderSelectionTests(unittest.TestCase):
         assert found is not None
         self.assertEqual(found.order.order_id, "so1")
         self.assertEqual(found.reason, CloseReason.STOP_HIT)
+
+    def test_a_part_filled_stop_finished_by_our_exit_takes_the_exit_s_reason(self) -> None:
+        # HINDZINC 2026-10-28: the stop sold 401 of 757, then our 4-second
+        # fallback sold the other 356 at market. Our exit finished the trade,
+        # so its reason is the trade's reason (and the incident is counted).
+        pos = position(
+            qty=356,  # adopted from Kite while the stop filled in pieces
+            stop_order_id=None,
+            exit_order_id="xo1",
+            extra={"exit_reason": "stop_triggered_unfilled"},
+        )
+        orders = [
+            order(
+                order_id="so1", tag=broker_tag_for("s1"), order_type="LIMIT",
+                status="CANCELLED", qty=757, filled=401, avg=501.5,
+                timestamp="2026-09-22T10:15:53+00:00",
+            ),
+            order(
+                order_id="xo1", tag=flatten_tag_for(pos), order_type="MARKET",
+                qty=356, filled=356, avg=501.4, timestamp="2026-09-22T10:21:43+00:00",
+            ),
+        ]
+        found = identify_closing_order(pos, orders)
+        assert found is not None
+        self.assertEqual(found.reason, CloseReason.STOP_TRIGGERED_UNFILLED)
 
     def test_a_double_exit_is_recorded_for_a_human_to_see(self) -> None:
         pos = position(exit_order_id="xo1", extra={"exit_reason": "manual_close"})
@@ -363,6 +403,28 @@ class FinalizationTests(ExitTestCase):
             store=self.store,
         )
         self.assertAlmostEqual(pos.realised_pnl, 300 * (110.0 - 113.20), places=4)
+
+    def test_a_closed_trade_keeps_its_entry_size(self) -> None:
+        # HINDZINC 2026-10-28: bought 757; while the stop filled in pieces the
+        # record adopted Kite's shrinking size and closed at 356. Every closed-
+        # row reader (day net and charges, R, the Charges tab) needs the 757.
+        pos = position(qty=356, entry_price=503.0, stop_price=501.5)
+        entry = order(order_id="eo1", side="BUY", order_type="MARKET", qty=757, filled=757, avg=503.0)
+        exits = [
+            order(order_id="so1", order_type="LIMIT", status="CANCELLED", qty=757, filled=401,
+                  avg=501.5, timestamp="2026-09-22T10:15:53+00:00"),
+            order(order_id="xo1", order_type="MARKET", qty=356, filled=356, avg=501.4,
+                  timestamp="2026-09-22T10:21:43+00:00"),
+        ]
+        realised = kite_realised_pnl(pos, entry_order=entry, exit_orders=exits)
+        finalize_exit(
+            pos,
+            closing=ClosingOrder(exits[0], CloseReason.STOP_TRIGGERED_UNFILLED),
+            store=self.store,
+            realised=realised,
+        )
+        self.assertEqual(pos.qty, 757)
+        self.assertAlmostEqual(pos.realised_pnl, -1171.1, places=2)
 
     def test_every_reason_finalizes_identically(self) -> None:
         for reason in CloseReason:

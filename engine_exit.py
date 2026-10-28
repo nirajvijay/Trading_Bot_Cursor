@@ -34,7 +34,6 @@ from engine_orders import transition
 from engine_types import ExecutionState, Position
 from trading_engine_broker import parse_timestamp_text
 from trading_engine_types import (
-    STOP_ORDER_TYPES,
     BrokerOrder,
     broker_order_filled_qty,
 )
@@ -339,9 +338,13 @@ def attribute(position: Position, order: BrokerOrder) -> CloseReason:
                 return CloseReason(str(recorded))
             except ValueError:
                 return CloseReason.UNATTRIBUTED
-    if str(order.order_type) in STOP_ORDER_TYPES and str(order.tag or "") == broker_tag_for(position.trade_id):
-        # Our own stop, found by tag after its id was lost.
-        return CloseReason.STOP_HIT
+    if str(order.tag or "") == broker_tag_for(position.trade_id):
+        from engine_reconcile import is_our_stop_row
+
+        # Our own stop, found by tag after its id was lost or cleared by our
+        # flatten. By identity, not type: a triggered stop-limit reads as LIMIT.
+        if is_our_stop_row(position, order):
+            return CloseReason.STOP_HIT
     # Nothing we recognize at all.
     return CloseReason.MANUAL_BROKER_INTERVENTION
 
@@ -377,7 +380,28 @@ def identify_closing_order(
         }
         for c in candidates
     ]
-    return select_closing_order(position, candidates)
+    return finished_by_our_exit(select_closing_order(position, candidates), candidates)
+
+
+def finished_by_our_exit(
+    chosen: ClosingOrder, candidates: List[ClosingOrder]
+) -> ClosingOrder:
+    """A stop that sold only part, with an exit of ours selling the rest.
+
+    The exit's reason is the trade's reason: the stop alone did not close it.
+    HINDZINC 2026-10-28: the stop-limit sold 401 of 757 and the 4-second
+    fallback sold the rest, which is a stop_triggered_unfilled incident, not
+    a plain stop hit. A stop that filled its whole quantity stays a stop hit
+    (the double-exit race in select_closing_order).
+    """
+    if chosen.reason is not CloseReason.STOP_HIT:
+        return chosen
+    if chosen.fill_qty >= int(chosen.order.quantity or 0):
+        return chosen
+    for other in candidates:
+        if other is not chosen and other.reason in ACTIVE_EXIT_REASONS:
+            return ClosingOrder(order=chosen.order, reason=other.reason)
+    return chosen
 
 
 def select_closing_order(
@@ -449,6 +473,11 @@ def finalize_exit(
     if realised is not None:
         pnl = realised.pnl
         position.extra[EXIT_ORDER_IDS_KEY] = list(realised.exit_order_ids)
+        if realised.entry_qty > 0:
+            # A closed trade's qty is what its entry bought, not a size adopted
+            # from Kite while a stop filled in pieces (HINDZINC 2026-10-28:
+            # 757 bought, record shrank to 356). Day net, charges and R read it.
+            position.qty = int(realised.entry_qty)
     elif exit_fill is not None and position.entry_price is not None:
         qty = exit_qty or int(position.qty or 0)
         pnl = realised_pnl(

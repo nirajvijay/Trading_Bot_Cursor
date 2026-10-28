@@ -402,6 +402,7 @@ const SURPRISING_CLOSE = new Set([
   'manual_broker_intervention',
   'unattributed',
   'abnormal_slippage_flatten',
+  'stop_triggered_unfilled',
 ])
 
 function ClosedRows({
