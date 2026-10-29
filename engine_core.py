@@ -2140,6 +2140,7 @@ class ExecutionEngine:
         record = self.store.load_arb_day(self.session_date) or {}
         return {
             "risk_scale": settings.risk_scale,
+            "funnel_enabled": bool(settings.funnel_enabled),
             "day_mtm": mtm,
             "closed_net": None if day is None else day.closed_net,
             "open_net": None if day is None else day.open_net,

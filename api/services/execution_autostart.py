@@ -65,7 +65,8 @@ def autostart_tick(now: Optional[datetime] = None) -> Optional[str]:
         session_config = execution_settings.session_config_for(execution_settings.load())
         ok, message, pid = start_engine(session_config=session_config, session_date=day,
                                         live_orders=True, now=now)
-        what = (f"execution engine (ARB, stage {session_config.arb.risk_scale:g})"
+        orb_only = "" if session_config.arb.funnel_enabled else ", ORB only"
+        what = (f"execution engine (ARB, stage {session_config.arb.risk_scale:g}{orb_only})"
                 if session_config.is_arb else "execution engine")
         outcome = (f"{what} started with live Kite orders (pid {pid})" if ok
                    else f"{what} not started: {message}")
