@@ -47,6 +47,7 @@ REASON_BELOW_MIN_RISK = "arb_below_min_risk"
 REASON_ORB_NO_STOP = "arb_orb_no_stop"
 REASON_ORB_OUTSIDE_WINDOW = "arb_orb_outside_window"
 REASON_UNKNOWN_STRATEGY = "arb_unknown_strategy"
+REASON_FUNNEL_DISABLED = "arb_funnel_disabled"
 
 PENDING_STATES = frozenset({ExecutionState.PENDING_ENTRY, ExecutionState.ENTRY_SUBMITTED})
 HOLDING_STATES = frozenset(
@@ -93,6 +94,9 @@ class ArbSettings:
     # took them in 1-minute bars labelled up to 11:00 (orb_config.trigger_end).
     orb_cutoff: time = time(11, 1)
     # Funnel filters and score.
+    # False makes the session ORB-only: every funnel trigger is skipped
+    # (recorded with its features, so the desk still shows what it passed up).
+    funnel_enabled: bool = True
     funnel_cutoff: time = time(13, 0)
     min_volume_ratio: float = 2.0
     min_stop_pct: float = 0.25
@@ -260,6 +264,8 @@ def classify_funnel(
     features: FunnelFeatures, settings: ArbSettings, *, score0_taken_today: int
 ) -> FunnelVerdict:
     """Filters first, then the score and its base risk."""
+    if not settings.funnel_enabled:
+        return FunnelVerdict(False, REASON_FUNNEL_DISABLED)
     if features.trigger_time_ist is None:
         return FunnelVerdict(False, REASON_NO_TRIGGER_TIME)
     if features.trigger_time_ist >= settings.funnel_cutoff:

@@ -40,6 +40,8 @@ class ExecutionStartRequest(BaseModel):
     # are chosen at start; the per-trade and daily caps above are not used.
     strategy_mode: str = STRATEGY_LEGACY_VWAP
     arb_risk_scale: float = ARB_UNLOCKED_SCALE
+    # None = the saved setting (execution_settings.json); False = ORB only.
+    arb_funnel_enabled: Optional[bool] = None
 
 
 class ArbStageView(BaseModel):
@@ -63,6 +65,7 @@ class ExecutionSettingsView(BaseModel):
     autostart_strategy: str = STRATEGY_LEGACY_VWAP
     arb_risk_scale: float = ARB_UNLOCKED_SCALE
     arb_total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
+    arb_funnel_enabled: bool = True
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
     unlocked_scale: float = ARB_UNLOCKED_SCALE
@@ -74,6 +77,9 @@ class ExecutionSettingsRequest(BaseModel):
     autostart_strategy: str
     arb_risk_scale: float = ARB_UNLOCKED_SCALE
     arb_total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
+    # None keeps the saved switch, so a desk that does not send it never
+    # turns the funnel back on by accident.
+    arb_funnel_enabled: Optional[bool] = None
 
 
 class ExecutionStartResponse(BaseModel):

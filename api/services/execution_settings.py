@@ -33,12 +33,21 @@ class ExecutionSettings:
     autostart_strategy: str = STRATEGY_LEGACY_VWAP
     arb_risk_scale: float = ARB_UNLOCKED_SCALE
     arb_total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
+    # False = ARB trades ORB only. Missing from the file means on.
+    arb_funnel_enabled: bool = True
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
 
 
 def settings_path() -> Path:
     return config.execution_engine_db_path().with_name("execution_settings.json")
+
+
+def _flag(value: object) -> bool:
+    """A JSON switch; only an explicit off value turns it off."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "off", "no")
+    return value is not False and value != 0
 
 
 def load(path: Optional[Path] = None) -> ExecutionSettings:
@@ -53,6 +62,7 @@ def load(path: Optional[Path] = None) -> ExecutionSettings:
             arb_total_capital_rupees=float(
                 data.get("arb_total_capital_rupees") or ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
             ),
+            arb_funnel_enabled=_flag(data.get("arb_funnel_enabled", True)),
             updated_at=data.get("updated_at"),
             updated_by=data.get("updated_by"),
         )
@@ -69,6 +79,7 @@ def session_config_for(settings: ExecutionSettings) -> SessionRiskConfig:
         return arb_session_config(
             risk_scale=settings.arb_risk_scale,
             total_capital_rupees=settings.arb_total_capital_rupees,
+            funnel_enabled=settings.arb_funnel_enabled,
         )
     return SessionRiskConfig()
 

@@ -268,6 +268,10 @@ def build_command(
         session_config.strategy_mode,
     ] + (
         ["--arb-risk-scale", str(session_config.arb.risk_scale)] if session_config.is_arb else []
+    ) + (
+        ["--arb-no-funnel"]
+        if session_config.is_arb and not session_config.arb.funnel_enabled
+        else []
     ) + (["--live-orders"] if live_orders else [])
 
 

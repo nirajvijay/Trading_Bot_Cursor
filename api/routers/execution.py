@@ -101,10 +101,14 @@ def _queue(*, read_only: bool = False) -> CommandQueue:
 def _session_config_from(body: ExecutionStartRequest) -> SessionRiskConfig:
     """ARB takes only its stage and the capital; legacy takes the caps."""
     if body.strategy_mode == STRATEGY_ARB:
+        funnel = body.arb_funnel_enabled
+        if funnel is None:
+            funnel = execution_settings.load().arb_funnel_enabled
         return arb_session_config(
             risk_scale=body.arb_risk_scale,
             total_capital_rupees=body.caps.total_capital_rupees,
             leverage_factor=body.caps.leverage_factor,
+            funnel_enabled=funnel,
         )
     return _caps_from(body.caps)
 
@@ -190,6 +194,7 @@ def _settings_view(settings: execution_settings.ExecutionSettings) -> ExecutionS
         autostart_strategy=settings.autostart_strategy,
         arb_risk_scale=settings.arb_risk_scale,
         arb_total_capital_rupees=settings.arb_total_capital_rupees,
+        arb_funnel_enabled=settings.arb_funnel_enabled,
         updated_at=settings.updated_at,
         updated_by=settings.updated_by,
         unlocked_scale=ARB_UNLOCKED_SCALE,
@@ -589,6 +594,11 @@ def execution_settings_write(
         autostart_strategy=str(body.autostart_strategy),
         arb_risk_scale=float(body.arb_risk_scale),
         arb_total_capital_rupees=float(body.arb_total_capital_rupees),
+        arb_funnel_enabled=(
+            execution_settings.load().arb_funnel_enabled
+            if body.arb_funnel_enabled is None
+            else bool(body.arb_funnel_enabled)
+        ),
         updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         updated_by=(ctx.session.username if ctx and ctx.session else None) or "owner",
     )

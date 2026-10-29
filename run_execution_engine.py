@@ -103,6 +103,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=ARB_UNLOCKED_SCALE,
         help="ARB rollout stage: every ARB rupee figure is multiplied by this",
     )
+    parser.add_argument(
+        "--arb-no-funnel",
+        action="store_true",
+        help="ARB trades ORB only: funnel triggers are skipped",
+    )
     parser.add_argument("--live-orders", action="store_true")
     parser.add_argument("--tick-seconds", type=float, default=TICK_INTERVAL_SECONDS)
     parser.add_argument(
@@ -121,6 +126,7 @@ def build_config(args: argparse.Namespace) -> SessionRiskConfig:
             risk_scale=args.arb_risk_scale,
             total_capital_rupees=args.total_capital,
             leverage_factor=args.leverage,
+            funnel_enabled=not args.arb_no_funnel,
         )
     else:
         config = SessionRiskConfig(
