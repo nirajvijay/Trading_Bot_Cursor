@@ -36,6 +36,10 @@ RANGE_INCOMPLETE_CANDLES = "incomplete_range_candles"
 # Why a valid range was not armed.
 NOT_SELECTED_RVOL = "rvol_below_min"
 NOT_SELECTED_RANK = "not_in_top_n"
+# GUC (gap-up continuation) only.
+NOT_SELECTED_GAP = "gap_below_min"
+NOT_SELECTED_NO_PREV_CLOSE = "no_prev_close"
+NOT_SELECTED_STOP_TIGHT = "stop_below_min_pct"
 
 # Arm lifecycle. ARMED is the only non-terminal state.
 ARM_ARMED = "ARMED"
@@ -47,6 +51,9 @@ DECISION_TYPES = (DECISION_TRIGGERED, DECISION_MISSED, DECISION_EXPIRED)
 MISSED_OVERSHOOT = "overshoot_beyond_limit"
 MISSED_NO_STOP = "no_valid_stop"
 EXPIRED_CUTOFF = "not_triggered_by_cutoff"
+# GUC only: at the watch start (09:30) the 15-minute volume was below the
+# minimum, so the arm was dropped without a trade.
+EXPIRED_WATCH_RVOL = "watch_rvol_below_min"
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,9 @@ class DaySummary:
     or_bars: int        # how many such bars there were (5 on a clean day)
     first_bar: str      # "HH:MM" of the first candle
     last_bar: str       # "HH:MM" of the last candle
+    # GUC: volume of the 1-minute bars before 09:30 (the watch start).
+    watch_volume: int = 0
+    watch_bars: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,8 @@ class OrbBaseline:
     history_as_of: Optional[str] = None
     sessions: Tuple[str, ...] = ()
     min_or_bars: Optional[int] = None
+    # GUC: average volume of the bars before 09:30 over the same sessions.
+    avg_watch_volume: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +111,9 @@ class OpeningRange:
     rvol: Optional[float] = None
     snapshot_at: Optional[datetime] = None
     preopen_at: Optional[datetime] = None
+    # GUC: yesterday's close (the tick's OHLC close) and the opening gap.
+    prev_close: Optional[float] = None
+    gap_pct: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +149,12 @@ class OrbArm:
     or_close: float
     or_volume: int
     avg_or_volume: float
+    # GUC only (None on an ORB arm). The stop is a fixed price set at arm
+    # time: ``stop_distance`` is measured from ``level``, not from the fill.
+    gap_pct: Optional[float] = None
+    market_gap: Optional[float] = None
+    preopen_volume: Optional[int] = None
+    avg_watch_volume: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +173,8 @@ class OrbDecision:
     overshoot_atr: Optional[float] = None
 
 
-def orb_setup_id(instrument_token: int, session_date: str, rule_version: str) -> str:
-    """One ORB setup per stock per day. Also the engine's trade id."""
-    return f"{int(instrument_token)}|{session_date}|ORB|{rule_version}"
+def orb_setup_id(
+    instrument_token: int, session_date: str, rule_version: str, kind: str = "ORB"
+) -> str:
+    """One ORB (or GUC) setup per stock per day. Also the engine's trade id."""
+    return f"{int(instrument_token)}|{session_date}|{kind}|{rule_version}"

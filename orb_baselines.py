@@ -53,6 +53,10 @@ ORDER BY candle_time ASC
 """
 
 
+# Bars before this belong to GUC's 15-minute volume window (orb_config.GucConfig).
+GUC_WATCH_END = "09:30"
+
+
 def _hm(candle_time: str) -> str:
     return candle_time[11:16]
 
@@ -62,10 +66,14 @@ def summarise_sessions(
 ) -> List[DaySummary]:
     """Reduce one stock's 1-minute candles (oldest first) to one row per day."""
     range_end = config.range_end.strftime("%H:%M")
+    # GUC's 15-minute window (bars before 09:30); the same for every config so
+    # one set of baselines serves both detectors.
+    watch_end = GUC_WATCH_END
     days: List[DaySummary] = []
     current: Optional[str] = None
     high = low = close = 0.0
     or_volume = or_bars = 0
+    watch_volume = watch_bars = 0
     first_bar = last_bar = ""
 
     def flush() -> None:
@@ -80,6 +88,8 @@ def summarise_sessions(
                     or_bars=or_bars,
                     first_bar=first_bar,
                     last_bar=last_bar,
+                    watch_volume=watch_volume,
+                    watch_bars=watch_bars,
                 )
             )
 
@@ -91,6 +101,7 @@ def summarise_sessions(
             current = day
             high, low = float(bar_high), float(bar_low)
             or_volume = or_bars = 0
+            watch_volume = watch_bars = 0
             first_bar = hm
         else:
             high = max(high, float(bar_high))
@@ -100,8 +111,23 @@ def summarise_sessions(
         if hm < range_end:
             or_volume += int(volume)
             or_bars += 1
+        if hm < watch_end:
+            watch_volume += int(volume)
+            watch_bars += 1
     flush()
     return days
+
+
+def compute_watch_average(
+    days: Sequence[DaySummary], config: OrbConfig = DEFAULT_ORB_CONFIG
+) -> Optional[float]:
+    """GUC: average 09:15-09:29 volume over the volume window, or None when
+    any of those sessions has no such bars (older rows summarised before the
+    field existed carry 0)."""
+    window = list(days)[-config.volume_lookback_sessions:]
+    if not window or any(day.watch_bars < 1 for day in window):
+        return None
+    return sum(day.watch_volume for day in window) / len(window)
 
 
 def compute_baseline_values(
@@ -192,6 +218,9 @@ def baseline_from_days(
     atr, average = compute_baseline_values(window, config)
     if not (math.isfinite(atr) and math.isfinite(average) and atr > 0 and average > 0):
         return not_ready(BASELINE_DEGENERATE, f"atr={atr!r} average volume={average!r}")
+    watch_average = compute_watch_average(window, config)
+    if watch_average is not None and not (math.isfinite(watch_average) and watch_average > 0):
+        watch_average = None
     return OrbBaseline(
         instrument_token=instrument_token,
         tradingsymbol=tradingsymbol,
@@ -201,6 +230,7 @@ def baseline_from_days(
         history_as_of=latest,
         sessions=tuple(day.session_date for day in window),
         min_or_bars=min(day.or_bars for day in volume_days),
+        avg_watch_volume=watch_average,
     )
 
 

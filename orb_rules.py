@@ -19,6 +19,7 @@ PR_B_PLAN.md.)
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,10 +27,12 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import List, Optional, Sequence, Tuple
 
 from continuation_features import price_to_ticks
-from orb_config import DEFAULT_ORB_CONFIG, OrbConfig
+from orb_config import DEFAULT_GUC_CONFIG, DEFAULT_ORB_CONFIG, GucConfig, OrbConfig
 from orb_types import (
     DIRECTION_DOWN,
     DIRECTION_UP,
+    NOT_SELECTED_GAP,
+    NOT_SELECTED_NO_PREV_CLOSE,
     NOT_SELECTED_RANK,
     NOT_SELECTED_RVOL,
     RANGE_BAD_OHLC,
@@ -67,6 +70,8 @@ class TickSnapshot:
     day_high: float
     day_low: float
     volume: int        # cumulative for the day, pre-open auction included
+    # Kite's day OHLC close on a live tick is yesterday's close (GUC's gap).
+    prev_close: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -125,11 +130,19 @@ def _finish(
     snapshot_at: Optional[datetime],
     preopen_at: Optional[datetime],
     tick_size: Optional[float],
+    prev_close: Optional[float] = None,
 ) -> OpeningRange:
     """Direction, level and RVOL for a range whose raw numbers are sound."""
     assert baseline.atr14 is not None and baseline.avg_or_volume is not None
     rvol = or_volume / baseline.avg_or_volume
+    gap_pct = None
+    if prev_close is not None and math.isfinite(prev_close) and prev_close > 0:
+        gap_pct = or_open / prev_close - 1.0
+    else:
+        prev_close = None
     common = dict(
+        prev_close=prev_close,
+        gap_pct=gap_pct,
         instrument_token=instrument_token,
         tradingsymbol=tradingsymbol,
         source=source,
@@ -233,6 +246,7 @@ def range_from_snapshot(
         snapshot_at=snapshot.at,
         preopen_at=preopen.at,
         tick_size=tick_size,
+        prev_close=snapshot.prev_close,
     )
 
 
@@ -374,6 +388,115 @@ def make_arm(
         or_close=float(item.or_close),
         or_volume=int(item.or_volume),
         avg_or_volume=float(item.avg_or_volume),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GUC: gap-up continuation (orb_config.GucConfig)
+# ---------------------------------------------------------------------------
+
+
+def guc_range(item: OpeningRange) -> OpeningRange:
+    """GUC has no direction rule: a range ORB rejects only because its close
+    equals its open is a usable gap-up range, long, level at the high."""
+    if item.valid or item.reason != RANGE_NO_DIRECTION:
+        return item
+    if None in (item.or_open, item.or_high, item.or_low, item.or_close) or item.rvol is None:
+        return item
+    return dataclasses.replace(
+        item, valid=True, reason=None, direction=DIRECTION_UP, level=float(item.or_high)
+    )
+
+
+def select_guc(
+    ranges: Sequence[OpeningRange], config: GucConfig = DEFAULT_GUC_CONFIG
+) -> List[RankedRange]:
+    """Arm every valid range that opened ``min_gap_pct`` or more above
+    yesterday's close. Long only; the 15-minute volume is judged later, at
+    the watch start. Ranked by gap, largest first (display order only)."""
+    ranges = [guc_range(r) for r in ranges]
+    qualifying = sorted(
+        (
+            r
+            for r in ranges
+            if r.valid and r.gap_pct is not None and r.gap_pct >= config.min_gap_pct
+        ),
+        key=lambda r: (-float(r.gap_pct or 0.0), r.tradingsymbol),
+    )
+    rank_of = {r.instrument_token: index + 1 for index, r in enumerate(qualifying)}
+    ranked: List[RankedRange] = []
+    for item in ranges:
+        rank = rank_of.get(item.instrument_token)
+        if not item.valid:
+            ranked.append(RankedRange(item, None, False, item.reason))
+        elif item.gap_pct is None:
+            ranked.append(RankedRange(item, None, False, NOT_SELECTED_NO_PREV_CLOSE))
+        elif rank is None:
+            ranked.append(RankedRange(item, None, False, NOT_SELECTED_GAP))
+        elif rank > config.top_n:
+            ranked.append(RankedRange(item, rank, False, NOT_SELECTED_RANK))
+        else:
+            ranked.append(RankedRange(item, rank, True, None))
+
+    def order(entry: RankedRange) -> Tuple:
+        if entry.rank is not None:
+            return (0, entry.rank, entry.range.tradingsymbol)
+        if entry.range.valid:
+            return (1, -float(entry.range.gap_pct or 0.0), entry.range.tradingsymbol)
+        return (2, 0.0, entry.range.tradingsymbol)
+
+    return sorted(ranked, key=order)
+
+
+def guc_stop_distance(level: float, or_low: float, atr: float, config: GucConfig) -> float:
+    """Rupees from the level to the stop: the 5-minute low, capped at
+    ``stop_atr_mult`` x ATR14 (research batch4.gapup)."""
+    return min(max(level - or_low, 0.0), config.stop_atr_mult * atr)
+
+
+def make_guc_arm(
+    ranked: RankedRange,
+    *,
+    session_date: str,
+    tick_size: float,
+    config: GucConfig = DEFAULT_GUC_CONFIG,
+    market_gap: Optional[float] = None,
+    avg_watch_volume: Optional[float] = None,
+) -> OrbArm:
+    """The GUC arm for a selected range: long the 5-minute high, stop fixed
+    below the level. Raises ValueError for anything else."""
+    item = ranked.range
+    if not ranked.selected or ranked.rank is None or not item.valid:
+        raise ValueError(f"{item.tradingsymbol} is not selected")
+    assert item.atr14 is not None and item.rvol is not None and item.gap_pct is not None
+    assert item.avg_or_volume is not None and item.or_volume is not None
+    assert None not in (item.or_open, item.or_high, item.or_low, item.or_close)
+    level = float(item.or_high)
+    distance = guc_stop_distance(level, float(item.or_low), float(item.atr14), config)
+    return OrbArm(
+        setup_id=orb_setup_id(item.instrument_token, session_date, config.rule_version, "GUC"),
+        rule_version=config.rule_version,
+        session_date=session_date,
+        instrument_token=item.instrument_token,
+        tradingsymbol=item.tradingsymbol,
+        direction=DIRECTION_UP,
+        level=level,
+        level_ticks=price_to_ticks(level, tick_size),
+        tick_size=float(tick_size),
+        atr14=float(item.atr14),
+        stop_distance=distance,
+        rvol=float(item.rvol),
+        rank=int(ranked.rank),
+        or_open=float(item.or_open),
+        or_high=float(item.or_high),
+        or_low=float(item.or_low),
+        or_close=float(item.or_close),
+        or_volume=int(item.or_volume),
+        avg_or_volume=float(item.avg_or_volume),
+        gap_pct=float(item.gap_pct),
+        market_gap=None if market_gap is None else float(market_gap),
+        preopen_volume=None if item.preopen_volume is None else int(item.preopen_volume),
+        avg_watch_volume=None if avg_watch_volume is None else float(avg_watch_volume),
     )
 
 

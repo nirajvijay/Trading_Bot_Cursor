@@ -187,9 +187,13 @@ def arb_session_config(
     total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES,
     leverage_factor: float = DEFAULT_LEVERAGE_FACTOR,
     funnel_enabled: bool = True,
+    guc_enabled: bool = False,
+    guc_risk_scale: float = 1.0,
+    guc_ordinary_day_fraction: float = 0.5,
 ) -> SessionRiskConfig:
-    """An ARB session: only the stage, the capital and whether the funnel
-    trades (False = ORB only) are chosen at start.
+    """An ARB session: only the stage, the capital, whether the funnel
+    trades (False = ORB only) and the GUC sleeve's switch, stage and
+    ordinary-day fraction are chosen at start.
 
     Every other ARB number is the tested setting in engine_arb.ArbSettings;
     they are changed in code, not at start.
@@ -198,5 +202,11 @@ def arb_session_config(
         total_capital_rupees=float(total_capital_rupees),
         leverage_factor=float(leverage_factor),
         strategy_mode=STRATEGY_ARB,
-        arb=ArbSettings(risk_scale=float(risk_scale), funnel_enabled=bool(funnel_enabled)),
+        arb=ArbSettings(
+            risk_scale=float(risk_scale),
+            funnel_enabled=bool(funnel_enabled),
+            guc_enabled=bool(guc_enabled),
+            guc_risk_scale=float(guc_risk_scale),
+            guc_ordinary_day_fraction=float(guc_ordinary_day_fraction),
+        ),
     )

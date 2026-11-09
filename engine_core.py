@@ -31,10 +31,13 @@ import engine_lock
 from engine_arb import (
     ARB_EXTRA_KEY,
     STRATEGY_FUNNEL,
+    STRATEGY_GUC,
     STRATEGY_ORB,
     ArbSettings,
     DayLockTracker,
     DayMtm,
+    guc_sleeve,
+    orb_sleeve,
 )
 from engine_config import SessionRiskConfig, margin_used_rupees
 from engine_entry import (
@@ -173,6 +176,8 @@ STOP_TRIGGERED_KEY = "stop_triggered"
 # A trigger older than this is not entered: the backtest entered at the
 # trigger price, and a late market order would not be that trade.
 ARB_MAX_TRIGGER_AGE_SECONDS = 15.0
+# The index whose opening gap sizes GUC trades (engine_arb.ArbSettings.guc_*).
+GUC_INDEX_SYMBOL = "NIFTY 50"
 EVENT_ARB_DAY_HALT = "arb_day_halt"
 REASON_ARB_TRIGGER_STALE = "arb_trigger_stale"
 REASON_ARB_CONTEXT_UNAVAILABLE = "arb_context_unavailable"
@@ -276,6 +281,13 @@ class ExecutionEngine:
         self._arb_prices: Dict[str, Tuple[float, datetime]] = {}
         self._arb_lock = DayLockTracker(self.arb_settings)
         self._arb_halt_restored = False
+        # GUC sleeve: the morning's NIFTY gap (read once from Kite), its day
+        # P&L this tick, and whether its day stop has closed new entries.
+        self._guc_market_gap: Optional[float] = None
+        self._guc_market_gap_tried = False
+        self.guc_day: Optional[DayMtm] = None
+        self._guc_day_tick: Optional[int] = None
+        self._guc_day_stopped = False
         # Lock-rule state per open trade: (what it was computed from, state).
         # Only a cache of engine_lock.fold over stored bars; safe to lose.
         self._lock_cache: Dict[str, Tuple[tuple, engine_lock.LockState]] = {}
@@ -519,12 +531,16 @@ class ExecutionEngine:
         risk_cap_rupees: float,
         sizing_price: Optional[float] = None,
         extra: Optional[dict] = None,
+        capital_cap_rupees: Optional[float] = None,
     ) -> EntryOutcome:
         config = self.session_config
         open_positions = self.store.open_positions()
         available_capital = config.remaining_capital_rupees(
             margin_used_rupees(open_positions, config.leverage_factor)
         )
+        if capital_cap_rupees is not None:
+            # A sleeve's own budget (GUC): never more than the account has.
+            available_capital = max(0.0, min(available_capital, float(capital_cap_rupees)))
         outcome = submit_entry(
             candidate,
             broker=self.broker,
@@ -585,9 +601,13 @@ class ExecutionEngine:
             return "feed_stale"
         if self.arb_mode:
             is_orb = candidate.strategy == STRATEGY_ORB
-            cutoff = self.arb_settings.orb_cutoff if is_orb else self.arb_settings.funnel_cutoff
+            is_guc = candidate.strategy == STRATEGY_GUC
+            if is_guc:
+                cutoff = self.arb_settings.guc_cutoff
+            else:
+                cutoff = self.arb_settings.orb_cutoff if is_orb else self.arb_settings.funnel_cutoff
             if engine_clock.ist_time(self.now_fn()) >= cutoff:
-                return REASON_ARB_PAST_ORB_CUTOFF if is_orb else REASON_ARB_PAST_CUTOFF
+                return REASON_ARB_PAST_ORB_CUTOFF if (is_orb or is_guc) else REASON_ARB_PAST_CUTOFF
             if not self._arb_day_ok:
                 return REASON_ARB_DAY_CHECK_FAILED
         for position in self.store.open_positions():
@@ -1786,6 +1806,10 @@ class ExecutionEngine:
 
     def _check_daily_loss(self) -> None:
         closed = self.store.closed_today(self.session_date)
+        if self.arb_mode:
+            # The closed-loss backstop belongs to ORB and the funnel; GUC has
+            # its own day stop (_check_guc_day). With GUC off this is every row.
+            closed = orb_sleeve(closed)
         check = self.risk_policy.check_daily_loss(closed)
         self.realised_loss_today = check.closed_loss_rupees
         if not check.breached:
@@ -1918,20 +1942,30 @@ class ExecutionEngine:
         """The day's net P&L, computed at most once per tick."""
         if self._arb_day_tick == self.tick_count and self.arb_day is not None:
             return self.arb_day
-        closed = self.store.closed_today(self.session_date)
-        open_positions = self.store.open_positions()
+        closed = orb_sleeve(self.store.closed_today(self.session_date))
+        open_positions = orb_sleeve(self.store.open_positions())
         prices = self._arb_fresh_prices(open_positions, now)
         self.arb_day = engine_arb.day_mtm(closed, open_positions, prices)
         self._arb_day_tick = self.tick_count
         return self.arb_day
 
     def _arb_fresh_prices(self, open_positions: List[Position], now: datetime) -> Dict[str, float]:
-        """Kite LTPs no older than the stale limit, for every held position (D4).
+        """Kite LTPs no older than the stale limit, for the positions asked (D4).
 
         A price read this tick refreshes its symbol; an older good price is
         reused until it goes stale. Nothing here ever reads the websocket.
+
+        The cache is kept for every ARB position the engine holds, whichever
+        sleeve asks: refreshing and pruning it for one sleeve alone would drop
+        the other sleeve's last good prices, and a single refused read on the
+        next tick would then mark that sleeve's positions at their stops.
         """
-        held = {p.candidate.tradingsymbol: p for p in open_positions if _arb_holding(p)}
+        wanted = {p.candidate.tradingsymbol for p in open_positions if _arb_holding(p)}
+        held = {
+            p.candidate.tradingsymbol: p for p in self.store.open_positions() if _arb_holding(p)
+        }
+        for position in open_positions:
+            held.setdefault(position.candidate.tradingsymbol, position)
         for symbol, position in held.items():
             ltp = self._fresh_ltp(position)
             if _valid_price(ltp):
@@ -1943,7 +1977,7 @@ class ExecutionEngine:
         return {
             symbol: price
             for symbol, (price, at) in self._arb_prices.items()
-            if 0.0 <= _seconds_between(at, now) <= limit
+            if symbol in wanted and 0.0 <= _seconds_between(at, now) <= limit
         }
 
     def _handle_arb_trigger(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
@@ -1960,6 +1994,8 @@ class ExecutionEngine:
             return None
         if candidate.strategy == STRATEGY_ORB:
             return self._handle_arb_orb(candidate)
+        if candidate.strategy == STRATEGY_GUC:
+            return self._handle_arb_guc(candidate)
         if candidate.strategy != STRATEGY_FUNNEL:
             self._skip(candidate, engine_arb.REASON_UNKNOWN_STRATEGY)
             return None
@@ -1976,8 +2012,8 @@ class ExecutionEngine:
             )
             return None
 
-        closed = self.store.closed_today(self.session_date)
-        open_positions = self.store.open_positions()
+        closed = orb_sleeve(self.store.closed_today(self.session_date))
+        open_positions = orb_sleeve(self.store.open_positions())
         score0_taken = sum(
             1
             for p in list(closed) + list(open_positions)
@@ -2042,9 +2078,137 @@ class ExecutionEngine:
             stop=stop,
             base_rupees=settings.orb_risk_rupees(),
             info=info,
-            closed=self.store.closed_today(self.session_date),
-            open_positions=self.store.open_positions(),
+            closed=orb_sleeve(self.store.closed_today(self.session_date)),
+            open_positions=orb_sleeve(self.store.open_positions()),
         )
+
+    # ------------------------------------------------------------------
+    # GUC sleeve (Reference/guc_build_plan_2026-11.md). Its own budget and
+    # day stop; from the entry onwards exactly ORB's order path.
+    # ------------------------------------------------------------------
+
+    def _guc_day_now(self, now: datetime) -> DayMtm:
+        """The GUC sleeve's net P&L (closed + open marks), once per tick."""
+        if self._guc_day_tick == self.tick_count and self.guc_day is not None:
+            return self.guc_day
+        closed = guc_sleeve(self.store.closed_today(self.session_date))
+        open_positions = guc_sleeve(self.store.open_positions())
+        prices = self._arb_fresh_prices(open_positions, now)
+        self.guc_day = engine_arb.day_mtm(closed, open_positions, prices)
+        self._guc_day_tick = self.tick_count
+        return self.guc_day
+
+    def _guc_market_gap_now(self) -> Optional[float]:
+        """NIFTY 50's opening gap (day open / previous close - 1), read once
+        from Kite's quote. None when it cannot be read: an ordinary day."""
+        if self._guc_market_gap is not None or self._guc_market_gap_tried:
+            return self._guc_market_gap
+        self._guc_market_gap_tried = True
+        index_ohlc = getattr(self.broker, "index_ohlc", None)
+        if index_ohlc is None:
+            return None
+        try:
+            ohlc = index_ohlc(GUC_INDEX_SYMBOL)
+        except Exception:  # noqa: BLE001 - an unreadable gap is an ordinary day
+            ohlc = None
+        if not ohlc:
+            self.store.append_event("__engine__", "guc_market_gap_unavailable", {})
+            return None
+        day_open, prev_close = ohlc
+        if not (day_open and prev_close) or float(prev_close) <= 0 or float(day_open) <= 0:
+            return None
+        self._guc_market_gap = float(day_open) / float(prev_close) - 1.0
+        self.store.append_event(
+            "__engine__",
+            "guc_market_gap",
+            {"open": float(day_open), "prev_close": float(prev_close), "gap": self._guc_market_gap},
+        )
+        return self._guc_market_gap
+
+    def _handle_arb_guc(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:
+        """A gap-up continuation trigger: the detector chose the stock and
+        fixed the stop; here the sleeve's switch, window, day stop and open
+        cap decide the rupee risk, then the same entry path as ORB."""
+        settings = self.arb_settings
+        info: dict = {
+            "strategy": STRATEGY_GUC,
+            "risk_scale": settings.guc_risk_scale,
+            "capital": self.session_config.total_capital_rupees,
+            "guc": {
+                "level": candidate.orb_level,
+                "gap_pct": candidate.guc_gap_pct,
+                "universe_gap": candidate.guc_market_gap,
+                "confirm_fill": candidate.guc_confirm_fill,
+                "atr14": candidate.orb_atr14,
+                "trigger_price": float(candidate.trigger_price),
+                "planned_stop": candidate.planned_stop,
+            },
+        }
+        if not settings.guc_enabled:
+            self._skip(candidate, engine_arb.REASON_GUC_DISABLED, extra={ARB_EXTRA_KEY: info})
+            return None
+        fired_at = _exchange_time_ist(candidate)
+        if fired_at is None or fired_at >= settings.guc_cutoff:
+            self._skip(candidate, engine_arb.REASON_GUC_OUTSIDE_WINDOW, extra={ARB_EXTRA_KEY: info})
+            return None
+        stop = compute_stop_price(candidate)
+        if stop is None:
+            self._skip(candidate, engine_arb.REASON_GUC_NO_STOP, extra={ARB_EXTRA_KEY: info})
+            return None
+        now = self.now_fn()
+        day = self._guc_day_now(now)
+        loss = engine_arb.guc_day_loss_rupees(day)
+        info.update({"guc_day_mtm": day.mtm, "guc_day_mtm_complete": day.complete})
+        if self._guc_day_stopped or loss >= settings.guc_day_stop_rupees():
+            if not self._guc_day_stopped:
+                self._guc_day_stopped = True
+                self.store.append_event(
+                    "__engine__", "guc_day_stop", {"mtm": day.mtm, "stop": settings.guc_day_stop_rupees()}
+                )
+            self._skip(candidate, engine_arb.REASON_GUC_DAY_STOP, extra={ARB_EXTRA_KEY: info})
+            return None
+        market_gap = self._guc_market_gap_now()
+        base = settings.guc_risk_rupees(market_gap)
+        open_guc = guc_sleeve(self.store.open_positions())
+        live_risk = sum(engine_arb.position_live_risk(p) for p in open_guc)
+        decision = engine_arb.guc_allowed_risk(settings, base_rupees=base, live_guc_risk_rupees=live_risk)
+        info.update(
+            {
+                "market_gap": market_gap,
+                "gap_day": market_gap is not None and market_gap >= settings.guc_market_gap_min,
+                "base_risk": decision.base_rupees,
+                "room": round(decision.room_rupees, 2),
+                "live_risk": round(live_risk, 2),
+                "risk_allowed": decision.risk_rupees,
+                "open_guc": len(open_guc),
+            }
+        )
+        if decision.risk_rupees <= 0:
+            self._skip(candidate, str(decision.reason), extra={ARB_EXTRA_KEY: info})
+            return None
+        sizing_price = engine_arb.sizing_price(
+            direction=candidate.direction,
+            trigger_price=float(candidate.trigger_price),
+            last_price=candidate.last_price,
+            strategy=STRATEGY_ORB,  # same zero buffer as ORB: filled at the trigger
+        )
+        margin_used = margin_used_rupees(open_guc, self.session_config.leverage_factor)
+        capital_cap = max(0.0, float(settings.guc_margin_budget) - margin_used)
+        info["risk_used"] = decision.risk_rupees
+        info["sizing_price"] = round(sizing_price, 4)
+        info["guc_margin_used"] = round(margin_used, 2)
+        info["guc_capital_cap"] = round(capital_cap, 2)
+        try:
+            return self._enter(
+                candidate,
+                risk_cap_rupees=decision.risk_rupees,
+                sizing_price=sizing_price,
+                extra={ARB_EXTRA_KEY: info},
+                capital_cap_rupees=capital_cap,
+            )
+        except BrokerSessionExpired:
+            self._hold_for_dead_session()
+            return None
 
     def _arb_size_and_enter(
         self,
@@ -2123,12 +2287,35 @@ class ExecutionEngine:
         if not self.arb_mode:
             return None
         settings = self.arb_settings
-        closed = self.store.closed_today(self.session_date)
-        open_positions = self.store.open_positions()
+        all_closed = self.store.closed_today(self.session_date)
+        all_open = self.store.open_positions()
+        closed = orb_sleeve(all_closed)
+        open_positions = orb_sleeve(all_open)
         losers = engine_arb.count_losers(closed)
         live_risk = sum(engine_arb.position_live_risk(p) for p in open_positions)
         day = self.arb_day if self._arb_day_tick == self.tick_count else None
         mtm = None if day is None else float(day.mtm)
+        guc_open = guc_sleeve(all_open)
+        guc_day = self.guc_day if self._guc_day_tick == self.tick_count else None
+        guc_block = {
+            "enabled": bool(settings.guc_enabled),
+            "risk_scale": settings.guc_risk_scale,
+            "risk_gap_day": settings.guc_risk_rupees(settings.guc_market_gap_min),
+            "risk_ordinary_day": settings.guc_risk_rupees(None),
+            "ordinary_day_fraction": settings.guc_ordinary_day_fraction,
+            "market_gap": self._guc_market_gap,
+            "market_gap_min": settings.guc_market_gap_min,
+            "open": len(guc_open),
+            "closed": len(guc_sleeve(all_closed)),
+            "live_risk": round(sum(engine_arb.position_live_risk(p) for p in guc_open), 2),
+            "open_risk_cap": settings.guc_open_risk_cap_rupees(),
+            "day_mtm": None if guc_day is None else float(guc_day.mtm),
+            "day_stop": settings.guc_day_stop_rupees(),
+            "day_stopped": bool(self._guc_day_stopped),
+            "margin_budget": settings.guc_margin_budget,
+            "margin_used": round(margin_used_rupees(guc_open, self.session_config.leverage_factor), 2),
+            "cutoff": settings.guc_cutoff.strftime("%H:%M"),
+        }
         house = max(0.0, mtm or 0.0) * settings.house_money_mult
         cap = settings.open_risk_cap_rupees()
         score0_used = sum(
@@ -2170,6 +2357,7 @@ class ExecutionEngine:
             "halted_reason": record.get("halted_reason"),
             "halted_at": record.get("halted_at"),
             "halted_mtm": record.get("halted_mtm"),
+            "guc": guc_block,
         }
 
     # ------------------------------------------------------------------

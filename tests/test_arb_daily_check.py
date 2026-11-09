@@ -119,6 +119,21 @@ class EndToEndTests(DayCheckTestCase):
         self.assertIn("Same decision and size: 1 of 1 (100%)", format_report(result))
         self.assertIn("No mismatches.", format_report(result))
 
+    def test_guc_trades_at_their_own_stage_do_not_break_the_check(self) -> None:
+        # The GUC sleeve runs at its own stage; the check replays ORB and the
+        # funnel and must neither count GUC rows nor see "two stages".
+        self.trade()
+        self.save_closed("guc1", "YYY", -100.0)
+        row = self.store.get("guc1")
+        row.extra["arb"] = {"strategy": "GUC", "risk_scale": 0.5, "capital": 300000.0}
+        self.store.save(row)
+        self.bars(("10:29", 109.6, 110.1, 109.5, 110.0), ("10:30", 110.0, 111.0, 109.9, 110.8),
+                  ("10:31", 110.8, 113.6, 110.7, 113.2), ("10:32", 113.2, 113.4, 112.0, 112.2),
+                  ("10:33", 112.2, 112.3, 110.5, 110.6))
+        result = self.check()
+        s = result["summary"]
+        self.assertEqual((s["candidates"], s["matched"], s["risk_scale"]), (1, 1, 1.0))
+
     def test_a_signal_the_engine_never_took_is_a_mismatch(self) -> None:
         # ARB activity that day, but not this signal: the engine was not looking.
         self.save_closed("other", "ZZZ", -100.0)

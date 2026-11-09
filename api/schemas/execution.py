@@ -42,6 +42,10 @@ class ExecutionStartRequest(BaseModel):
     arb_risk_scale: float = ARB_UNLOCKED_SCALE
     # None = the saved setting (execution_settings.json); False = ORB only.
     arb_funnel_enabled: Optional[bool] = None
+    # GUC sleeve: None = the saved settings.
+    arb_guc_enabled: Optional[bool] = None
+    arb_guc_risk_scale: Optional[float] = None
+    arb_guc_ordinary_day_fraction: Optional[float] = None
 
 
 class ArbStageView(BaseModel):
@@ -66,6 +70,9 @@ class ExecutionSettingsView(BaseModel):
     arb_risk_scale: float = ARB_UNLOCKED_SCALE
     arb_total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
     arb_funnel_enabled: bool = True
+    arb_guc_enabled: bool = False
+    arb_guc_risk_scale: float = 1.0
+    arb_guc_ordinary_day_fraction: float = 0.5
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
     unlocked_scale: float = ARB_UNLOCKED_SCALE
@@ -80,6 +87,10 @@ class ExecutionSettingsRequest(BaseModel):
     # None keeps the saved switch, so a desk that does not send it never
     # turns the funnel back on by accident.
     arb_funnel_enabled: Optional[bool] = None
+    # GUC sleeve: None keeps the saved values.
+    arb_guc_enabled: Optional[bool] = None
+    arb_guc_risk_scale: Optional[float] = None
+    arb_guc_ordinary_day_fraction: Optional[float] = None
 
 
 class ExecutionStartResponse(BaseModel):

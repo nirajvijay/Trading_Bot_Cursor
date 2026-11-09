@@ -11,7 +11,7 @@ import time
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Protocol, Sequence
+from typing import Tuple, Dict, List, Optional, Protocol, Sequence
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -217,6 +217,11 @@ class BrokerPort(Protocol):
         ...
 
     def ltp(self, tradingsymbol: str) -> Optional[float]: ...
+
+    def index_ohlc(self, index_symbol: str) -> Optional[Tuple[float, float]]:
+        """(day open, previous close) of an index such as "NIFTY 50", from one
+        quote read; None when unavailable. Used once a day by the GUC sleeve."""
+        ...
 
     def ltps(self, tradingsymbols: Sequence[str]) -> Optional[Dict[str, float]]:
         """Last traded prices for several symbols in one quote-budget call.
@@ -1153,6 +1158,15 @@ MODIFY_HISTORY_STATUSES = frozenset({"MODIFY VALIDATION PENDING", "MODIFY PENDIN
 QUOTE_MIN_INTERVAL_SECONDS = 1.0
 
 
+def _fake_index_ohlc(self, index_symbol: str):
+    """FakeBroker: whatever the test set on ``index_ohlc_value``."""
+    return getattr(self, "index_ohlc_value", None)
+
+
+FakeBroker.index_ohlc = _fake_index_ohlc  # type: ignore[attr-defined]
+FakeBroker.index_ohlc_value = None  # type: ignore[attr-defined]
+
+
 class KiteBroker:
     """Live Kite Connect adapter. Must not run unless live_orders_enabled.
 
@@ -1236,6 +1250,22 @@ class KiteBroker:
             return True
         finally:
             self._quote_lock.release()
+
+    def index_ohlc(self, index_symbol: str) -> Optional[Tuple[float, float]]:
+        self._take_quote_slot(priority=True)
+        key = f"NSE:{index_symbol}"
+        raw = self._read.quote([key])  # type: ignore[attr-defined]
+        item = raw.get(key) if isinstance(raw, dict) else None
+        ohlc = item.get("ohlc") if isinstance(item, dict) else None
+        if not isinstance(ohlc, dict):
+            return None
+        try:
+            day_open, prev_close = float(ohlc.get("open")), float(ohlc.get("close"))
+        except (TypeError, ValueError):
+            return None
+        if day_open <= 0 or prev_close <= 0:
+            return None
+        return day_open, prev_close
 
     def touch_quote(self, tradingsymbol: str) -> Optional[TouchQuote]:
         self._take_quote_slot(priority=True)

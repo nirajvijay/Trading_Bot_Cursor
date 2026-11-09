@@ -51,7 +51,8 @@ from live_one_minute_candle_writer import DEFAULT_DB_PATH, LiveOneMinuteCandleWr
 from login import check_access_token
 from market_data_coordinator import MarketDataCoordinator
 from orb_baselines import load_orb_baselines, ready_count
-from orb_config import DEFAULT_ORB_CONFIG
+from guc_detector import GucDetector
+from orb_config import DEFAULT_GUC_CONFIG, DEFAULT_ORB_CONFIG
 from orb_detector import OrbDetector
 from orb_types import DECISION_TRIGGERED
 from orb_writer import OrbWriter
@@ -262,6 +263,72 @@ def start_orb_detector(
         flush=True,
     )
     return writer, detector
+
+
+def start_guc_detector(
+    *,
+    writer: Optional[OrbWriter],
+    orb_detector: Optional[OrbDetector],
+    session_date: str,
+    token_to_symbol: Dict[int, str],
+    tick_sizes: Dict[int, float],
+) -> Optional[GucDetector]:
+    """Build the GUC detector beside ORB, on the same ticks, baselines and
+    writer. Additive like ORB: any failure here is logged and observation
+    (and ORB) carry on without GUC that day."""
+    if writer is None or orb_detector is None:
+        print("GUC detector: OFF (no ORB detector to share baselines with)", flush=True)
+        return None
+    try:
+        config = DEFAULT_GUC_CONFIG
+        baselines = dict(orb_detector._baselines)  # noqa: SLF001 - same process, same day
+        writer.save_baselines(session_date, config.rule_version, baselines.values())
+
+        def on_ranked(ranked, arms) -> None:
+            print(
+                "GUC_RANKED armed=[%s]"
+                % ", ".join(
+                    "%s gap=%.2f%% level=%.2f stop_dist=%.2f"
+                    % (arm.tradingsymbol, 100.0 * (arm.gap_pct or 0.0), arm.level, arm.stop_distance)
+                    for arm in arms
+                ),
+                flush=True,
+            )
+
+        def on_decision(arm, decision) -> None:
+            if decision.decision_type == DECISION_TRIGGERED:
+                print(
+                    "GUC_TRIGGERED %s px=%.2f level=%.2f stop=%.2f"
+                    % (arm.tradingsymbol, decision.trigger_price, arm.level, decision.planned_stop),
+                    flush=True,
+                )
+            else:
+                print(
+                    "GUC_%s %s reason=%s"
+                    % (decision.decision_type, arm.tradingsymbol, decision.reason or "-"),
+                    flush=True,
+                )
+
+        detector = GucDetector(
+            session_date=session_date,
+            token_to_symbol=token_to_symbol,
+            tick_sizes=tick_sizes,
+            baselines=baselines,
+            writer=writer,
+            config=config,
+            on_ranked=on_ranked,
+            on_decision=on_decision,
+        )
+    except Exception:  # noqa: BLE001 - never let GUC stop observation or ORB
+        logger.exception("GUC detector could not start; observation continues without it")
+        print("GUC detector: OFF (failed to start; see log)", flush=True)
+        return None
+    print(
+        "GUC detector state=%s%s (watch from %s)"
+        % (detector.state, " (restored)" if detector.restored else "", config.watch_start.strftime("%H:%M")),
+        flush=True,
+    )
+    return detector
 
 
 def _db_counts(db_path: Path, session_date: str) -> Dict[str, int]:
@@ -575,6 +642,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         token_to_symbol=token_to_symbol,
         tick_sizes=dict(tick_sizes.by_token),
     )
+    guc_detector = start_guc_detector(
+        writer=orb_writer,
+        orb_detector=orb_detector,
+        session_date=session_date,
+        token_to_symbol=token_to_symbol,
+        tick_sizes=dict(tick_sizes.by_token),
+    )
 
     def on_lifecycle(
         tradingsymbol: str,
@@ -756,7 +830,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     pipeline = LiveCandlePipeline(
         coordinator=coordinator,
         tick_consumers=[continuation.on_tick]
-        + ([orb_detector.on_tick] if orb_detector is not None else []),
+        + ([orb_detector.on_tick] if orb_detector is not None else [])
+        + ([guc_detector.on_tick] if guc_detector is not None else []),
     )
 
     def on_feed_ready(restored_at) -> None:

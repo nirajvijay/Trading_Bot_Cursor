@@ -147,8 +147,28 @@ ALL_TABLES_SQL = (
 _ARM_COLUMNS = (
     "setup_id, orb_rule_version, session_date, instrument_token, tradingsymbol, "
     "direction, level, level_ticks, tick_size, atr14, stop_distance, rvol, rank, "
-    "or_open, or_high, or_low, or_close, or_volume, avg_or_volume"
+    "or_open, or_high, or_low, or_close, or_volume, avg_or_volume, "
+    "gap_pct, market_gap, preopen_volume, avg_watch_volume"
 )
+
+# Columns added after the tables first shipped (GUC, 2026-11). Added with
+# ALTER TABLE when missing; every one is nullable so ORB rows are unaffected.
+_MIGRATIONS = (
+    ("live_orb_baselines", "avg_watch_volume", "REAL"),
+    ("live_orb_ranges", "prev_close", "REAL"),
+    ("live_orb_ranges", "gap_pct", "REAL"),
+    ("live_orb_arms", "gap_pct", "REAL"),
+    ("live_orb_arms", "market_gap", "REAL"),
+    ("live_orb_arms", "preopen_volume", "INTEGER"),
+    ("live_orb_arms", "avg_watch_volume", "REAL"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, kind in _MIGRATIONS:
+        have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
 _SQLITE_BUSY, _SQLITE_LOCKED = 5, 6
 
@@ -220,6 +240,7 @@ class OrbWriter:
             self._conn = conn
         for statement in ALL_TABLES_SQL:
             self._conn.execute(statement)
+        _migrate(self._conn)
         self._conn.commit()
         self._lock = threading.RLock()
         self._closed = False
@@ -250,6 +271,7 @@ class OrbWriter:
                 b.min_or_bars,
                 json.dumps(list(b.sessions)),
                 now,
+                b.avg_watch_volume,
             )
             for b in baselines
         ]
@@ -260,8 +282,8 @@ class OrbWriter:
                 INSERT OR REPLACE INTO live_orb_baselines (
                     session_date, orb_rule_version, instrument_token, tradingsymbol,
                     ready, reason, detail, atr14, avg_or_volume, history_as_of,
-                    min_or_bars, sessions_json, computed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    min_or_bars, sessions_json, computed_at, avg_watch_volume
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -314,6 +336,8 @@ class OrbWriter:
                     _ist_iso(item.preopen_at),
                     ranked_iso,
                     now,
+                    item.prev_close,
+                    item.gap_pct,
                 )
             )
         arm_rows = [
@@ -337,6 +361,10 @@ class OrbWriter:
                 arm.or_close,
                 int(arm.or_volume),
                 arm.avg_or_volume,
+                arm.gap_pct,
+                arm.market_gap,
+                arm.preopen_volume,
+                arm.avg_watch_volume,
                 ranked_iso,
                 now,
             )
@@ -355,15 +383,15 @@ class OrbWriter:
                     valid, selected, rank, reason, source, direction, level,
                     or_open, or_high, or_low, or_close, or_volume, preopen_volume,
                     atr14, avg_or_volume, rvol, snapshot_at, preopen_at,
-                    ranked_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ranked_at, created_at, prev_close, gap_pct
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 range_rows,
             )
             conn.executemany(
                 f"""
                 INSERT INTO live_orb_arms ({_ARM_COLUMNS}, armed_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 arm_rows,
             )
@@ -471,6 +499,10 @@ class OrbWriter:
                     or_close=float(row[16]),
                     or_volume=int(row[17]),
                     avg_or_volume=float(row[18]),
+                    gap_pct=None if row[19] is None else float(row[19]),
+                    market_gap=None if row[20] is None else float(row[20]),
+                    preopen_volume=None if row[21] is None else int(row[21]),
+                    avg_watch_volume=None if row[22] is None else float(row[22]),
                 )
                 for row in arm_rows
             ]
