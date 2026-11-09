@@ -1950,12 +1950,22 @@ class ExecutionEngine:
         return self.arb_day
 
     def _arb_fresh_prices(self, open_positions: List[Position], now: datetime) -> Dict[str, float]:
-        """Kite LTPs no older than the stale limit, for every held position (D4).
+        """Kite LTPs no older than the stale limit, for the positions asked (D4).
 
         A price read this tick refreshes its symbol; an older good price is
         reused until it goes stale. Nothing here ever reads the websocket.
+
+        The cache is kept for every ARB position the engine holds, whichever
+        sleeve asks: refreshing and pruning it for one sleeve alone would drop
+        the other sleeve's last good prices, and a single refused read on the
+        next tick would then mark that sleeve's positions at their stops.
         """
-        held = {p.candidate.tradingsymbol: p for p in open_positions if _arb_holding(p)}
+        wanted = {p.candidate.tradingsymbol for p in open_positions if _arb_holding(p)}
+        held = {
+            p.candidate.tradingsymbol: p for p in self.store.open_positions() if _arb_holding(p)
+        }
+        for position in open_positions:
+            held.setdefault(position.candidate.tradingsymbol, position)
         for symbol, position in held.items():
             ltp = self._fresh_ltp(position)
             if _valid_price(ltp):
@@ -1967,7 +1977,7 @@ class ExecutionEngine:
         return {
             symbol: price
             for symbol, (price, at) in self._arb_prices.items()
-            if 0.0 <= _seconds_between(at, now) <= limit
+            if symbol in wanted and 0.0 <= _seconds_between(at, now) <= limit
         }
 
     def _handle_arb_trigger(self, candidate: TriggerCandidate) -> Optional[EntryOutcome]:

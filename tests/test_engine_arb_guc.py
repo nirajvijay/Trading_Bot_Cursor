@@ -254,6 +254,55 @@ class SnapshotTests(GucEngineTestCase):
         self.assertEqual(snap["live_risk"], 0)
 
 
+class CrossSleevePriceTests(GucEngineTestCase):
+    """The two sleeves share one LTP cache. Pricing one sleeve must never drop
+    the other's last good prices: a refused Kite read on the next tick would
+    otherwise mark that sleeve at its stops and fire a day stop on nothing."""
+
+    guc_scale = 0.5
+
+    def _orb_open_then_guc_then_refused_read(self, with_guc: bool):
+        engine = self.engine()
+        self.run_triggers(engine, self.orb("o1", "BBB"), self.orb("o2", "CCC"))
+        for setup_id in ("o1", "o2"):
+            self.assertEqual(self.store.get(setup_id).state, ExecutionState.PROTECTED)
+        self.clock.advance(1)
+        self.run_triggers(engine, *([self.guc("g1", "AAA")] if with_guc else []))
+        self.assertEqual(set(engine._arb_prices) >= {"BBB", "CCC"}, True)
+        self.clock.advance(1)
+        self.broker.quote_budget_busy = True  # Kite's per-second quote budget spent
+        self.run_triggers(engine)
+        return engine
+
+    def test_a_guc_trigger_leaves_orb_prices_cached(self) -> None:
+        control = self._orb_open_then_guc_then_refused_read(with_guc=False)
+        self.assertEqual(control.arb_day.stale_symbols, ())
+        self.assertIsNone(control.shutdown_reason)
+        self.setUp()
+        engine = self._orb_open_then_guc_then_refused_read(with_guc=True)
+        self.assertEqual(engine.arb_day.stale_symbols, ())
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertAlmostEqual(engine.arb_day.mtm, control.arb_day.mtm, places=2)
+        self.assertEqual(self.store.get("o1").state, ExecutionState.PROTECTED)
+
+    def test_orb_ticks_leave_guc_prices_cached(self) -> None:
+        for symbol in ("AAA", "BBB", "CCC", "DDD"):
+            self.broker.last_prices[symbol] = 110.0
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.clock.advance(1)
+        self.run_triggers(engine, self.guc("g2", "BBB"))
+        self.clock.advance(1)
+        engine.tick()  # an ORB-only tick: prices GUC too, drops nothing
+        self.assertEqual(set(engine._arb_prices), {"AAA", "BBB"})
+        self.clock.advance(1)
+        self.broker.quote_budget_busy = True
+        self.run_triggers(engine, self.guc("g3", "CCC"))
+        self.assertNotEqual(self.skip_reason("g3"), REASON_GUC_DAY_STOP)
+        self.assertEqual(engine.guc_day.stale_symbols, ())
+        self.assertFalse(engine._guc_day_stopped)
+
+
 class SleeveHelperTests(unittest.TestCase):
     def test_rows_without_a_strategy_belong_to_orb(self) -> None:
         funnel = TriggerCandidate(

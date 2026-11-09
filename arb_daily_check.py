@@ -39,7 +39,7 @@ from engine_entry import compute_stop_price
 from engine_types import TriggerCandidate
 from trading_engine_broker import parse_timestamp_text
 from trading_engine_handoff import fetch_arb_candidates_since
-from trading_engine_types import STRATEGY_FUNNEL, STRATEGY_ORB
+from trading_engine_types import STRATEGY_FUNNEL, STRATEGY_GUC, STRATEGY_ORB
 
 CHECK_VERSION = "arb_check_v1"
 
@@ -373,6 +373,8 @@ def run_check(
             for row in engine_day["rows"]
             for arb in [_json(row.get("extra_json")).get(ARB_EXTRA_KEY)]
             if isinstance(arb, dict) and arb.get("risk_scale") is not None
+            # The GUC sleeve has its own stage; this check replays ORB and the funnel.
+            and arb.get("strategy") != STRATEGY_GUC
         }
     )
     if not scales:

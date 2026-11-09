@@ -32,7 +32,7 @@ from orb_types import (
 from orb_writer import OrbWriter
 from tests.test_orb_detector import DAY, SYMBOLS, Harness, ts
 from trading_engine_handoff import fetch_orb_triggered_since
-from trading_engine_types import STRATEGY_GUC, STRATEGY_ORB
+from trading_engine_types import STRATEGY_GUC
 
 ATR = 20.0          # 0.35 ATR = 7.0; confirm cap 0.25 ATR = 5.0; late cap 0.10 ATR = 2.0
 PREV_CLOSE = 990.0  # Harness ticks carry ohlc.close = 990
@@ -281,8 +281,6 @@ class SharedDatabaseTests(GucTestCase):
         self.assertIsNone(c.guc_market_gap)
         self.assertEqual(c.continuation_rule_version, "guc_v1")
         self.assertTrue(c.setup_id.endswith("|GUC|guc_v1"))
-        # An ORB row on the same database is still an ORB candidate.
-        self.assertEqual(STRATEGY_ORB, "ORB")
 
 
 if __name__ == "__main__":

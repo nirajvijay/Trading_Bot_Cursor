@@ -272,6 +272,18 @@ def build_command(
         ["--arb-no-funnel"]
         if session_config.is_arb and not session_config.arb.funnel_enabled
         else []
+    ) + (
+        # The GUC sleeve is off unless the saved settings switch it on; the
+        # engine process must be told, or the switch stops at the API.
+        [
+            "--arb-guc",
+            "--arb-guc-risk-scale",
+            str(session_config.arb.guc_risk_scale),
+            "--arb-guc-ordinary-day-fraction",
+            str(session_config.arb.guc_ordinary_day_fraction),
+        ]
+        if session_config.is_arb and session_config.arb.guc_enabled
+        else []
     ) + (["--live-orders"] if live_orders else [])
 
 

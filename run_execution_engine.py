@@ -108,6 +108,23 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="ARB trades ORB only: funnel triggers are skipped",
     )
+    parser.add_argument(
+        "--arb-guc",
+        action="store_true",
+        help="ARB also trades the GUC sleeve (gap-up continuation); off by default",
+    )
+    parser.add_argument(
+        "--arb-guc-risk-scale",
+        type=float,
+        default=1.0,
+        help="GUC rollout stage: the GUC risk per trade is multiplied by this",
+    )
+    parser.add_argument(
+        "--arb-guc-ordinary-day-fraction",
+        type=float,
+        default=0.5,
+        help="GUC risk fraction on days NIFTY does not gap up enough",
+    )
     parser.add_argument("--live-orders", action="store_true")
     parser.add_argument("--tick-seconds", type=float, default=TICK_INTERVAL_SECONDS)
     parser.add_argument(
@@ -127,6 +144,9 @@ def build_config(args: argparse.Namespace) -> SessionRiskConfig:
             total_capital_rupees=args.total_capital,
             leverage_factor=args.leverage,
             funnel_enabled=not args.arb_no_funnel,
+            guc_enabled=args.arb_guc,
+            guc_risk_scale=args.arb_guc_risk_scale,
+            guc_ordinary_day_fraction=args.arb_guc_ordinary_day_fraction,
         )
     else:
         config = SessionRiskConfig(
