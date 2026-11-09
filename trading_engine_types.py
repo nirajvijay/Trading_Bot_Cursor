@@ -118,6 +118,8 @@ STOP_ORDER_TYPES: FrozenSet[str] = frozenset({"SL", "SL-M"})
 # TriggerCandidate.strategy values.
 STRATEGY_FUNNEL = "FUNNEL"
 STRATEGY_ORB = "ORB"
+# Gap-up continuation: guc_detector's arms, routed like ORB's by an ARB engine.
+STRATEGY_GUC = "GUC"
 
 
 @dataclass(frozen=True)
@@ -156,6 +158,11 @@ class TriggerCandidate:
     orb_rvol: Optional[float] = None
     orb_atr14: Optional[float] = None
     orb_rank: Optional[int] = None
+    # GUC only: the stock's opening gap, the universe's average gap that
+    # morning, and whether the trigger was the 09:30 confirmation fill.
+    guc_gap_pct: Optional[float] = None
+    guc_market_gap: Optional[float] = None
+    guc_confirm_fill: Optional[bool] = None
 
 
 @dataclass

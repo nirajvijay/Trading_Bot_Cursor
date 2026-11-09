@@ -35,6 +35,12 @@ class ExecutionSettings:
     arb_total_capital_rupees: float = ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
     # False = ARB trades ORB only. Missing from the file means on.
     arb_funnel_enabled: bool = True
+    # GUC sleeve (gap-up continuation). Missing from the file means OFF, so a
+    # file written before GUC existed never switches it on.
+    arb_guc_enabled: bool = False
+    arb_guc_risk_scale: float = 1.0
+    # GUC risk on an ordinary day as a fraction of the gap-day risk.
+    arb_guc_ordinary_day_fraction: float = 0.5
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
 
@@ -63,6 +69,11 @@ def load(path: Optional[Path] = None) -> ExecutionSettings:
                 data.get("arb_total_capital_rupees") or ARB_DEFAULT_TOTAL_CAPITAL_RUPEES
             ),
             arb_funnel_enabled=_flag(data.get("arb_funnel_enabled", True)),
+            arb_guc_enabled=_flag(data.get("arb_guc_enabled", False)),
+            arb_guc_risk_scale=float(data.get("arb_guc_risk_scale") or 1.0),
+            arb_guc_ordinary_day_fraction=float(
+                data.get("arb_guc_ordinary_day_fraction", 0.5)
+            ),
             updated_at=data.get("updated_at"),
             updated_by=data.get("updated_by"),
         )
@@ -80,6 +91,9 @@ def session_config_for(settings: ExecutionSettings) -> SessionRiskConfig:
             risk_scale=settings.arb_risk_scale,
             total_capital_rupees=settings.arb_total_capital_rupees,
             funnel_enabled=settings.arb_funnel_enabled,
+            guc_enabled=settings.arb_guc_enabled,
+            guc_risk_scale=settings.arb_guc_risk_scale,
+            guc_ordinary_day_fraction=settings.arb_guc_ordinary_day_fraction,
         )
     return SessionRiskConfig()
 

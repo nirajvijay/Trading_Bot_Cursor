@@ -24,10 +24,13 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from engine_charges import round_trip_charges
 from engine_types import ExecutionState, Position
 # The strategy names live with TriggerCandidate; re-exported for callers here.
-from trading_engine_types import STRATEGY_FUNNEL, STRATEGY_ORB  # noqa: F401
+from trading_engine_types import STRATEGY_FUNNEL, STRATEGY_GUC, STRATEGY_ORB  # noqa: F401
 
 # The rollout stages (IMPLEMENTATION_IDEA.md section 6). Anything else is refused.
 ALLOWED_RISK_SCALES = (0.05, 0.25, 0.5, 1.0)
+# GUC has no Micro stage (NJ, 2026-11-10): half size for the trial session,
+# then full. 0.25 is kept as a step down.
+ALLOWED_GUC_RISK_SCALES = (0.25, 0.5, 1.0)
 # The day-lock keep fraction the robustness tests support. At 0.45 and above
 # results collapse with 5 bps of slippage.
 KEEP_MIN, KEEP_MAX = 0.35, 0.40
@@ -48,6 +51,12 @@ REASON_ORB_NO_STOP = "arb_orb_no_stop"
 REASON_ORB_OUTSIDE_WINDOW = "arb_orb_outside_window"
 REASON_UNKNOWN_STRATEGY = "arb_unknown_strategy"
 REASON_FUNNEL_DISABLED = "arb_funnel_disabled"
+# GUC sleeve (Reference/guc_build_plan_2026-11.md).
+REASON_GUC_DISABLED = "arb_guc_disabled"
+REASON_GUC_NO_STOP = "arb_guc_no_stop"
+REASON_GUC_OUTSIDE_WINDOW = "arb_guc_outside_window"
+REASON_GUC_DAY_STOP = "arb_guc_day_stop"
+REASON_GUC_OPEN_CAP = "arb_guc_open_risk_cap"
 
 PENDING_STATES = frozenset({ExecutionState.PENDING_ENTRY, ExecutionState.ENTRY_SUBMITTED})
 HOLDING_STATES = frozenset(
@@ -109,6 +118,40 @@ class ArbSettings:
     one_share_floor_below_scale: float = 0.25
     # A position whose last Kite LTP is older than this counts at its stop.
     stale_price_seconds: float = 3.0
+
+    # ---- GUC sleeve (gap-up continuation) ---------------------------------
+    # Off by default: with it off no code path for ORB or the funnel changes.
+    guc_enabled: bool = False
+    # Full-size risk on a market gap-up day, and the fraction of it on every
+    # other day (regime sizing: 1.0 = same every day, 0 = gap days only).
+    guc_risk: float = 5000.0
+    guc_ordinary_day_fraction: float = 0.5
+    # A NIFTY open at least this far above its previous close is a gap day.
+    guc_market_gap_min: float = 0.003
+    # The GUC stage. Independent of ORB's risk_scale.
+    guc_risk_scale: float = 1.0
+    # GUC's own budget: open risk across GUC positions, and the day's GUC
+    # loss (realised + open) after which no new GUC entry is taken.
+    guc_open_risk_cap: float = 20000.0
+    guc_day_stop: float = 10000.0
+    # Capital GUC may commit as margin (notional / leverage), so ORB always
+    # keeps the rest of the account.
+    guc_margin_budget: float = 300000.0
+    guc_cutoff: time = time(11, 1)
+
+    def guc_risk_rupees(self, market_gap: Optional[float]) -> float:
+        """Base GUC risk for a trade given the morning's NIFTY gap. An unknown
+        gap is an ordinary day."""
+        base = float(self.guc_risk) * float(self.guc_risk_scale)
+        if market_gap is not None and math.isfinite(market_gap) and market_gap >= self.guc_market_gap_min:
+            return base
+        return base * float(self.guc_ordinary_day_fraction)
+
+    def guc_open_risk_cap_rupees(self) -> float:
+        return float(self.guc_open_risk_cap) * float(self.guc_risk_scale)
+
+    def guc_day_stop_rupees(self) -> float:
+        return float(self.guc_day_stop) * float(self.guc_risk_scale)
 
     def _rupees(self, value: float) -> float:
         return float(value) * float(self.risk_scale)
@@ -188,6 +231,24 @@ def validate_settings(settings: ArbSettings) -> None:
         raise InvalidArbSettings("hard_day_stop must be below closed_loss_backstop")
     if settings.one_share_floor_mult < 1:
         raise InvalidArbSettings("one_share_floor_mult must be at least 1")
+    if not any(math.isclose(settings.guc_risk_scale, s) for s in ALLOWED_GUC_RISK_SCALES):
+        raise InvalidArbSettings(
+            f"guc_risk_scale must be one of {ALLOWED_GUC_RISK_SCALES}, got {settings.guc_risk_scale!r}"
+        )
+    if not 0.0 <= float(settings.guc_ordinary_day_fraction) <= 1.0:
+        raise InvalidArbSettings("guc_ordinary_day_fraction must be between 0 and 1")
+    for name, value in (
+        ("guc_risk", settings.guc_risk),
+        ("guc_open_risk_cap", settings.guc_open_risk_cap),
+        ("guc_day_stop", settings.guc_day_stop),
+        ("guc_margin_budget", settings.guc_margin_budget),
+    ):
+        if not (isinstance(value, (int, float)) and math.isfinite(value) and value > 0):
+            raise InvalidArbSettings(f"{name} must be greater than zero")
+    if not (0.0 <= float(settings.guc_market_gap_min) < 0.1):
+        raise InvalidArbSettings("guc_market_gap_min must be a small fraction (0-0.1)")
+    if settings.guc_open_risk_cap < settings.guc_risk:
+        raise InvalidArbSettings("guc_open_risk_cap must cover one full GUC trade")
 
 
 # -----------------------------------------------------------------------------
@@ -366,6 +427,54 @@ def is_loser(position: Position) -> bool:
 
 def count_losers(closed_positions: Iterable[Position]) -> int:
     return sum(1 for position in closed_positions if is_loser(position))
+
+
+# -----------------------------------------------------------------------------
+# Sleeves: ORB + funnel on one side, GUC on the other
+# -----------------------------------------------------------------------------
+
+
+def position_strategy(position: Position) -> str:
+    """The strategy stamped on the position (candidate first, then the ARB
+    record). Rows from before GUC existed have no GUC mark and are ORB/funnel."""
+    strategy = getattr(position.candidate, "strategy", None)
+    if strategy:
+        return str(strategy)
+    return str((position.extra.get(ARB_EXTRA_KEY) or {}).get("strategy") or STRATEGY_FUNNEL)
+
+
+def is_guc(position: Position) -> bool:
+    return position_strategy(position) == STRATEGY_GUC
+
+
+def orb_sleeve(positions: Iterable[Position]) -> List[Position]:
+    """ORB and funnel positions: what ORB's day controls are computed over.
+    With GUC off this is every position, so nothing changes for ORB."""
+    return [p for p in positions if not is_guc(p)]
+
+
+def guc_sleeve(positions: Iterable[Position]) -> List[Position]:
+    return [p for p in positions if is_guc(p)]
+
+
+def guc_allowed_risk(
+    settings: ArbSettings,
+    *,
+    base_rupees: float,
+    live_guc_risk_rupees: float,
+) -> RiskDecision:
+    """GUC's budget: min(base, open cap - live GUC risk). No half-after-a-loser
+    and no house money (neither was in the backtest)."""
+    room = settings.guc_open_risk_cap_rupees() - max(0.0, float(live_guc_risk_rupees))
+    risk = min(float(base_rupees), room)
+    if risk < settings.min_risk_rupees() or risk <= 0:
+        return RiskDecision(0.0, float(base_rupees), False, room, REASON_GUC_OPEN_CAP)
+    return RiskDecision(risk, float(base_rupees), False, room)
+
+
+def guc_day_loss_rupees(day: "DayMtm") -> float:
+    """The GUC sleeve's loss so far (realised + open), as a positive number."""
+    return max(0.0, -float(day.mtm))
 
 
 def open_mark(position: Position, ltp: float) -> float:

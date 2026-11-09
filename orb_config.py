@@ -67,3 +67,40 @@ class OrbConfig:
 
 
 DEFAULT_ORB_CONFIG = OrbConfig()
+
+
+GUC_RULE_VERSION = "guc_v1"
+
+
+@dataclass(frozen=True)
+class GucConfig(OrbConfig):
+    """Gap-Up Continuation: ORB's machinery with a different selection rule.
+
+    Numbers from Reference/guc_build_plan_2026-11.md (research
+    strategy2_2026-11/batch4.py, realistic fills): long only, open at least
+    1.5 % above yesterday's close, 09:15-09:29 volume at least 1.5x its
+    14-session average, buy the break of the 5-minute high, stop at the
+    5-minute low but never more than 0.35 ATR14 below the level.
+    """
+
+    rule_version: str = GUC_RULE_VERSION
+    # Arms do not watch before this; on the first fresh tick at or after it a
+    # stock already above its level is bought there (confirmation fill).
+    watch_start: time = time(9, 30)
+    # The opening gap, as a fraction of yesterday's close.
+    min_gap_pct: float = 0.015
+    # 15-minute RVOL (09:15-09:29 volume vs its 14-session average), judged
+    # on the first tick at or after watch_start.
+    min_rvol: float = 1.5
+    # No top-N: every qualifying stock is armed; the engine caps open trades.
+    top_n: int = 10_000
+    # A confirmation fill this far above the level (in ATRs) is a breakout
+    # already gone; after the first tick ORB's max_overshoot_atr applies.
+    confirm_overshoot_atr: float = 0.25
+    stop_atr_mult: float = 0.35
+    # A stop closer to the level than this fraction of it is not traded (the
+    # backtest skipped such ranges: the size would be absurd).
+    min_stop_pct: float = 0.002
+
+
+DEFAULT_GUC_CONFIG = GucConfig()

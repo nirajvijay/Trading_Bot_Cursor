@@ -101,7 +101,7 @@ class OrbWriterTests(unittest.TestCase):
         # ranges were inserted: the whole ranking must roll back.
         conn = sqlite3.connect(self.db)
         conn.execute(
-            "INSERT INTO live_orb_arms VALUES (?, ?, ?, 1, 'AAA', 'UP', 1, 1, 0.05, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 'x', 'x')",
+            "INSERT INTO live_orb_arms (setup_id, orb_rule_version, session_date, instrument_token, tradingsymbol, direction, level, level_ticks, tick_size, atr14, stop_distance, rvol, rank, or_open, or_high, or_low, or_close, or_volume, avg_or_volume, armed_at, created_at) VALUES (?, ?, ?, 1, 'AAA', 'UP', 1, 1, 0.05, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 'x', 'x')",
             (arms[0].setup_id, RULE, DAY),
         )
         conn.commit()

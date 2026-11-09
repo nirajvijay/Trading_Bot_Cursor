@@ -19,9 +19,10 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Optional
 
-from trading_engine_types import STRATEGY_FUNNEL, STRATEGY_ORB
+from trading_engine_types import STRATEGY_FUNNEL, STRATEGY_GUC, STRATEGY_ORB
 
 SOURCE_ORB = "ORB"
+SOURCE_GUC = "GUC"
 FUNNEL_SOURCES = ("F0", "F1", "F2", "F3")
 SOURCES = (SOURCE_ORB,) + FUNNEL_SOURCES
 
@@ -45,6 +46,8 @@ def source_label(arb: Optional[Mapping[str, Any]]) -> Optional[str]:
     strategy = arb.get("strategy")
     if strategy == STRATEGY_ORB:
         return SOURCE_ORB
+    if strategy == STRATEGY_GUC:
+        return SOURCE_GUC
     if strategy != STRATEGY_FUNNEL:
         return None
     try:
@@ -56,7 +59,7 @@ def source_label(arb: Optional[Mapping[str, Any]]) -> Optional[str]:
 
 def signal_price(candidate: Mapping[str, Any]) -> Optional[float]:
     """The entry price the backtest assumed for this signal."""
-    if candidate.get("strategy") == STRATEGY_ORB:
+    if candidate.get("strategy") in (STRATEGY_ORB, STRATEGY_GUC):
         level = _number(candidate.get("orb_level"))
         if level is not None and level > 0:
             return level

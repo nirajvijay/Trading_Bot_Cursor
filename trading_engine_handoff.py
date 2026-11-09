@@ -7,7 +7,9 @@ import sqlite3
 from pathlib import Path
 from typing import List, Optional
 
-from trading_engine_types import STRATEGY_ORB, TriggerCandidate
+import json
+
+from trading_engine_types import STRATEGY_GUC, STRATEGY_ORB, TriggerCandidate
 
 VWAP_RULE_VERSION = "vwap_qualifier_v2"
 
@@ -98,7 +100,10 @@ SELECT
     a.session_date,
     a.rvol,
     a.atr14,
-    a.rank
+    a.rank,
+    d.payload_json,
+    a.gap_pct,
+    a.market_gap
 FROM live_orb_decisions d
 JOIN live_orb_arms a
   ON a.setup_id = d.setup_id
@@ -252,6 +257,15 @@ def _orb_candidate_from_row(row) -> TriggerCandidate:
     """
     level = float(row["level"])
     trigger_price = level if row["trigger_price"] is None else float(row["trigger_price"])
+    rule_version = str(row["orb_rule_version"])
+    is_guc = rule_version.startswith("guc")
+    confirm: Optional[bool] = None
+    if is_guc:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+            confirm = bool(payload.get("confirm_fill", False))
+        except (TypeError, ValueError):
+            confirm = None
     return TriggerCandidate(
         setup_id=str(row["setup_id"]),
         continuation_rule_version=str(row["orb_rule_version"]),
@@ -269,12 +283,17 @@ def _orb_candidate_from_row(row) -> TriggerCandidate:
         ),
         created_at=str(row["created_at"]),
         last_price=(None if row["trigger_price"] is None else float(row["trigger_price"])),
-        strategy=STRATEGY_ORB,
+        strategy=STRATEGY_GUC if is_guc else STRATEGY_ORB,
         planned_stop=(None if row["planned_stop"] is None else float(row["planned_stop"])),
         orb_level=level,
         orb_rvol=float(row["rvol"]),
         orb_atr14=float(row["atr14"]),
         orb_rank=int(row["rank"]),
+        guc_gap_pct=(None if not is_guc or row["gap_pct"] is None else float(row["gap_pct"])),
+        guc_market_gap=(
+            None if not is_guc or row["market_gap"] is None else float(row["market_gap"])
+        ),
+        guc_confirm_fill=confirm,
     )
 
 

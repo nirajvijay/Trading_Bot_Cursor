@@ -118,6 +118,15 @@ def _now_ist() -> datetime:
     return datetime.now(_IST)
 
 
+def _prev_close_of(tick: TickEvent) -> Optional[float]:
+    """Kite's day OHLC ``close`` on a live tick is the previous close."""
+    try:
+        value = float(tick.ohlc.close)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _ensure_ist(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=_IST)
@@ -171,6 +180,9 @@ class OrbDetector:
         self._range_end = datetime.combine(day, config.range_end, tzinfo=_IST)
         self._trigger_end = datetime.combine(day, config.trigger_end, tzinfo=_IST)
         self._rank_deadline = self._range_end + timedelta(seconds=config.rank_grace_seconds)
+        # Arms are judged from here on. ORB watches from the end of the range;
+        # a subclass (GucDetector) may start later.
+        self._watch_start = self._range_end
 
         self._preopen: Dict[int, PreopenVolume] = {}
         self._snapshots: Dict[int, TickSnapshot] = {}
@@ -272,8 +284,8 @@ class OrbDetector:
         runtime = self._arms.get(token)
         if runtime is None or runtime.state != ARM_ARMED:
             return
-        if at < self._range_end:
-            return  # a late tick from inside the range
+        if at < self._watch_start:
+            return  # a late tick from inside the range, or before the watch
         if lag > self._config.max_tick_lag_seconds:
             self.metrics.stale_ticks += 1
             return  # too old to act on; the next fresh tick decides
@@ -304,6 +316,7 @@ class OrbDetector:
                     day_high=float(tick.ohlc.high),
                     day_low=float(tick.ohlc.low),
                     volume=int(tick.volume_traded),
+                    prev_close=_prev_close_of(tick),
                 )
             return
 
@@ -346,7 +359,7 @@ class OrbDetector:
 
     def _rank(self, at: datetime) -> None:
         ranges = [self._build_range(token) for token in sorted(self._symbols)]
-        ranked = rank_ranges(ranges, self._config)
+        ranked = self._select(ranges)
         delay = (at - self._range_end).total_seconds()
         too_late = delay > self._config.max_rank_delay_seconds
         if too_late:
@@ -357,16 +370,7 @@ class OrbDetector:
                 else entry
                 for entry in ranked
             ]
-        arms = [
-            make_arm(
-                entry,
-                session_date=self._session_date,
-                tick_size=self._tick_sizes[entry.range.instrument_token],
-                config=self._config,
-            )
-            for entry in ranked
-            if entry.selected
-        ]
+        arms = [self._make_arm(entry) for entry in ranked if entry.selected]
         try:
             written = self._writer.save_ranking(
                 self._session_date,
@@ -420,7 +424,7 @@ class OrbDetector:
             if tick is None or runtime.state != ARM_ARMED:
                 continue
             tick_at = _ensure_ist(tick.exchange_timestamp)
-            if not self._range_end <= tick_at < self._trigger_end:
+            if not self._watch_start <= tick_at < self._trigger_end:
                 continue
             lag = (_ensure_ist(self._now_fn()) - tick_at).total_seconds()
             if lag > self._config.max_tick_lag_seconds:
@@ -443,10 +447,44 @@ class OrbDetector:
     # Breakout
     # ------------------------------------------------------------------
 
+    # Selection and arming, as hooks so a sibling rule (GucDetector) can
+    # replace them without touching ORB's own path.
+    def _select(self, ranges: Sequence[OpeningRange]) -> List[RankedRange]:
+        return rank_ranges(ranges, self._config)
+
+    def _make_arm(self, entry: RankedRange) -> OrbArm:
+        return make_arm(
+            entry,
+            session_date=self._session_date,
+            tick_size=self._tick_sizes[entry.range.instrument_token],
+            config=self._config,
+        )
+
     def _evaluate(self, runtime: _ArmRuntime, tick: TickEvent, at: datetime) -> None:
+        self._judge(runtime, tick, at, max_overshoot_atr=self._config.max_overshoot_atr)
+
+    def _judge(
+        self,
+        runtime: _ArmRuntime,
+        tick: TickEvent,
+        at: datetime,
+        *,
+        max_overshoot_atr: float,
+        stop_reference: Optional[float] = None,
+        extra_payload: Optional[dict] = None,
+    ) -> None:
+        """Judge one fresh tick against an arm. ORB's stop sits
+        ``stop_distance`` from the trigger price; a caller may fix it from
+        another reference (GUC: the level)."""
         arm = runtime.arm
         try:
-            verdict = evaluate_price(arm, float(tick.last_price), self._config)
+            verdict = evaluate_price(
+                arm,
+                float(tick.last_price),
+                dataclasses.replace(self._config, max_overshoot_atr=max_overshoot_atr)
+                if max_overshoot_atr != self._config.max_overshoot_atr
+                else self._config,
+            )
         except ValueError:
             self.metrics.off_grid_ticks += 1
             return
@@ -461,7 +499,7 @@ class OrbDetector:
         else:
             stop = planned_stop(
                 direction=arm.direction,
-                reference_price=price,
+                reference_price=price if stop_reference is None else float(stop_reference),
                 distance=arm.stop_distance,
                 tick_size=arm.tick_size,
             )
@@ -491,6 +529,7 @@ class OrbDetector:
                 "overshoot_bps": (verdict.overshoot / arm.level * 1e4) if arm.level else None,
                 "received_at": tick.received_at.isoformat(),
                 "restored": self._restored,
+                **(extra_payload or {}),
             },
         )
 

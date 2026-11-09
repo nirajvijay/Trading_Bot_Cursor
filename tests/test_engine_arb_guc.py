@@ -1,0 +1,329 @@
+"""The GUC sleeve in the ARB engine: its own switch, regime risk, budget and
+day stop; ORB's controls see only ORB; the entry path is ORB's.
+
+Same harness as test_engine_arb_orb (FakeBroker, the real store, a fake
+clock). Risk per share is 2.50 (trigger 110, stop 107.5) unless noted.
+"""
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from engine_arb import (
+    ALLOWED_GUC_RISK_SCALES,
+    ARB_EXTRA_KEY,
+    REASON_GUC_DAY_STOP,
+    REASON_GUC_DISABLED,
+    REASON_GUC_OPEN_CAP,
+    REASON_GUC_OUTSIDE_WINDOW,
+    ArbSettings,
+    InvalidArbSettings,
+    guc_sleeve,
+    orb_sleeve,
+    validate_settings,
+)
+from engine_config import STRATEGY_ARB, SessionRiskConfig, arb_session_config
+from engine_types import ExecutionState, Position
+from tests.test_engine_arb_orb import DAY, IST, OrbEngineTestCase
+from trading_engine_types import STRATEGY_GUC, STRATEGY_ORB, TriggerCandidate
+
+GAP_DAY = (100.5, 100.0)      # NIFTY open +0.5 %
+FLAT_DAY = (100.1, 100.0)     # +0.1 %: an ordinary day
+
+
+class GucEngineTestCase(OrbEngineTestCase):
+    scale = 0.5          # ORB at 50 %, as live
+    guc_scale = 1.0
+    guc_enabled = True
+    settings_overrides: dict = {}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.config = SessionRiskConfig(
+            total_capital_rupees=500_000.0,
+            strategy_mode=STRATEGY_ARB,
+            arb=ArbSettings(
+                risk_scale=self.scale,
+                guc_enabled=self.guc_enabled,
+                guc_risk_scale=self.guc_scale,
+                **self.settings_overrides,
+            ),
+        )
+        self.broker.index_ohlc_value = GAP_DAY
+
+    def guc(self, setup_id: str, symbol: str, *, price: float = 110.0, stop: object = 107.5,
+            gap: float = 0.02, confirm: bool = False, **overrides) -> TriggerCandidate:
+        fields = dict(
+            setup_id=setup_id,
+            continuation_rule_version="guc_v1",
+            session_date=DAY,
+            tradingsymbol=symbol,
+            instrument_token=1,
+            direction="UP",
+            trigger_price=price,
+            pullback_swing_high=None,
+            pullback_swing_low=None,
+            tick_size=0.05,
+            buffer_ticks=0,
+            trigger_exchange_ts=self.clock.now.astimezone(IST).isoformat(timespec="seconds"),
+            created_at=self.clock.now.isoformat(timespec="seconds"),
+            last_price=price,
+            strategy=STRATEGY_GUC,
+            planned_stop=stop,
+            orb_level=price,
+            orb_rvol=2.0,
+            orb_atr14=7.142857,
+            orb_rank=1,
+            guc_gap_pct=gap,
+            guc_market_gap=0.004,
+            guc_confirm_fill=confirm,
+        )
+        fields.update(overrides)
+        return TriggerCandidate(**fields)
+
+    def save_closed_guc(self, trade_id: str, symbol: str, realised: float) -> None:
+        self.store.save(
+            Position(
+                trade_id=trade_id,
+                candidate=self.guc(trade_id, symbol),
+                state=ExecutionState.CLOSED,
+                qty=100,
+                entry_price=110.0,
+                stop_price=107.5,
+                realised_pnl=realised,
+                extra={ARB_EXTRA_KEY: {"strategy": STRATEGY_GUC}},
+            )
+        )
+
+
+class DisabledTests(GucEngineTestCase):
+    guc_enabled = False
+
+    def test_off_by_default_a_guc_trigger_is_skipped_and_orb_trades_as_before(self) -> None:
+        self.assertFalse(ArbSettings().guc_enabled)
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"))
+        self.assertEqual(self.skip_reason("g1"), REASON_GUC_DISABLED)
+        self.assertEqual(self.arb("g1")["strategy"], STRATEGY_GUC)
+        stored = self.store.get("o1")
+        self.assertEqual((stored.state, stored.extra["risk_cap_rupees"]), (ExecutionState.PROTECTED, 1250))
+
+
+class EntryTests(GucEngineTestCase):
+    def test_a_gap_day_trade_risks_5000_with_the_fixed_stop_through_orbs_path(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA", confirm=True))
+        stored = self.store.get("g1")
+        self.assertEqual(stored.state, ExecutionState.PROTECTED)
+        self.assertEqual((stored.stop_price, stored.qty, stored.extra["risk_cap_rupees"]), (107.5, 2000, 5000))
+        info = self.arb("g1")
+        self.assertEqual((info["strategy"], info["risk_used"], info["gap_day"]), (STRATEGY_GUC, 5000, True))
+        self.assertAlmostEqual(info["market_gap"], 0.005, places=9)
+        self.assertTrue(info["guc"]["confirm_fill"])
+        self.assertNotIn("half_size", info)
+        # Same orders as an ORB trade: a market entry, then an SL stop at the planned price.
+        self.assertEqual(self.broker.orders[stored.stop_order_id].trigger_price, 107.5)
+        self.assertEqual(self.context.calls, [])
+
+    def test_an_ordinary_day_risks_half(self) -> None:
+        self.broker.index_ohlc_value = FLAT_DAY
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.assertEqual(self.store.get("g1").extra["risk_cap_rupees"], 2500)
+        self.assertFalse(self.arb("g1")["gap_day"])
+
+    def test_an_unreadable_index_is_an_ordinary_day(self) -> None:
+        self.broker.index_ohlc_value = None
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.assertEqual(self.store.get("g1").extra["risk_cap_rupees"], 2500)
+        self.assertIsNone(self.arb("g1")["market_gap"])
+
+    def test_the_index_is_read_once_a_day(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.broker.index_ohlc_value = FLAT_DAY
+        self.run_triggers(engine, self.guc("g2", "BBB"))
+        self.assertEqual(self.store.get("g2").extra["risk_cap_rupees"], 5000)
+
+    def test_cutoff_at_1101(self) -> None:
+        engine = self.engine()
+        late = self.guc("g1", "AAA", trigger_exchange_ts=f"{DAY}T11:01:00+05:30")
+        self.run_triggers(engine, late)
+        self.assertEqual(self.skip_reason("g1"), REASON_GUC_OUTSIDE_WINDOW)
+
+    def test_a_stock_already_open_for_orb_blocks_the_guc_trigger(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.orb("o1", "AAA"))
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.assertEqual(self.skip_reason("g1"), "symbol_already_open")
+
+    def test_no_stop_no_trade(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA", stop=None))
+        self.assertEqual(self.skip_reason("g1"), "arb_guc_no_stop")
+
+
+class HalfScaleTests(GucEngineTestCase):
+    guc_scale = 0.5
+
+    def test_the_trial_session_risks_2500_and_1250(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.assertEqual(self.store.get("g1").extra["risk_cap_rupees"], 2500)
+        self.broker.index_ohlc_value = FLAT_DAY
+        other = self.engine()
+        self.run_triggers(other, self.guc("g2", "BBB"))
+        self.assertEqual(self.store.get("g2").extra["risk_cap_rupees"], 1250)
+
+
+class BudgetTests(GucEngineTestCase):
+    settings_overrides = {"guc_open_risk_cap": 7000.0}
+
+    def test_the_open_cap_trims_then_blocks(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.run_triggers(engine, self.guc("g2", "BBB"))
+        self.assertEqual(self.store.get("g2").extra["risk_cap_rupees"], 2000)   # 7000 - 5000
+        self.run_triggers(engine, self.guc("g3", "CCC"))
+        self.assertEqual(self.skip_reason("g3"), REASON_GUC_OPEN_CAP)
+
+    def test_guc_positions_do_not_use_orbs_open_cap(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))                 # 5,000 of GUC risk open
+        self.run_triggers(engine, self.orb("o1", "BBB"))
+        self.assertEqual(self.store.get("o1").extra["risk_cap_rupees"], 1250)   # ORB 50 %, no trimming
+        self.assertEqual(self.arb("o1")["live_risk"], 0)
+
+
+class DayStopTests(GucEngineTestCase):
+    def test_guc_losses_stop_guc_but_not_orb(self) -> None:
+        self.save_closed_guc("old", "DDD", realised=-10_500.0)
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"))
+        self.assertEqual(self.skip_reason("g1"), REASON_GUC_DAY_STOP)
+        stored = self.store.get("o1")
+        # ORB: full 50 % size, not halved by the GUC loser; engine not paused.
+        self.assertEqual((stored.state, stored.extra["risk_cap_rupees"]), (ExecutionState.PROTECTED, 1250))
+        self.assertFalse(self.arb("o1")["half_size"])
+        self.assertFalse(engine.entries_paused)
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertTrue(engine.arb_snapshot()["guc"]["day_stopped"])
+
+    def test_a_guc_loss_beyond_the_closed_loss_backstop_does_not_shut_the_day(self) -> None:
+        # ORB's backstop is 3,000 at 50 %; a 7,000 GUC loss must not trip it.
+        self.save_closed_guc("old", "DDD", realised=-7_000.0)
+        engine = self.engine()
+        engine.tick()
+        self.assertFalse(engine.breached)
+        self.assertIsNone(engine.shutdown_reason)
+        self.run_triggers(engine, self.orb("o1", "BBB"))
+        self.assertEqual(self.store.get("o1").state, ExecutionState.PROTECTED)
+
+    def test_an_orb_loser_does_not_halve_guc(self) -> None:
+        self.save_closed("old", "DDD", realised=-800.0)
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        self.assertEqual(self.store.get("g1").extra["risk_cap_rupees"], 5000)
+
+
+class CapitalTests(GucEngineTestCase):
+    settings_overrides = {"guc_margin_budget": 30_000.0}
+
+    def test_the_guc_margin_budget_caps_the_size(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        stored = self.store.get("g1")
+        self.assertEqual(stored.qty, 1363)   # 30,000 x 5 / 110
+        self.assertEqual(self.arb("g1")["guc_capital_cap"], 30_000.0)
+
+
+class SnapshotTests(GucEngineTestCase):
+    def test_the_snapshot_carries_a_guc_block(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"))
+        snap = engine.arb_snapshot()
+        guc = snap["guc"]
+        self.assertEqual((guc["enabled"], guc["open"], guc["risk_gap_day"], guc["risk_ordinary_day"]),
+                         (True, 1, 5000.0, 2500.0))
+        self.assertEqual(guc["open_risk_cap"], 20000.0)
+        self.assertAlmostEqual(guc["market_gap"], 0.005, places=9)
+        # ORB's own figures exclude the GUC position.
+        self.assertEqual(snap["live_risk"], 0)
+
+
+class SleeveHelperTests(unittest.TestCase):
+    def test_rows_without_a_strategy_belong_to_orb(self) -> None:
+        funnel = TriggerCandidate(
+            setup_id="f", continuation_rule_version="v1", session_date=DAY, tradingsymbol="AAA",
+            instrument_token=1, direction="UP", trigger_price=1.0, pullback_swing_high=None,
+            pullback_swing_low=None, tick_size=0.05, buffer_ticks=0, trigger_exchange_ts=None, created_at="x",
+        )
+        p = Position(trade_id="f", candidate=funnel, state=ExecutionState.CLOSED)
+        self.assertEqual((len(orb_sleeve([p])), len(guc_sleeve([p]))), (1, 0))
+
+    def test_settings_validation(self) -> None:
+        validate_settings(ArbSettings(guc_enabled=True, guc_risk_scale=0.5))
+        with self.assertRaises(InvalidArbSettings):
+            validate_settings(ArbSettings(guc_risk_scale=0.05))
+        with self.assertRaises(InvalidArbSettings):
+            validate_settings(ArbSettings(guc_ordinary_day_fraction=1.5))
+        with self.assertRaises(InvalidArbSettings):
+            validate_settings(ArbSettings(guc_open_risk_cap=1000.0))
+        self.assertEqual(ALLOWED_GUC_RISK_SCALES, (0.25, 0.5, 1.0))
+
+    def test_regime_risk(self) -> None:
+        s = ArbSettings(guc_risk_scale=0.5, guc_ordinary_day_fraction=0.5)
+        self.assertEqual((s.guc_risk_rupees(0.004), s.guc_risk_rupees(0.001), s.guc_risk_rupees(None)),
+                         (2500.0, 1250.0, 1250.0))
+        self.assertEqual(ArbSettings(guc_ordinary_day_fraction=1.0).guc_risk_rupees(None), 5000.0)
+        self.assertEqual(ArbSettings(guc_ordinary_day_fraction=0.0).guc_risk_rupees(None), 0.0)
+
+
+class SettingsFileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = Path(self._tmp.name) / "execution_settings.json"
+
+    def test_missing_keys_mean_guc_off(self) -> None:
+        from api.services import execution_settings
+        self.path.write_text(json.dumps({"autostart_strategy": "arb", "arb_risk_scale": 0.5,
+                                         "arb_total_capital_rupees": 450000, "arb_funnel_enabled": False}))
+        settings = execution_settings.load(self.path)
+        self.assertEqual((settings.arb_guc_enabled, settings.arb_guc_risk_scale, settings.arb_guc_ordinary_day_fraction),
+                         (False, 1.0, 0.5))
+        arb = execution_settings.session_config_for(settings).arb
+        self.assertEqual((arb.risk_scale, arb.funnel_enabled, arb.guc_enabled), (0.5, False, False))
+
+    def test_round_trip_of_the_trial_settings(self) -> None:
+        from api.services import execution_settings
+        saved = execution_settings.save(
+            execution_settings.ExecutionSettings(
+                autostart_strategy="arb", arb_risk_scale=0.5, arb_total_capital_rupees=450_000.0,
+                arb_funnel_enabled=False, arb_guc_enabled=True, arb_guc_risk_scale=0.5,
+                arb_guc_ordinary_day_fraction=0.5,
+            ),
+            self.path,
+        )
+        loaded = execution_settings.load(self.path)
+        self.assertEqual(loaded, saved)
+        arb = execution_settings.session_config_for(loaded).arb
+        self.assertEqual((arb.guc_enabled, arb.guc_risk_scale, arb.guc_risk_rupees(0.01), arb.guc_risk_rupees(None)),
+                         (True, 0.5, 2500.0, 1250.0))
+
+    def test_an_invalid_guc_scale_falls_back_to_defaults(self) -> None:
+        from api.services import execution_settings
+        self.path.write_text(json.dumps({"autostart_strategy": "arb", "arb_risk_scale": 0.5,
+                                         "arb_guc_enabled": True, "arb_guc_risk_scale": 0.05}))
+        self.assertEqual(execution_settings.load(self.path), execution_settings.ExecutionSettings())
+
+    def test_arb_session_config_passes_the_sleeve_through(self) -> None:
+        cfg = arb_session_config(risk_scale=0.5, guc_enabled=True, guc_risk_scale=0.5, guc_ordinary_day_fraction=0.0)
+        self.assertEqual((cfg.arb.guc_enabled, cfg.arb.guc_risk_scale, cfg.arb.guc_ordinary_day_fraction), (True, 0.5, 0.0))
+
+
+if __name__ == "__main__":
+    unittest.main()

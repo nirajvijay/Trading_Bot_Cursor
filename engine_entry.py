@@ -39,7 +39,10 @@ from trading_engine_broker import (
     LIVE_ORDERS_DISABLED_REASON,
 )
 from engine_stop import structural_stop_price
-from trading_engine_types import STRATEGY_ORB, BrokerOrder, broker_order_filled_qty
+from trading_engine_types import STRATEGY_GUC, STRATEGY_ORB, BrokerOrder, broker_order_filled_qty
+
+# Strategies whose stop arrives fixed on the candidate (never from swings).
+FIXED_STOP_STRATEGIES = (STRATEGY_ORB, STRATEGY_GUC)
 
 # Real risk above this multiple of the intended cap is abnormal: skip the stop
 # and flatten immediately. 1.5x of Rs 900 is Rs 1,350; of Rs 450 it is Rs 675,
@@ -140,9 +143,10 @@ def compute_stop_price(candidate: TriggerCandidate) -> Optional[float]:
 
     An ORB trigger has no pullback structure. Its stop was fixed by the
     detector when the breakout fired (0.35 x ATR14 from the trigger price) and
-    arrives on the candidate; it is used as given or not at all.
+    arrives on the candidate; it is used as given or not at all. A GUC
+    trigger's stop is fixed the same way (from the level, at arm time).
     """
-    if candidate.strategy == STRATEGY_ORB:
+    if candidate.strategy in FIXED_STOP_STRATEGIES:
         return planned_stop_price(candidate)
     return structural_stop_price(
         direction=candidate.direction,
