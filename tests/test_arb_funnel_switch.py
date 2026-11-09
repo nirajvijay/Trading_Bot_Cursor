@@ -109,7 +109,7 @@ class LaunchTests(unittest.TestCase):
                 self.assertFalse(start.call_args.kwargs["session_config"].arb.funnel_enabled)
                 self.assertEqual(
                     outcome,
-                    "execution engine (ARB, stage 0.5, ORB only) started with live Kite orders (pid 91)",
+                    "execution engine (ARB, stage 1, ORB only) started with live Kite orders (pid 91)",
                 )
 
 
