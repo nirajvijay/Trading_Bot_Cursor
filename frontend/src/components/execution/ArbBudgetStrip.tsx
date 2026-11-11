@@ -94,13 +94,16 @@ export function ArbBudgetStrip({ arb }: { arb: ArbDayStatus }) {
       {arb.halted_reason && (
         <div className="bg-amber-50 px-4 py-2.5 text-[12px] font-semibold text-amber-900">
           Stopped for the day: {reasonLabel(arb.halted_reason)} at {timeIst(arb.halted_at)}, day
-          P&L {inr(arb.halted_mtm, 0)}. Nothing more is traded today.
+          P&L {inr(arb.halted_mtm, 0)}.{' '}
+          {arb.guc?.enabled
+            ? 'ORB and the funnel are done for today; GUC still trades under its own stop.'
+            : 'Nothing more is traded today.'}
         </div>
       )}
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(165px,1fr))] gap-px">
         <Cell
-          label="Day P&L after charges"
+          label="ORB day P&L after charges"
           value={inr(mtm, 0)}
           tone={pnlClass(mtm)}
           note={

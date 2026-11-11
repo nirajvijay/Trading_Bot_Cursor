@@ -337,12 +337,24 @@ def compare(
         "replay_r_same_trades": round(sum(replay_r_same), 4) if replay_r_same else 0.0,
         "live_halt": live_halt,
         "replay_halt": replay_halt,
-        "halt_match": (live_halt or {}).get("reason") == (replay_halt or {}).get("reason"),
+        "halt_match": halts_match(live_halt, replay_halt),
         "entry_slippage_bps_median": round(statistics.median(slips), 2) if slips else None,
         "entry_slippage_bps_mean": round(statistics.fmean(slips), 2) if slips else None,
         "entry_slippage_trades": len(slips),
     }
     return {"summary": summary, "rows": rows}
+
+
+# The live engine persists ORB's closed-loss backstop as daily_loss_breach
+# (a sleeve halt once GUC is on); it lands right after a hard day stop, which
+# is all the replay knows. Both stop ORB at the same point.
+_HALT_KINDS = {"daily_loss_breach": "hard_day_stop"}
+
+
+def halts_match(live_halt, replay_halt) -> bool:
+    live = (live_halt or {}).get("reason")
+    replay = (replay_halt or {}).get("reason")
+    return _HALT_KINDS.get(live, live) == _HALT_KINDS.get(replay, replay)
 
 
 def run_check(

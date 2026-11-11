@@ -25,9 +25,17 @@ from engine_arb import (
     validate_settings,
 )
 from engine_config import STRATEGY_ARB, SessionRiskConfig, arb_session_config
+from engine_core import EVENT_ARB_DAY_HALT, REASON_ARB_DAY_HALTED
+from engine_exit import CloseReason
+from engine_feed import FeedHealth
 from engine_types import ExecutionState, Position
 from tests.test_engine_arb_orb import DAY, IST, OrbEngineTestCase
 from trading_engine_types import STRATEGY_GUC, STRATEGY_ORB, TriggerCandidate
+
+class StaleFeed:
+    def check(self, *, now=None):
+        return FeedHealth(healthy=False, age_seconds=30.0)
+
 
 GAP_DAY = (100.5, 100.0)      # NIFTY open +0.5 %
 FLAT_DAY = (100.1, 100.0)     # +0.1 %: an ordinary day
@@ -253,6 +261,34 @@ class SnapshotTests(GucEngineTestCase):
         # ORB's own figures exclude the GUC position.
         self.assertEqual(snap["live_risk"], 0)
 
+    def test_the_snapshot_carries_the_day_total_across_both_sleeves(self) -> None:
+        self.save_closed("old", "DDD", realised=-800.0)        # ORB loser
+        self.save_closed_guc("gold", "EEE", realised=1200.0)   # GUC winner
+        engine = self.engine()
+        self.run_triggers(engine, self.orb("o1", "BBB"), self.guc("g1", "AAA"))
+        self.clock.advance(1)
+        self.run_triggers(engine)          # a quiet tick: no trigger at all
+        snap = engine.arb_snapshot()
+        orb_mtm, guc_mtm = snap["day_mtm"], snap["guc"]["day_mtm"]
+        # Both sleeves are priced every tick, not only when a trigger arrives.
+        self.assertIsNotNone(orb_mtm)
+        self.assertIsNotNone(guc_mtm)
+        total = snap["day_total"]
+        self.assertAlmostEqual(total["mtm"], orb_mtm + guc_mtm, places=2)
+        self.assertAlmostEqual(total["orb_mtm"], orb_mtm, places=2)
+        self.assertAlmostEqual(total["guc_mtm"], guc_mtm, places=2)
+        self.assertAlmostEqual(total["closed_net"], snap["closed_net"] + engine.guc_day.closed_net, places=2)
+        self.assertAlmostEqual(total["open_net"], snap["open_net"] + engine.guc_day.open_net, places=2)
+        self.assertLess(total["closed_net"], 400.0)   # -800 + 1200, minus charges
+        self.assertGreater(total["closed_net"], 300.0)
+        self.assertTrue(total["complete"])
+        self.assertEqual(total["stale_symbols"], [])
+
+    def test_the_day_total_is_absent_until_the_first_tick_priced_it(self) -> None:
+        engine = self.engine()
+        snap = engine.arb_snapshot()
+        self.assertEqual(snap["day_total"]["mtm"], None)
+
 
 class CrossSleevePriceTests(GucEngineTestCase):
     """The two sleeves share one LTP cache. Pricing one sleeve must never drop
@@ -301,6 +337,265 @@ class CrossSleevePriceTests(GucEngineTestCase):
         self.assertNotEqual(self.skip_reason("g3"), REASON_GUC_DAY_STOP)
         self.assertEqual(engine.guc_day.stale_symbols, ())
         self.assertFalse(engine._guc_day_stopped)
+
+
+class OrbHaltTests(GucEngineTestCase):
+    """An ORB day halt (hard day stop or day lock) is sleeve-scoped: it flattens
+    and blocks ORB and the funnel only. GUC keeps trading under its own stop,
+    its own day stop and the 14:50 square-off (Reference/guc_orb_halt_fix_
+    backtest_2026-11-11.md: the engine-wide halt cost the pair 4.9k/month)."""
+
+    def open_guc_and_two_orb(self):
+        engine = self.engine()
+        # GUC AAA: 5,000 risk, 2,000 sh. ORB BBB and CCC: 1,250 each, 500 sh.
+        self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"), self.orb("o2", "CCC"))
+        for trade_id in ("g1", "o1", "o2"):
+            self.assertEqual(self.store.get(trade_id).state, ExecutionState.PROTECTED)
+        return engine
+
+    def halt_orb(self, engine) -> None:
+        # ORB marks -6,000 against a 2,500 hard day stop (50 % scale).
+        self.broker.last_prices["BBB"] = 104.0
+        self.broker.last_prices["CCC"] = 104.0
+        self.clock.advance(1)
+        engine.tick()
+
+    def halt_events(self):
+        return [
+            json.loads(r["payload_json"])
+            for r in self.store.list_events("__engine__")
+            if r["event_type"] == EVENT_ARB_DAY_HALT
+        ]
+
+    def test_the_hard_day_stop_flattens_orb_and_leaves_guc_protected(self) -> None:
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertFalse(engine.entries_paused)
+        self.clock.advance(1)
+        engine.tick()
+        for trade_id in ("o1", "o2"):
+            stored = self.store.get(trade_id)
+            self.assertEqual(stored.state, ExecutionState.CLOSED)
+            self.assertEqual(stored.extra["close_reason"], "hard_day_stop")
+        guc = self.store.get("g1")
+        self.assertEqual(guc.state, ExecutionState.PROTECTED)
+        self.assertNotIn(self.broker.orders[guc.stop_order_id].status.upper(), {"CANCELLED", "COMPLETE"})
+        record = self.store.load_arb_day(DAY)
+        self.assertEqual(record["halted_reason"], "hard_day_stop")
+        self.assertLessEqual(record["halted_mtm"], -2500)
+        snap = engine.arb_snapshot()
+        self.assertEqual(snap["halted_reason"], "hard_day_stop")
+        self.assertEqual(snap["guc"]["open"], 1)
+        self.assertEqual([h["restored"] for h in self.halt_events()], [False])
+
+    def test_a_guc_trigger_after_the_orb_halt_is_taken(self) -> None:
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        self.run_triggers(engine, self.guc("g2", "DDD"))
+        stored = self.store.get("g2")
+        self.assertEqual((stored.state, stored.extra["risk_cap_rupees"]), (ExecutionState.PROTECTED, 5000))
+
+    def test_orb_and_funnel_triggers_after_the_halt_are_refused(self) -> None:
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        self.run_triggers(engine, self.orb("o3", "DDD"), self.trigger("s1", "DDD", score=3))
+        self.assertEqual(self.skip_reason("o3"), REASON_ARB_DAY_HALTED)
+        self.assertEqual(self.skip_reason("s1"), REASON_ARB_DAY_HALTED)
+        self.assertEqual(self.broker.market_place_count, 3 + 2)  # 3 entries + 2 flattens
+
+    def test_the_guc_day_stop_still_fires_after_the_orb_halt(self) -> None:
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.broker.last_prices["AAA"] = 104.0  # GUC marks -12,000 against its 10,000 stop
+        self.clock.advance(1)
+        self.run_triggers(engine, self.guc("g2", "DDD"))
+        self.assertEqual(self.skip_reason("g2"), REASON_GUC_DAY_STOP)
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+
+    def test_orb_closed_losses_beyond_the_backstop_halt_orb_not_guc(self) -> None:
+        # ORB's closed-loss backstop is 3,000 at 50 %; an ORB loser past it
+        # halts ORB only. (Any hard day stop lands here on the next tick.)
+        self.save_closed("old", "DDD", realised=-3_500.0)
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"))
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertFalse(engine.breached)   # the session latch stays off: GUC must still resume
+        self.assertEqual(engine.orb_halt_reason, CloseReason.DAILY_LOSS_BREACH)
+        breaches = [r for r in self.store.list_events("__engine__") if r["event_type"] == "daily_loss_breached"]
+        self.assertEqual(len(breaches), 1)
+        self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+        self.assertEqual(self.skip_reason("o1"), REASON_ARB_DAY_HALTED)
+        self.assertEqual(self.store.load_arb_day(DAY)["halted_reason"], "daily_loss_breach")
+
+    def test_the_day_lock_is_sleeve_scoped_too(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"))
+        self.broker.last_prices["BBB"] = 115.0   # ORB +2,500 net: arms the lock (50 % scale)
+        self.clock.advance(60)
+        engine.tick()
+        self.assertGreater(self.store.load_arb_day(DAY)["peak_mtm"], 1500)
+        self.broker.last_prices["BBB"] = 110.2
+        self.clock.advance(60)
+        engine.tick()
+        self.assertIsNone(engine.shutdown_reason)
+        self.clock.advance(1)
+        engine.tick()
+        self.assertEqual(self.store.get("o1").extra["close_reason"], "day_lock")
+        self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+        self.assertEqual(self.store.load_arb_day(DAY)["halted_reason"], "day_lock")
+
+    def test_eod_squareoff_still_closes_guc_after_the_orb_halt(self) -> None:
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(4 * 3600 + 20 * 60)  # 14:50 IST
+        engine.tick()
+        self.assertEqual(engine.shutdown_reason, CloseReason.EOD_SQUAREOFF)
+        self.clock.advance(1)
+        engine.tick()
+        self.assertEqual(self.store.get("g1").state, ExecutionState.CLOSED)
+        self.assertEqual(self.store.get("g1").extra["close_reason"], "eod_squareoff")
+
+    def test_a_restart_after_a_persisted_orb_halt_reflattens_orb_only(self) -> None:
+        self.open_guc_and_two_orb()
+        # The halt was persisted but the engine died before the flatten.
+        self.store.save_arb_day(DAY, halted_reason="hard_day_stop", halted_at="x", halted_mtm=-3000.0)
+        restarted = self.engine()
+        self.clock.advance(1)
+        self.run_triggers(restarted, self.orb("o3", "DDD"))
+        self.assertIsNone(restarted.shutdown_reason)
+        self.assertEqual(self.skip_reason("o3"), REASON_ARB_DAY_HALTED)
+        self.clock.advance(1)
+        restarted.tick()
+        for trade_id in ("o1", "o2"):
+            self.assertEqual(self.store.get(trade_id).state, ExecutionState.CLOSED)
+        self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+        self.assertEqual([h["restored"] for h in self.halt_events()], [True])
+        self.clock.advance(1)
+        self.run_triggers(restarted, self.guc("g2", "DDD"))
+        self.assertEqual(self.store.get("g2").state, ExecutionState.PROTECTED)
+
+    def test_a_restart_keeps_the_original_halt_reason_past_the_backstop(self) -> None:
+        # Yesterday's run: hard day stop, ORB flattened at -3,500 (past the
+        # 3,000 backstop), halt persisted. The restart must restore that halt,
+        # not record a fresh daily_loss_breach over it.
+        self.save_closed("old", "DDD", realised=-3_500.0)
+        self.store.save_arb_day(DAY, halted_reason="hard_day_stop", halted_at="x", halted_mtm=-3500.0)
+        restarted = self.engine()
+        self.run_triggers(restarted, self.guc("g1", "AAA"))
+        self.assertIsNone(restarted.shutdown_reason)
+        self.assertEqual(restarted.orb_halt_reason, CloseReason.HARD_DAY_STOP)
+        self.assertEqual(self.store.load_arb_day(DAY)["halted_reason"], "hard_day_stop")
+        self.assertEqual([h["restored"] for h in self.halt_events()], [True])
+        self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+
+    def test_a_feed_blip_after_the_backstop_does_not_stop_guc_for_the_day(self) -> None:
+        # Hard day stop, flattened with a loss past the 3,000 backstop. ORB's
+        # backstop must not leave the engine's sticky breached latch set: a
+        # later one-tick pause (stale feed) would then never resume, and
+        # every GUC trigger for the rest of the day would be dropped silently.
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        engine.tick()   # ORB closed at -6,000: the backstop tick
+        self.assertEqual(engine.orb_halt_reason, CloseReason.HARD_DAY_STOP)
+        self.assertFalse(engine.breached)
+        healthy = engine.feed_monitor
+        engine.feed_monitor = StaleFeed()
+        self.clock.advance(1)
+        engine.tick()
+        self.assertTrue(engine.entries_paused)
+        engine.feed_monitor = healthy
+        self.clock.advance(1)
+        self.run_triggers(engine, self.guc("g2", "DDD"))
+        self.assertFalse(engine.entries_paused)
+        self.assertEqual(self.store.get("g2").state, ExecutionState.PROTECTED)
+
+    def test_a_failing_store_write_in_the_backstop_never_ends_the_tick(self) -> None:
+        # The backstop check runs outside run_step. Its halt writes must not
+        # let a store failure escape tick() and end the engine process.
+        self.save_closed("old", "DDD", realised=-3_500.0)
+        engine = self.engine()
+
+        def broken(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        self.store.save_arb_day = broken
+        self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"))  # must not raise
+        self.assertEqual(engine.orb_halt_reason, CloseReason.DAILY_LOSS_BREACH)
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+        self.assertEqual(self.skip_reason("o1"), REASON_ARB_DAY_HALTED)
+
+    def test_orb_day_pnl_keeps_showing_after_the_halt(self) -> None:
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        engine.tick()
+        self.clock.advance(1)
+        engine.tick()   # ORB flat; the engine runs on for GUC
+        snap = engine.arb_snapshot()
+        self.assertIsNotNone(snap["day_mtm"])
+        self.assertLess(snap["day_mtm"], -5000)
+        self.assertEqual(snap["guc"]["open"], 1)
+
+    def test_a_backstop_halt_records_orbs_net_day_pnl(self) -> None:
+        # +1,000 winner then -3,500 loser: gross losses 3,500 trip the 3,000
+        # backstop, but the banner should carry the net -2,500, not -3,500.
+        self.save_closed("win", "CCC", realised=1_000.0)
+        self.save_closed("old", "DDD", realised=-3_500.0)
+        engine = self.engine()
+        engine.tick()
+        self.assertEqual(engine.orb_halt_reason, CloseReason.DAILY_LOSS_BREACH)
+        mtm = self.store.load_arb_day(DAY)["halted_mtm"]
+        self.assertGreater(mtm, -3500)
+        self.assertLessEqual(mtm, -2500)
+
+    def test_the_day_total_stays_fresh_after_the_orb_halt(self) -> None:
+        # The desk's Total Day P&L prices GUC inside the day check; the halt's
+        # early return must still price GUC every tick, or the total goes stale.
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        engine.tick()
+        self.broker.last_prices["AAA"] = 112.0   # GUC +4,000 gross on 2,000 sh
+        self.clock.advance(1)
+        engine.tick()                             # a quiet tick, no trigger
+        snap = engine.arb_snapshot()
+        self.assertIsNotNone(snap["guc"]["day_mtm"])
+        self.assertGreater(snap["guc"]["day_mtm"], 3000)
+        self.assertAlmostEqual(snap["day_total"]["mtm"], snap["day_mtm"] + snap["guc"]["day_mtm"], places=2)
+
+
+class OrbHaltWithGucOffTests(GucEngineTestCase):
+    guc_enabled = False
+
+    def test_with_guc_off_the_halt_shuts_the_engine_as_before(self) -> None:
+        engine = self.engine()
+        self.run_triggers(engine, self.orb("o1", "BBB"), self.orb("o2", "CCC"))
+        self.broker.last_prices["BBB"] = 104.0
+        self.broker.last_prices["CCC"] = 104.0
+        self.clock.advance(1)
+        engine.tick()
+        self.assertEqual(engine.shutdown_reason, CloseReason.HARD_DAY_STOP)
+        self.assertTrue(engine.entries_paused)
+        self.clock.advance(1)
+        engine.tick()
+        self.assertEqual(self.store.get("o1").state, ExecutionState.CLOSED)
+        self.assertEqual(self.store.get("o2").state, ExecutionState.CLOSED)
+        self.assertEqual(self.store.load_arb_day(DAY)["halted_reason"], "hard_day_stop")
+
+    def test_with_guc_off_the_backstop_shuts_the_engine_as_before(self) -> None:
+        self.save_closed("old", "DDD", realised=-3_500.0)
+        engine = self.engine()
+        self.run_triggers(engine, self.orb("o1", "BBB"))
+        self.assertEqual(engine.shutdown_reason, CloseReason.DAILY_LOSS_BREACH)
+        self.assertTrue(engine.entries_paused)
+        self.assertIsNone(self.store.get("o1"))
+        self.assertIsNone((self.store.load_arb_day(DAY) or {}).get("halted_reason"))
 
 
 class SleeveHelperTests(unittest.TestCase):

@@ -37,6 +37,7 @@ from engine_arb import (
     DayLockTracker,
     DayMtm,
     guc_sleeve,
+    is_guc,
     orb_sleeve,
 )
 from engine_config import SessionRiskConfig, margin_used_rupees
@@ -186,6 +187,7 @@ REASON_ARB_PAST_ORB_CUTOFF = "arb_past_orb_cutoff"
 # A legacy (VWAP) session was handed a trigger from a strategy it does not run.
 REASON_STRATEGY_NOT_ENABLED = "strategy_not_enabled"
 REASON_ARB_DAY_CHECK_FAILED = "arb_day_check_failed"
+REASON_ARB_DAY_HALTED = "arb_day_halted"
 # When the entry fill was applied (engine clock). The lock rule counts bars
 # from this minute; set once, in ARB mode only.
 ENTRY_FILLED_AT_KEY = "entry_filled_at"
@@ -281,6 +283,13 @@ class ExecutionEngine:
         self._arb_prices: Dict[str, Tuple[float, datetime]] = {}
         self._arb_lock = DayLockTracker(self.arb_settings)
         self._arb_halt_restored = False
+        # ORB's day halt (hard day stop / day lock). With GUC on it is sleeve-
+        # scoped: ORB and the funnel are flattened and blocked for the session
+        # while the engine keeps running for GUC. With GUC off the halt is the
+        # engine shutdown it always was (shutdown_reason), exactly as before.
+        self.orb_halt_reason: Optional[CloseReason] = None
+        self._orb_halt_flat = False
+        self._orb_backstop_breached = False
         # GUC sleeve: the morning's NIFTY gap (read once from Kite), its day
         # P&L this tick, and whether its day stop has closed new entries.
         self._guc_market_gap: Optional[float] = None
@@ -373,6 +382,16 @@ class ExecutionEngine:
             )
             # No new entries once the day is ending.
             return
+
+        if self.orb_halt_reason is not None:
+            # Sleeve-scoped halt: close ORB every tick until it is flat, then
+            # carry on; GUC still ingests, trails and holds its stops below.
+            run_step(
+                STEP_SQUAREOFF,
+                self._advance_orb_halt,
+                tracker=self.failures,
+                on_escalate=self._on_escalate,
+            )
 
         run_step(
             STEP_INGEST,
@@ -608,6 +627,8 @@ class ExecutionEngine:
                 cutoff = self.arb_settings.orb_cutoff if is_orb else self.arb_settings.funnel_cutoff
             if engine_clock.ist_time(self.now_fn()) >= cutoff:
                 return REASON_ARB_PAST_ORB_CUTOFF if (is_orb or is_guc) else REASON_ARB_PAST_CUTOFF
+            if self.orb_halt_reason is not None and not is_guc:
+                return REASON_ARB_DAY_HALTED
             if not self._arb_day_ok:
                 return REASON_ARB_DAY_CHECK_FAILED
         for position in self.store.open_positions():
@@ -1452,6 +1473,8 @@ class ExecutionEngine:
             return "not_protected"
         if self.shutdown_reason is not None:
             return "shutting_down"
+        if self.orb_halt_reason is not None and not is_guc(position):
+            return "orb_halted"
         if (
             position.extra.get(EXIT_PENDING_KEY)
             or position.extra.get(SAFETY_EXIT_KEY)
@@ -1814,6 +1837,36 @@ class ExecutionEngine:
         self.realised_loss_today = check.closed_loss_rupees
         if not check.breached:
             return
+        if self.arb_mode and self.arb_settings.guc_enabled:
+            # ORB's backstop halts ORB alone (the sleeve-scoped halt, persisted
+            # like the day stop); GUC keeps its own day stop. Any ORB hard day
+            # stop lands here on the next tick, once its losses are realised,
+            # and a persisted halt is restored first so it is never overwritten.
+            # `breached` stays False: that latch makes _resume refuse for the
+            # session, which would turn any later one-tick pause (a stale feed)
+            # into a silent stop of GUC entries for the rest of the day.
+            if not self._orb_backstop_breached:
+                self._orb_backstop_breached = True
+                self.store.append_event(
+                    "__engine__",
+                    "daily_loss_breached",
+                    {"closed_loss": check.closed_loss_rupees, "cap": check.cap_rupees},
+                )
+            # This check runs outside run_step: a store failure in the halt's
+            # writes must not end the tick (and the process). The halt state
+            # is set before any write, so the ORB flatten still runs; the
+            # record is retried next tick, since closed losses never decrease.
+            try:
+                self._restore_arb_halt()
+                if self.orb_halt_reason is None and self.shutdown_reason is None:
+                    try:
+                        mtm = self._arb_day_now(self.now_fn()).mtm  # net, for the banner
+                    except Exception:  # noqa: BLE001 - the gross loss is still a true figure
+                        mtm = -check.closed_loss_rupees
+                    self._arb_halt(CloseReason.DAILY_LOSS_BREACH, mtm=mtm)
+            except Exception as exc:  # noqa: BLE001 - logged, never fatal
+                self.escalation_notices.append(f"arb_backstop_halt: {exc}")
+            return
         if not self.breached:
             self.breached = True
             self.store.append_event(
@@ -1879,21 +1932,37 @@ class ExecutionEngine:
         if record.get("peak_mtm") is not None:
             self._arb_lock.peak = float(record["peak_mtm"])
 
+    def _restore_arb_halt(self) -> None:
+        """Once per run: re-apply a halt an earlier run persisted today."""
+        if self._arb_halt_restored:
+            return
+        self._arb_halt_restored = True
+        record = self.store.load_arb_day(self.session_date) or {}
+        halted = record.get("halted_reason")
+        if halted and self.shutdown_reason is None and self.orb_halt_reason is None:
+            try:
+                reason = CloseReason(str(halted))
+            except ValueError:
+                reason = CloseReason.HARD_DAY_STOP
+            self._arb_halt(reason, mtm=record.get("halted_mtm"), restored=True)
+
     def _check_arb_day(self, now: datetime) -> None:
         """Hard day stop every tick (D1); day lock once a minute (D2)."""
-        if not self._arb_halt_restored:
-            self._arb_halt_restored = True
-            record = self.store.load_arb_day(self.session_date) or {}
-            halted = record.get("halted_reason")
-            if halted and self.shutdown_reason is None:
-                try:
-                    reason = CloseReason(str(halted))
-                except ValueError:
-                    reason = CloseReason.HARD_DAY_STOP
-                self._arb_halt(reason, mtm=record.get("halted_mtm"), restored=True)
+        self._restore_arb_halt()
         if self.shutdown_reason is not None:
             return  # the day is already ending; square-off owns it
+        if self.orb_halt_reason is not None:
+            # ORB's day is over; the square-off owns its positions. Both
+            # sleeves are still priced, for the desk only (ORB's figure and
+            # the combined day total): nothing decides on them here.
+            self._arb_day_now(now)
+            self._guc_day_now(now)
+            return
         day = self._arb_day_now(now)
+        # The GUC sleeve is priced on the same tick (same cached LTP read, no
+        # extra broker call) so the desk's combined day total is always fresh.
+        # ORB's controls below still see only ORB.
+        self._guc_day_now(now)
         if engine_arb.hard_stop_hit(self.arb_settings, day.mtm):
             self._arb_halt(CloseReason.HARD_DAY_STOP, mtm=day.mtm)
             return
@@ -1910,14 +1979,23 @@ class ExecutionEngine:
             self._arb_halt(CloseReason.DAY_LOCK, mtm=day.mtm)
 
     def _arb_halt(self, reason: CloseReason, *, mtm, restored: bool = False) -> None:
-        """Flatten everything for the session, then persist the halt.
+        """Halt ORB for the session, then persist the halt.
 
-        The shutdown starts first: _begin_shutdown sets shutdown_reason before
-        any write, so a failing store can never stop the flatten. The halt is
-        persisted even if the shutdown's own event write fails.
+        With GUC on the halt is sleeve-scoped: orb_halt_reason flattens the
+        ORB sleeve (_advance_orb_halt) and refuses ORB and funnel triggers,
+        while GUC keeps trading under its own stop, lock rule, day stop and
+        the 14:50 square-off. With GUC off it is the engine shutdown it always
+        was, so nothing changes for an ORB-only session.
+
+        The halt state is set first, before any write, so a failing store can
+        never stop the flatten. The halt is persisted even if the shutdown's
+        own event write fails.
         """
+        sleeve_only = bool(self.arb_settings.guc_enabled)
         try:
-            self._begin_shutdown(reason)
+            self.orb_halt_reason = reason
+            if not sleeve_only:
+                self._begin_shutdown(reason)
         finally:
             if not restored:
                 self.store.save_arb_day(
@@ -1935,8 +2013,27 @@ class ExecutionEngine:
                 "peak": self._arb_lock.peak,
                 "lock_line": self._arb_lock.lock_line,
                 "restored": restored,
+                "scope": "orb" if sleeve_only else "engine",
             },
         )
+
+    def _advance_orb_halt(self) -> SquareoffProgress:
+        """Close the ORB sleeve, every tick, until nothing of it is left.
+
+        Idempotent like _advance_shutdown: the sleeve's open set only shrinks.
+        Same cancel-stop-then-market path; GUC positions are never in the set.
+        """
+        assert self.orb_halt_reason is not None
+        positions = orb_sleeve(self.store.open_positions())
+        progress = squareoff_all(
+            positions, reason=self.orb_halt_reason, broker=self.broker, store=self.store
+        )
+        if progress.complete and not positions and not self._orb_halt_flat:
+            self._orb_halt_flat = True
+            self.store.append_event(
+                "__engine__", "arb_orb_halt_complete", {"reason": self.orb_halt_reason.value}
+            )
+        return progress
 
     def _arb_day_now(self, now: datetime) -> DayMtm:
         """The day's net P&L, computed at most once per tick."""
@@ -1991,6 +2088,15 @@ class ExecutionEngine:
         if age is None or age > ARB_MAX_TRIGGER_AGE_SECONDS:
             # A trigger that cannot be dated is treated as old, never as new.
             self._skip(candidate, REASON_ARB_TRIGGER_STALE)
+            return None
+        if self.orb_halt_reason is not None and candidate.strategy != STRATEGY_GUC:
+            # ORB's day is over (hard day stop / day lock); only GUC trades on.
+            self._skip(
+                candidate,
+                REASON_ARB_DAY_HALTED,
+                extra={ARB_EXTRA_KEY: {"strategy": candidate.strategy or STRATEGY_FUNNEL,
+                                       "halted_reason": self.orb_halt_reason.value}},
+            )
             return None
         if candidate.strategy == STRATEGY_ORB:
             return self._handle_arb_orb(candidate)
@@ -2316,6 +2422,7 @@ class ExecutionEngine:
             "margin_used": round(margin_used_rupees(guc_open, self.session_config.leverage_factor), 2),
             "cutoff": settings.guc_cutoff.strftime("%H:%M"),
         }
+        day_total = _day_total_block(day, guc_day)
         house = max(0.0, mtm or 0.0) * settings.house_money_mult
         cap = settings.open_risk_cap_rupees()
         score0_used = sum(
@@ -2357,7 +2464,9 @@ class ExecutionEngine:
             "halted_reason": record.get("halted_reason"),
             "halted_at": record.get("halted_at"),
             "halted_mtm": record.get("halted_mtm"),
+            "orb_halted": None if self.orb_halt_reason is None else self.orb_halt_reason.value,
             "guc": guc_block,
+            "day_total": day_total,
         }
 
     # ------------------------------------------------------------------
@@ -2425,6 +2534,26 @@ def _arb_holding(position: Position) -> bool:
         and int(position.qty or 0) > 0
         and position.entry_price is not None
     )
+
+
+def _day_total_block(orb_day: Optional[DayMtm], guc_day: Optional[DayMtm]) -> dict:
+    """Both sleeves together, after estimated charges: what the desk shows as
+    the day's P&L. Display only; no control reads it. All None until the
+    tick has priced both sleeves."""
+    if orb_day is None or guc_day is None:
+        return {
+            "mtm": None, "closed_net": None, "open_net": None,
+            "orb_mtm": None, "guc_mtm": None, "complete": None, "stale_symbols": [],
+        }
+    return {
+        "mtm": round(orb_day.mtm + guc_day.mtm, 2),
+        "closed_net": round(orb_day.closed_net + guc_day.closed_net, 2),
+        "open_net": round(orb_day.open_net + guc_day.open_net, 2),
+        "orb_mtm": float(orb_day.mtm),
+        "guc_mtm": float(guc_day.mtm),
+        "complete": bool(orb_day.complete and guc_day.complete),
+        "stale_symbols": sorted(set(orb_day.stale_symbols) | set(guc_day.stale_symbols)),
+    }
 
 
 def _valid_price(value) -> bool:
