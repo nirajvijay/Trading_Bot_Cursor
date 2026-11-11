@@ -1852,9 +1852,20 @@ class ExecutionEngine:
                     "daily_loss_breached",
                     {"closed_loss": check.closed_loss_rupees, "cap": check.cap_rupees},
                 )
-            self._restore_arb_halt()
-            if self.orb_halt_reason is None and self.shutdown_reason is None:
-                self._arb_halt(CloseReason.DAILY_LOSS_BREACH, mtm=-check.closed_loss_rupees)
+            # This check runs outside run_step: a store failure in the halt's
+            # writes must not end the tick (and the process). The halt state
+            # is set before any write, so the ORB flatten still runs; the
+            # record is retried next tick, since closed losses never decrease.
+            try:
+                self._restore_arb_halt()
+                if self.orb_halt_reason is None and self.shutdown_reason is None:
+                    try:
+                        mtm = self._arb_day_now(self.now_fn()).mtm  # net, for the banner
+                    except Exception:  # noqa: BLE001 - the gross loss is still a true figure
+                        mtm = -check.closed_loss_rupees
+                    self._arb_halt(CloseReason.DAILY_LOSS_BREACH, mtm=mtm)
+            except Exception as exc:  # noqa: BLE001 - logged, never fatal
+                self.escalation_notices.append(f"arb_backstop_halt: {exc}")
             return
         if not self.breached:
             self.breached = True
@@ -1938,8 +1949,13 @@ class ExecutionEngine:
     def _check_arb_day(self, now: datetime) -> None:
         """Hard day stop every tick (D1); day lock once a minute (D2)."""
         self._restore_arb_halt()
-        if self.shutdown_reason is not None or self.orb_halt_reason is not None:
-            return  # ORB's day is over; the square-off owns its positions
+        if self.shutdown_reason is not None:
+            return  # the day is already ending; square-off owns it
+        if self.orb_halt_reason is not None:
+            # ORB's day is over; the square-off owns its positions. The day
+            # P&L is still computed, for the desk only: nothing decides on it.
+            self._arb_day_now(now)
+            return
         day = self._arb_day_now(now)
         if engine_arb.hard_stop_hit(self.arb_settings, day.mtm):
             self._arb_halt(CloseReason.HARD_DAY_STOP, mtm=day.mtm)

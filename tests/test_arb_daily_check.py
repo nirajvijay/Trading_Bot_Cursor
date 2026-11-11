@@ -264,3 +264,16 @@ class CompareRuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HaltMatchTests(unittest.TestCase):
+    def test_a_backstop_halt_matches_the_replays_hard_day_stop(self) -> None:
+        from arb_daily_check import halts_match
+        # With GUC on, ORB's closed-loss backstop lands right after a hard day
+        # stop and is persisted as daily_loss_breach; the replay only knows
+        # hard_day_stop and day_lock.
+        self.assertTrue(halts_match({"reason": "daily_loss_breach"}, {"reason": "hard_day_stop"}))
+        self.assertTrue(halts_match({"reason": "hard_day_stop"}, {"reason": "hard_day_stop"}))
+        self.assertTrue(halts_match(None, None))
+        self.assertFalse(halts_match({"reason": "day_lock"}, {"reason": "hard_day_stop"}))
+        self.assertFalse(halts_match({"reason": "daily_loss_breach"}, None))

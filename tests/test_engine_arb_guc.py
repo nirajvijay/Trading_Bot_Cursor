@@ -486,6 +486,46 @@ class OrbHaltTests(GucEngineTestCase):
         self.assertFalse(engine.entries_paused)
         self.assertEqual(self.store.get("g2").state, ExecutionState.PROTECTED)
 
+    def test_a_failing_store_write_in_the_backstop_never_ends_the_tick(self) -> None:
+        # The backstop check runs outside run_step. Its halt writes must not
+        # let a store failure escape tick() and end the engine process.
+        self.save_closed("old", "DDD", realised=-3_500.0)
+        engine = self.engine()
+
+        def broken(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        self.store.save_arb_day = broken
+        self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"))  # must not raise
+        self.assertEqual(engine.orb_halt_reason, CloseReason.DAILY_LOSS_BREACH)
+        self.assertIsNone(engine.shutdown_reason)
+        self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+        self.assertEqual(self.skip_reason("o1"), REASON_ARB_DAY_HALTED)
+
+    def test_orb_day_pnl_keeps_showing_after_the_halt(self) -> None:
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        engine.tick()
+        self.clock.advance(1)
+        engine.tick()   # ORB flat; the engine runs on for GUC
+        snap = engine.arb_snapshot()
+        self.assertIsNotNone(snap["day_mtm"])
+        self.assertLess(snap["day_mtm"], -5000)
+        self.assertEqual(snap["guc"]["open"], 1)
+
+    def test_a_backstop_halt_records_orbs_net_day_pnl(self) -> None:
+        # +1,000 winner then -3,500 loser: gross losses 3,500 trip the 3,000
+        # backstop, but the banner should carry the net -2,500, not -3,500.
+        self.save_closed("win", "CCC", realised=1_000.0)
+        self.save_closed("old", "DDD", realised=-3_500.0)
+        engine = self.engine()
+        engine.tick()
+        self.assertEqual(engine.orb_halt_reason, CloseReason.DAILY_LOSS_BREACH)
+        mtm = self.store.load_arb_day(DAY)["halted_mtm"]
+        self.assertGreater(mtm, -3500)
+        self.assertLessEqual(mtm, -2500)
+
 
 class OrbHaltWithGucOffTests(GucEngineTestCase):
     guc_enabled = False
