@@ -27,9 +27,15 @@ from engine_arb import (
 from engine_config import STRATEGY_ARB, SessionRiskConfig, arb_session_config
 from engine_core import EVENT_ARB_DAY_HALT, REASON_ARB_DAY_HALTED
 from engine_exit import CloseReason
+from engine_feed import FeedHealth
 from engine_types import ExecutionState, Position
 from tests.test_engine_arb_orb import DAY, IST, OrbEngineTestCase
 from trading_engine_types import STRATEGY_GUC, STRATEGY_ORB, TriggerCandidate
+
+class StaleFeed:
+    def check(self, *, now=None):
+        return FeedHealth(healthy=False, age_seconds=30.0)
+
 
 GAP_DAY = (100.5, 100.0)      # NIFTY open +0.5 %
 FLAT_DAY = (100.1, 100.0)     # +0.1 %: an ordinary day
@@ -389,8 +395,10 @@ class OrbHaltTests(GucEngineTestCase):
         engine = self.engine()
         self.run_triggers(engine, self.guc("g1", "AAA"), self.orb("o1", "BBB"))
         self.assertIsNone(engine.shutdown_reason)
-        self.assertTrue(engine.breached)
+        self.assertFalse(engine.breached)   # the session latch stays off: GUC must still resume
         self.assertEqual(engine.orb_halt_reason, CloseReason.DAILY_LOSS_BREACH)
+        breaches = [r for r in self.store.list_events("__engine__") if r["event_type"] == "daily_loss_breached"]
+        self.assertEqual(len(breaches), 1)
         self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
         self.assertEqual(self.skip_reason("o1"), REASON_ARB_DAY_HALTED)
         self.assertEqual(self.store.load_arb_day(DAY)["halted_reason"], "daily_loss_breach")
@@ -455,6 +463,28 @@ class OrbHaltTests(GucEngineTestCase):
         self.assertEqual(self.store.load_arb_day(DAY)["halted_reason"], "hard_day_stop")
         self.assertEqual([h["restored"] for h in self.halt_events()], [True])
         self.assertEqual(self.store.get("g1").state, ExecutionState.PROTECTED)
+
+    def test_a_feed_blip_after_the_backstop_does_not_stop_guc_for_the_day(self) -> None:
+        # Hard day stop, flattened with a loss past the 3,000 backstop. ORB's
+        # backstop must not leave the engine's sticky breached latch set: a
+        # later one-tick pause (stale feed) would then never resume, and
+        # every GUC trigger for the rest of the day would be dropped silently.
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        engine.tick()   # ORB closed at -6,000: the backstop tick
+        self.assertEqual(engine.orb_halt_reason, CloseReason.HARD_DAY_STOP)
+        self.assertFalse(engine.breached)
+        healthy = engine.feed_monitor
+        engine.feed_monitor = StaleFeed()
+        self.clock.advance(1)
+        engine.tick()
+        self.assertTrue(engine.entries_paused)
+        engine.feed_monitor = healthy
+        self.clock.advance(1)
+        self.run_triggers(engine, self.guc("g2", "DDD"))
+        self.assertFalse(engine.entries_paused)
+        self.assertEqual(self.store.get("g2").state, ExecutionState.PROTECTED)
 
 
 class OrbHaltWithGucOffTests(GucEngineTestCase):

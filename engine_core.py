@@ -289,6 +289,7 @@ class ExecutionEngine:
         # engine shutdown it always was (shutdown_reason), exactly as before.
         self.orb_halt_reason: Optional[CloseReason] = None
         self._orb_halt_flat = False
+        self._orb_backstop_breached = False
         # GUC sleeve: the morning's NIFTY gap (read once from Kite), its day
         # P&L this tick, and whether its day stop has closed new entries.
         self._guc_market_gap: Optional[float] = None
@@ -1836,6 +1837,25 @@ class ExecutionEngine:
         self.realised_loss_today = check.closed_loss_rupees
         if not check.breached:
             return
+        if self.arb_mode and self.arb_settings.guc_enabled:
+            # ORB's backstop halts ORB alone (the sleeve-scoped halt, persisted
+            # like the day stop); GUC keeps its own day stop. Any ORB hard day
+            # stop lands here on the next tick, once its losses are realised,
+            # and a persisted halt is restored first so it is never overwritten.
+            # `breached` stays False: that latch makes _resume refuse for the
+            # session, which would turn any later one-tick pause (a stale feed)
+            # into a silent stop of GUC entries for the rest of the day.
+            if not self._orb_backstop_breached:
+                self._orb_backstop_breached = True
+                self.store.append_event(
+                    "__engine__",
+                    "daily_loss_breached",
+                    {"closed_loss": check.closed_loss_rupees, "cap": check.cap_rupees},
+                )
+            self._restore_arb_halt()
+            if self.orb_halt_reason is None and self.shutdown_reason is None:
+                self._arb_halt(CloseReason.DAILY_LOSS_BREACH, mtm=-check.closed_loss_rupees)
+            return
         if not self.breached:
             self.breached = True
             self.store.append_event(
@@ -1843,15 +1863,6 @@ class ExecutionEngine:
                 "daily_loss_breached",
                 {"closed_loss": check.closed_loss_rupees, "cap": check.cap_rupees},
             )
-        if self.arb_mode and self.arb_settings.guc_enabled:
-            # ORB's backstop halts ORB alone (the sleeve-scoped halt, persisted
-            # like the day stop); GUC keeps its own day stop. Any ORB hard day
-            # stop lands here on the next tick, once its losses are realised,
-            # and a persisted halt is restored first so it is never overwritten.
-            self._restore_arb_halt()
-            if self.orb_halt_reason is None and self.shutdown_reason is None:
-                self._arb_halt(CloseReason.DAILY_LOSS_BREACH, mtm=-check.closed_loss_rupees)
-            return
         # Permanent for the session: realised losses cannot decrease.
         self._pause("daily_loss_breached")
         if self.shutdown_reason is None:
