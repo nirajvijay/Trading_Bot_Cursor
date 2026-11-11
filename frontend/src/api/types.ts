@@ -496,7 +496,31 @@ export interface ArbDayStatus {
   halted_at: string | null
   halted_mtm: number | null
   orb_halted: string | null
-  guc?: { enabled: boolean; day_stopped: boolean }
+  /** The GUC sleeve beside ORB (engines from PR #66 on). */
+  guc?: ArbGucStatus
+  /** Both sleeves together, after estimated charges: the desk's day P&L. */
+  day_total?: ArbDayTotal
+}
+
+export interface ArbGucStatus {
+  enabled: boolean
+  risk_scale: number
+  open: number
+  closed: number
+  live_risk: number
+  day_mtm: number | null
+  day_stop: number
+  day_stopped: boolean
+}
+
+export interface ArbDayTotal {
+  mtm: number | null
+  closed_net: number | null
+  open_net: number | null
+  orb_mtm: number | null
+  guc_mtm: number | null
+  complete: boolean | null
+  stale_symbols: string[]
 }
 
 export interface ArbStage {

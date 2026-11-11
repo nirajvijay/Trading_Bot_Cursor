@@ -103,7 +103,7 @@ export function ArbBudgetStrip({ arb }: { arb: ArbDayStatus }) {
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(165px,1fr))] gap-px">
         <Cell
-          label="Day P&L after charges"
+          label="ORB day P&L after charges"
           value={inr(mtm, 0)}
           tone={pnlClass(mtm)}
           note={
