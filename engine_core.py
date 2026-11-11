@@ -1894,6 +1894,10 @@ class ExecutionEngine:
         if self.shutdown_reason is not None:
             return  # the day is already ending; square-off owns it
         day = self._arb_day_now(now)
+        # The GUC sleeve is priced on the same tick (same cached LTP read, no
+        # extra broker call) so the desk's combined day total is always fresh.
+        # ORB's controls below still see only ORB.
+        self._guc_day_now(now)
         if engine_arb.hard_stop_hit(self.arb_settings, day.mtm):
             self._arb_halt(CloseReason.HARD_DAY_STOP, mtm=day.mtm)
             return
@@ -2316,6 +2320,7 @@ class ExecutionEngine:
             "margin_used": round(margin_used_rupees(guc_open, self.session_config.leverage_factor), 2),
             "cutoff": settings.guc_cutoff.strftime("%H:%M"),
         }
+        day_total = _day_total_block(day, guc_day)
         house = max(0.0, mtm or 0.0) * settings.house_money_mult
         cap = settings.open_risk_cap_rupees()
         score0_used = sum(
@@ -2358,6 +2363,7 @@ class ExecutionEngine:
             "halted_at": record.get("halted_at"),
             "halted_mtm": record.get("halted_mtm"),
             "guc": guc_block,
+            "day_total": day_total,
         }
 
     # ------------------------------------------------------------------
@@ -2425,6 +2431,26 @@ def _arb_holding(position: Position) -> bool:
         and int(position.qty or 0) > 0
         and position.entry_price is not None
     )
+
+
+def _day_total_block(orb_day: Optional[DayMtm], guc_day: Optional[DayMtm]) -> dict:
+    """Both sleeves together, after estimated charges: what the desk shows as
+    the day's P&L. Display only; no control reads it. All None until the
+    tick has priced both sleeves."""
+    if orb_day is None or guc_day is None:
+        return {
+            "mtm": None, "closed_net": None, "open_net": None,
+            "orb_mtm": None, "guc_mtm": None, "complete": None, "stale_symbols": [],
+        }
+    return {
+        "mtm": round(orb_day.mtm + guc_day.mtm, 2),
+        "closed_net": round(orb_day.closed_net + guc_day.closed_net, 2),
+        "open_net": round(orb_day.open_net + guc_day.open_net, 2),
+        "orb_mtm": float(orb_day.mtm),
+        "guc_mtm": float(guc_day.mtm),
+        "complete": bool(orb_day.complete and guc_day.complete),
+        "stale_symbols": sorted(set(orb_day.stale_symbols) | set(guc_day.stale_symbols)),
+    }
 
 
 def _valid_price(value) -> bool:

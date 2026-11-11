@@ -253,6 +253,34 @@ class SnapshotTests(GucEngineTestCase):
         # ORB's own figures exclude the GUC position.
         self.assertEqual(snap["live_risk"], 0)
 
+    def test_the_snapshot_carries_the_day_total_across_both_sleeves(self) -> None:
+        self.save_closed("old", "DDD", realised=-800.0)        # ORB loser
+        self.save_closed_guc("gold", "EEE", realised=1200.0)   # GUC winner
+        engine = self.engine()
+        self.run_triggers(engine, self.orb("o1", "BBB"), self.guc("g1", "AAA"))
+        self.clock.advance(1)
+        self.run_triggers(engine)          # a quiet tick: no trigger at all
+        snap = engine.arb_snapshot()
+        orb_mtm, guc_mtm = snap["day_mtm"], snap["guc"]["day_mtm"]
+        # Both sleeves are priced every tick, not only when a trigger arrives.
+        self.assertIsNotNone(orb_mtm)
+        self.assertIsNotNone(guc_mtm)
+        total = snap["day_total"]
+        self.assertAlmostEqual(total["mtm"], orb_mtm + guc_mtm, places=2)
+        self.assertAlmostEqual(total["orb_mtm"], orb_mtm, places=2)
+        self.assertAlmostEqual(total["guc_mtm"], guc_mtm, places=2)
+        self.assertAlmostEqual(total["closed_net"], snap["closed_net"] + engine.guc_day.closed_net, places=2)
+        self.assertAlmostEqual(total["open_net"], snap["open_net"] + engine.guc_day.open_net, places=2)
+        self.assertLess(total["closed_net"], 400.0)   # -800 + 1200, minus charges
+        self.assertGreater(total["closed_net"], 300.0)
+        self.assertTrue(total["complete"])
+        self.assertEqual(total["stale_symbols"], [])
+
+    def test_the_day_total_is_absent_until_the_first_tick_priced_it(self) -> None:
+        engine = self.engine()
+        snap = engine.arb_snapshot()
+        self.assertEqual(snap["day_total"]["mtm"], None)
+
 
 class CrossSleevePriceTests(GucEngineTestCase):
     """The two sleeves share one LTP cache. Pricing one sleeve must never drop

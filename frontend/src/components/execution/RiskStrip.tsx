@@ -54,7 +54,17 @@ export function PnlSummary({
   const markStale = markAge === null || markAge > STALE_MARK_SECONDS
   // Older APIs send only total_live_pnl; the ongoing total is the same figure.
   const ongoingPnl = status?.total_ongoing_pnl ?? status?.total_live_pnl ?? null
-  const dayPnl = status?.total_day_pnl ?? null
+  // ARB engines price both sleeves after estimated charges every tick; that
+  // is the day figure. Older sessions fall back to the gross sum.
+  const total = status?.arb?.day_total
+  const netDay = total?.mtm ?? null
+  const dayPnl = netDay ?? status?.total_day_pnl ?? null
+  const dayNote =
+    netDay === null
+      ? 'realised + ongoing'
+      : total?.complete === false
+        ? `after charges · no fresh price for ${total.stale_symbols.join(', ')}: counted at the stop`
+        : `after charges · ORB ${inr(total?.orb_mtm, 0)} · GUC ${inr(total?.guc_mtm, 0)}`
   // Locked-in profit counts as zero risk, never as an offset to another trade's.
   const riskTaken = open.reduce(
     (sum, r) => sum + Math.max(0, r.current_risk_rupees ?? r.risk_taken_rupees ?? 0),
@@ -67,8 +77,8 @@ export function PnlSummary({
         hero
         label="Total Day P&L"
         value={inr(dayPnl)}
-        tone={markStale ? 'text-on-surface-variant' : pnlClass(dayPnl)}
-        note="realised + ongoing"
+        tone={markStale && netDay === null ? 'text-on-surface-variant' : pnlClass(dayPnl)}
+        note={dayNote}
       />
       <Tile
         label="Total Realised P&L"
