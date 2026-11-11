@@ -1952,9 +1952,11 @@ class ExecutionEngine:
         if self.shutdown_reason is not None:
             return  # the day is already ending; square-off owns it
         if self.orb_halt_reason is not None:
-            # ORB's day is over; the square-off owns its positions. The day
-            # P&L is still computed, for the desk only: nothing decides on it.
+            # ORB's day is over; the square-off owns its positions. Both
+            # sleeves are still priced, for the desk only (ORB's figure and
+            # the combined day total): nothing decides on them here.
             self._arb_day_now(now)
+            self._guc_day_now(now)
             return
         day = self._arb_day_now(now)
         # The GUC sleeve is priced on the same tick (same cached LTP read, no

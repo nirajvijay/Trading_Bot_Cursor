@@ -554,6 +554,21 @@ class OrbHaltTests(GucEngineTestCase):
         self.assertGreater(mtm, -3500)
         self.assertLessEqual(mtm, -2500)
 
+    def test_the_day_total_stays_fresh_after_the_orb_halt(self) -> None:
+        # The desk's Total Day P&L prices GUC inside the day check; the halt's
+        # early return must still price GUC every tick, or the total goes stale.
+        engine = self.open_guc_and_two_orb()
+        self.halt_orb(engine)
+        self.clock.advance(1)
+        engine.tick()
+        self.broker.last_prices["AAA"] = 112.0   # GUC +4,000 gross on 2,000 sh
+        self.clock.advance(1)
+        engine.tick()                             # a quiet tick, no trigger
+        snap = engine.arb_snapshot()
+        self.assertIsNotNone(snap["guc"]["day_mtm"])
+        self.assertGreater(snap["guc"]["day_mtm"], 3000)
+        self.assertAlmostEqual(snap["day_total"]["mtm"], snap["day_mtm"] + snap["guc"]["day_mtm"], places=2)
+
 
 class OrbHaltWithGucOffTests(GucEngineTestCase):
     guc_enabled = False
