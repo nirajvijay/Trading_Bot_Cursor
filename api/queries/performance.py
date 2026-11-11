@@ -60,7 +60,8 @@ INCIDENT_CLOSE_REASONS = (
     "stop_triggered_unfilled",
     "abnormal_slippage_flatten",
 )
-HALT_REASONS = ("hard_day_stop", "day_lock")
+# daily_loss_breach: ORB's closed-loss backstop, a sleeve halt once GUC is on.
+HALT_REASONS = ("hard_day_stop", "day_lock", "daily_loss_breach")
 STOP_CLOSE_REASON = "stop_hit"
 
 

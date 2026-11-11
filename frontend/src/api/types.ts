@@ -495,6 +495,8 @@ export interface ArbDayStatus {
   halted_reason: string | null
   halted_at: string | null
   halted_mtm: number | null
+  orb_halted: string | null
+  guc?: { enabled: boolean; day_stopped: boolean }
 }
 
 export interface ArbStage {
