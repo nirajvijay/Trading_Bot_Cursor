@@ -41,6 +41,9 @@ class ExecutionSettings:
     arb_guc_risk_scale: float = 1.0
     # GUC risk on an ordinary day as a fraction of the gap-day risk.
     arb_guc_ordinary_day_fraction: float = 0.5
+    # Marked-stock trails (engine_marked_trails). Missing from the file means OFF.
+    arb_marked_trails_enabled: bool = False
+    arb_marked_trails_drop_below_actual: bool = False
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
 
@@ -74,6 +77,10 @@ def load(path: Optional[Path] = None) -> ExecutionSettings:
             arb_guc_ordinary_day_fraction=float(
                 data.get("arb_guc_ordinary_day_fraction", 0.5)
             ),
+            arb_marked_trails_enabled=_flag(data.get("arb_marked_trails_enabled", False)),
+            arb_marked_trails_drop_below_actual=_flag(
+                data.get("arb_marked_trails_drop_below_actual", False)
+            ),
             updated_at=data.get("updated_at"),
             updated_by=data.get("updated_by"),
         )
@@ -94,6 +101,8 @@ def session_config_for(settings: ExecutionSettings) -> SessionRiskConfig:
             guc_enabled=settings.arb_guc_enabled,
             guc_risk_scale=settings.arb_guc_risk_scale,
             guc_ordinary_day_fraction=settings.arb_guc_ordinary_day_fraction,
+            marked_trails_enabled=settings.arb_marked_trails_enabled,
+            marked_trails_drop_below_actual=settings.arb_marked_trails_drop_below_actual,
         )
     return SessionRiskConfig()
 

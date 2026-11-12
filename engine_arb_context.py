@@ -130,6 +130,14 @@ WHERE instrument_token = ? AND candle_time >= ? AND candle_time > ? AND is_parti
 ORDER BY candle_time ASC
 """
 
+_DAY_OPEN_SQL = """
+SELECT open
+FROM live_1m_candles
+WHERE instrument_token = ? AND candle_time = ?
+LIMIT 1
+"""
+
+
 class LiveArbContext:
     def __init__(
         self,
@@ -169,6 +177,23 @@ class LiveArbContext:
             LockBar(minute=str(minute), high=float(high), low=float(low), close=float(close))
             for minute, high, low, close in rows
         ]
+
+    def day_open(self, *, instrument_token: int, session_date: str) -> Optional[float]:
+        """The open of the stock's 09:15 1-minute bar, or None when that bar
+        is not stored (marked trails then skip the trade: never a guess)."""
+        minute = f"{session_date}T09:15:00+05:30"
+        try:
+            conn = self._connect()
+            try:
+                row = conn.execute(_DAY_OPEN_SQL, (int(instrument_token), minute)).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise ArbContextError(f"observation db read failed: {exc}") from exc
+        if row is None or row[0] is None:
+            return None
+        value = float(row[0])
+        return value if value > 0 else None
 
     def features_for(
         self, candidate: TriggerCandidate, stop_price: Optional[float]

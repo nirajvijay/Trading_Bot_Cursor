@@ -60,6 +60,9 @@ class CloseReason(str, Enum):
     # ARB day controls (engine_arb): flatten everything and stop for the day.
     HARD_DAY_STOP = "hard_day_stop"
     DAY_LOCK = "day_lock"
+    # Marked-stock trail (engine_marked_trails): the trail stop is at or
+    # through the market, so it cannot be placed; sold at market instead.
+    MARKED_TRAIL_THROUGH_MARKET = "marked_trail_through_market"
 
 
 # Reasons we ourselves initiate, stashed on the position when we send the exit
@@ -77,6 +80,7 @@ ACTIVE_EXIT_REASONS = frozenset(
         CloseReason.STOP_TRIGGERED_UNFILLED,
         CloseReason.HARD_DAY_STOP,
         CloseReason.DAY_LOCK,
+        CloseReason.MARKED_TRAIL_THROUGH_MARKET,
     }
 )
 

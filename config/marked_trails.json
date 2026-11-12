@@ -1,0 +1,613 @@
+{
+ "version": 1,
+ "generated": "2026-11-12",
+ "source": "/Users/nj/nifty-radar-research/plan_marked_trails_2026-11/plan_bt.py",
+ "levels": {
+  "what": "mean of (day high / 09:15 open - 1) and |day low / open - 1| in percent, 09:15-14:49 bars, over every full day of the cache",
+  "from": "2023-11-09",
+  "to": "2026-11-09",
+  "fixed": {
+   "LTM": [
+    1.17,
+    1.25
+   ],
+   "DMART": [
+    1.17,
+    1.3
+   ]
+  }
+ },
+ "notes": "below_actual: the stock's own study found the mark loses to the normal exits (HINDUNILVR, HINDZINC); arb_marked_trails_drop_below_actual drops them.",
+ "stocks": {
+  "ABB": {
+   "avg_high_pct": 1.25,
+   "avg_low_pct": 1.47,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "ADANIENSOL": {
+   "avg_high_pct": 1.77,
+   "avg_low_pct": 1.77,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.8,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "ADANIENT": {
+   "avg_high_pct": 1.25,
+   "avg_low_pct": 1.49,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.4,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "ADANIGREEN": {
+   "avg_high_pct": 1.73,
+   "avg_low_pct": 1.75,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.0,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "ADANIPORTS": {
+   "avg_high_pct": 1.15,
+   "avg_low_pct": 1.35,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "ADANIPOWER": {
+   "avg_high_pct": 1.67,
+   "avg_low_pct": 1.68,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "AMBUJACEM": {
+   "avg_high_pct": 1.06,
+   "avg_low_pct": 1.39,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.4,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "AXISBANK": {
+   "avg_high_pct": 0.98,
+   "avg_low_pct": 0.93,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.6,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "BAJAJ-AUTO": {
+   "avg_high_pct": 1.02,
+   "avg_low_pct": 1.08,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.5,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "BAJAJHLDNG": {
+   "avg_high_pct": 1.3,
+   "avg_low_pct": 1.36,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.3,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "BAJFINANCE": {
+   "avg_high_pct": 1.12,
+   "avg_low_pct": 1.07,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.9,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "BHARTIARTL": {
+   "avg_high_pct": 0.94,
+   "avg_low_pct": 0.96,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.0,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "BOSCHLTD": {
+   "avg_high_pct": 1.12,
+   "avg_low_pct": 1.14,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.7,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "BPCL": {
+   "avg_high_pct": 1.26,
+   "avg_low_pct": 1.4,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 2.5,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "BRITANNIA": {
+   "avg_high_pct": 0.93,
+   "avg_low_pct": 1.04,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.7,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "CGPOWER": {
+   "avg_high_pct": 1.4,
+   "avg_low_pct": 1.73,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "CIPLA": {
+   "avg_high_pct": 0.9,
+   "avg_low_pct": 1.01,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": null,
+   "sell": {
+    "trail_pct": 1.5,
+    "mode": "plain"
+   }
+  },
+  "COALINDIA": {
+   "avg_high_pct": 1.01,
+   "avg_low_pct": 1.25,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.8,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "CUMMINSIND": {
+   "avg_high_pct": 1.3,
+   "avg_low_pct": 1.44,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "DLF": {
+   "avg_high_pct": 1.19,
+   "avg_low_pct": 1.39,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.1,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "DMART": {
+   "avg_high_pct": 1.17,
+   "avg_low_pct": 1.3,
+   "levels_fixed": true,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.25,
+    "mode": "level_floor"
+   },
+   "sell": null
+  },
+  "DRREDDY": {
+   "avg_high_pct": 0.95,
+   "avg_low_pct": 1.05,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.4,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "EICHERMOT": {
+   "avg_high_pct": 1.07,
+   "avg_low_pct": 1.05,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.7,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "HAL": {
+   "avg_high_pct": 1.27,
+   "avg_low_pct": 1.44,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.5,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "HINDALCO": {
+   "avg_high_pct": 1.12,
+   "avg_low_pct": 1.24,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.3,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "HINDUNILVR": {
+   "avg_high_pct": 0.85,
+   "avg_low_pct": 0.9,
+   "levels_fixed": false,
+   "below_actual": true,
+   "buy": {
+    "trail_pct": 0.7,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "HINDZINC": {
+   "avg_high_pct": 1.38,
+   "avg_low_pct": 1.42,
+   "levels_fixed": false,
+   "below_actual": true,
+   "buy": {
+    "trail_pct": 0.75,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "ICICIBANK": {
+   "avg_high_pct": 0.85,
+   "avg_low_pct": 0.77,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.1,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "INFY": {
+   "avg_high_pct": 0.96,
+   "avg_low_pct": 1.0,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.5,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "IOC": {
+   "avg_high_pct": 1.13,
+   "avg_low_pct": 1.26,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.9,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "IRFC": {
+   "avg_high_pct": 1.46,
+   "avg_low_pct": 1.63,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.7,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "JSWSTEEL": {
+   "avg_high_pct": 1.05,
+   "avg_low_pct": 1.13,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "KOTAKBANK": {
+   "avg_high_pct": 0.94,
+   "avg_low_pct": 0.85,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": null,
+   "sell": {
+    "trail_pct": 0.4,
+    "mode": "plain"
+   }
+  },
+  "LODHA": {
+   "avg_high_pct": 1.74,
+   "avg_low_pct": 1.84,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.0,
+    "mode": "level_floor"
+   },
+   "sell": {
+    "trail_pct": 1.0,
+    "mode": "plain"
+   }
+  },
+  "LT": {
+   "avg_high_pct": 0.88,
+   "avg_low_pct": 0.99,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.7,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "LTM": {
+   "avg_high_pct": 1.17,
+   "avg_low_pct": 1.25,
+   "levels_fixed": true,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.25,
+    "mode": "plain"
+   },
+   "sell": {
+    "trail_pct": 0.25,
+    "mode": "level_cap",
+    "cap_pct": 0.5
+   }
+  },
+  "M&M": {
+   "avg_high_pct": 1.23,
+   "avg_low_pct": 1.18,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.6,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "MARUTI": {
+   "avg_high_pct": 0.9,
+   "avg_low_pct": 1.03,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.0,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "MAXHEALTH": {
+   "avg_high_pct": 1.4,
+   "avg_low_pct": 1.55,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.0,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "MUTHOOTFIN": {
+   "avg_high_pct": 1.28,
+   "avg_low_pct": 1.35,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "NESTLEIND": {
+   "avg_high_pct": 0.88,
+   "avg_low_pct": 1.02,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": null,
+   "sell": {
+    "trail_pct": 1.2,
+    "mode": "plain"
+   }
+  },
+  "NTPC": {
+   "avg_high_pct": 1.0,
+   "avg_low_pct": 1.18,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "ONGC": {
+   "avg_high_pct": 1.04,
+   "avg_low_pct": 1.28,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.5,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "PIDILITIND": {
+   "avg_high_pct": 0.91,
+   "avg_low_pct": 1.0,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.1,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "RECLTD": {
+   "avg_high_pct": 1.38,
+   "avg_low_pct": 1.59,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.3,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "SIEMENS": {
+   "avg_high_pct": 1.29,
+   "avg_low_pct": 1.52,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.6,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "TATAPOWER": {
+   "avg_high_pct": 1.14,
+   "avg_low_pct": 1.25,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.1,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "TCS": {
+   "avg_high_pct": 0.94,
+   "avg_low_pct": 0.94,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": null,
+   "sell": {
+    "trail_pct": 1.2,
+    "mode": "plain"
+   }
+  },
+  "TRENT": {
+   "avg_high_pct": 1.3,
+   "avg_low_pct": 1.48,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 4.0,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "TVSMOTOR": {
+   "avg_high_pct": 1.12,
+   "avg_low_pct": 1.32,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.9,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "UNIONBANK": {
+   "avg_high_pct": 1.41,
+   "avg_low_pct": 1.52,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.5,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "VBL": {
+   "avg_high_pct": 1.26,
+   "avg_low_pct": 1.5,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 0.2,
+    "mode": "plain"
+   },
+   "sell": null
+  },
+  "WIPRO": {
+   "avg_high_pct": 1.04,
+   "avg_low_pct": 1.09,
+   "levels_fixed": false,
+   "below_actual": false,
+   "buy": {
+    "trail_pct": 1.5,
+    "mode": "plain"
+   },
+   "sell": null
+  }
+ }
+}

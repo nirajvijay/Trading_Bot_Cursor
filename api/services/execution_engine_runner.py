@@ -284,6 +284,16 @@ def build_command(
         ]
         if session_config.is_arb and session_config.arb.guc_enabled
         else []
+    ) + (
+        # Marked-stock trails: off unless the saved settings switch it on.
+        ["--arb-marked-trails"]
+        + (
+            ["--arb-marked-trails-drop-below-actual"]
+            if session_config.arb.marked_trails_drop_below_actual
+            else []
+        )
+        if session_config.is_arb and session_config.arb.marked_trails_enabled
+        else []
     ) + (["--live-orders"] if live_orders else [])
 
 

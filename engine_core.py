@@ -28,6 +28,7 @@ from typing import Callable, Dict, List, Optional, Protocol, Tuple
 import engine_arb
 import engine_clock
 import engine_lock
+import engine_marked_trails as marked
 from engine_arb import (
     ARB_EXTRA_KEY,
     STRATEGY_FUNNEL,
@@ -300,6 +301,12 @@ class ExecutionEngine:
         # Lock-rule state per open trade: (what it was computed from, state).
         # Only a cache of engine_lock.fold over stored bars; safe to lose.
         self._lock_cache: Dict[str, Tuple[tuple, engine_lock.LockState]] = {}
+        # Marked-stock trails (engine_marked_trails): the rules table, or why
+        # it could not be read (then every ORB/GUC entry is skipped), and the
+        # trail fold per open trade (a cache, like _lock_cache).
+        self._marked_book: Optional[marked.MarkedTrailBook] = None
+        self._marked_error: Optional[str] = None
+        self._trail_cache: Dict[str, Tuple[tuple, marked.TrailState]] = {}
         if self.arb_mode:
             self._init_arb()
 
@@ -1590,12 +1597,21 @@ class ExecutionEngine:
         for trade_id in list(self._lock_cache):
             if trade_id not in open_ids:
                 del self._lock_cache[trade_id]
+        for trade_id in list(self._trail_cache):
+            if trade_id not in open_ids:
+                del self._trail_cache[trade_id]
         for position in positions:
             if not position.extra.get(TRAIL_ENABLED_KEY):
                 continue
             if self._stop_movable(position) is not None:
                 continue
             if position.stop_price is None or position.entry_price is None:
+                continue
+            try:
+                if self._advance_marked_trail(position):
+                    continue  # past its level: the trail owns this stop now
+            except Exception as exc:  # noqa: BLE001 - this stop stays put; the rest are tried
+                failures.append(f"{position.trade_id}: marked trail: {exc}")
                 continue
             try:
                 state = self._lock_state(position)
@@ -1641,6 +1657,95 @@ class ExecutionEngine:
             failures.append(f"ltp read failed: {self._stop_price_error}")
         if failures:
             raise RuntimeError("trail failed: " + "; ".join(failures))
+
+    def _advance_marked_trail(self, position: Position) -> bool:
+        """Rule 3 for one position. True when the trail owns its stop (the
+        level was reached), so the lock rule must not move it; False when the
+        position has no trail rule or has not reached its level yet.
+
+        The first write after the touch replaces the stop outright, so it may
+        loosen it (research: the trail replaces the normal stop / lock). Then
+        it only tightens. A trail stop at or through the market cannot be
+        placed: the position is sold at market (the backtest fills it at once).
+        All writes go through move_stop (modify in place; cancel-and-replace
+        at the modification cap) or flatten (cancel the stop, then market).
+        """
+        if not self.arb_settings.marked_trails_enabled:
+            return False
+        plan = (position.extra.get(ARB_EXTRA_KEY) or {}).get(marked.MARKED_EXTRA_KEY)
+        rule = marked.rule_from_plan(plan)
+        if rule is None:
+            return False
+        entry_minute = self._lock_entry_minute(position)
+        if entry_minute is None:
+            raise ValueError("entry time unknown")
+        direction = position.candidate.direction
+        level = float(plan["level"])
+        tick = float(tick_size_of(position))
+        key = (level, rule, tick, direction, entry_minute)
+        cached = self._trail_cache.get(position.trade_id)
+        state = cached[1] if cached is not None and cached[0] == key else None
+        bars = self.arb_context.lock_bars(
+            instrument_token=int(position.candidate.instrument_token),
+            since_minute=entry_minute,
+            after_minute=None if state is None else state.last_minute,
+        )
+        state = marked.fold_trail(
+            bars, direction=direction, level=level, rule=rule,
+            entry_minute=entry_minute, tick_size=tick, state=state,
+        )
+        self._trail_cache[position.trade_id] = (key, state)
+        if not state.touched or state.target is None:
+            return False
+        switched = bool(position.extra.get(marked.MARKED_SWITCHED_KEY))
+        ltp = self._fresh_ltp(position)
+        move = marked.resolve_trail_stop(
+            direction=direction,
+            current=float(position.stop_price),
+            target=float(state.target),
+            tick_size=tick,
+            switched=switched,
+            ltp=ltp,
+        )
+        detail = {
+            "ltp": ltp,
+            "rule": "marked_trail",
+            "level": level,
+            "trail_pct": rule.trail_pct,
+            "mode": rule.mode,
+            "touched": state.touched_minute,
+            "run": state.run,
+            "bar": state.last_minute,
+        }
+        if move.action == "none":
+            if not switched and move.reason == "unchanged":
+                # The stop already sits on the trail: it owns it from here.
+                position.extra[marked.MARKED_SWITCHED_KEY] = state.touched_minute
+                self.store.save(position)
+            return True
+        if move.action == "flatten":
+            self.store.append_event(position.trade_id, "marked_trail_through_market",
+                                    {**detail, "target": move.target})
+            flatten(position, reason=CloseReason.MARKED_TRAIL_THROUGH_MARKET,
+                    broker=self.broker, store=self.store)
+            return True
+        # Recorded with the stop write itself; undone if the write fails.
+        position.extra[marked.MARKED_SWITCHED_KEY] = state.touched_minute
+        outcome = move_stop(
+            position,
+            float(move.target),
+            source=SOURCE_AUTO,
+            broker=self.broker,
+            store=self.store,
+            detail={**detail, "switch": not switched},
+        )
+        if not outcome.moved:
+            if not switched:
+                position.extra.pop(marked.MARKED_SWITCHED_KEY, None)
+                self.store.save(position)
+            if outcome.failed:
+                raise RuntimeError(str(outcome.reason))
+        return True
 
     def _lock_entry_minute(self, position: Position) -> Optional[str]:
         """The minute the trade was entered in, as a bar key, or None.
@@ -1928,6 +2033,19 @@ class ExecutionEngine:
                 "ARB mode needs the risk policy built from its own settings "
                 f"(expected {expected}, got {self.risk_policy.limits})"
             )
+        if self.arb_settings.marked_trails_enabled:
+            if not callable(getattr(self.arb_context, "day_open", None)):
+                raise ValueError("marked trails need an arb_context with day_open()")
+            try:
+                book = marked.MarkedTrailBook.load()
+                if self.arb_settings.marked_trails_drop_below_actual:
+                    book = book.without_below_actual()
+                self._marked_book = book
+            except marked.MarkedTableError as exc:
+                # Fails closed: no ORB or GUC entry without the table.
+                self._marked_error = str(exc)
+                self.store.append_event("__engine__", "marked_trails_table_unavailable",
+                                        {"error": self._marked_error})
         record = self.store.load_arb_day(self.session_date) or {}
         if record.get("peak_mtm") is not None:
             self._arb_lock.peak = float(record["peak_mtm"])
@@ -2179,6 +2297,10 @@ class ExecutionEngine:
         if stop is None:
             self._skip(candidate, engine_arb.REASON_ORB_NO_STOP, extra={ARB_EXTRA_KEY: info})
             return None
+        if not self._marked_gate(candidate, info):
+            # Unmarked or beyond its level: skipped, and the slot stays empty
+            # (the detector already fixed the top three; none is pulled in).
+            return None
         return self._arb_size_and_enter(
             candidate,
             stop=stop,
@@ -2261,6 +2383,8 @@ class ExecutionEngine:
         if stop is None:
             self._skip(candidate, engine_arb.REASON_GUC_NO_STOP, extra={ARB_EXTRA_KEY: info})
             return None
+        if not self._marked_gate(candidate, info):
+            return None
         now = self.now_fn()
         day = self._guc_day_now(now)
         loss = engine_arb.guc_day_loss_rupees(day)
@@ -2315,6 +2439,45 @@ class ExecutionEngine:
         except BrokerSessionExpired:
             self._hold_for_dead_session()
             return None
+
+    def _marked_gate(self, candidate: TriggerCandidate, info: dict) -> bool:
+        """Marked trails, rules 1 and 2 (engine_marked_trails). True when the
+        trade may go on; otherwise it is skipped here with its reason. With
+        the setting off this is always True and changes nothing.
+
+        On a pass the plan (level, open, rule) is put in the ARB record, so it
+        is stamped on the position at entry and never re-read from the table.
+        """
+        if not self.arb_settings.marked_trails_enabled:
+            return True
+        if self._marked_book is None:
+            info[marked.MARKED_EXTRA_KEY] = {"error": self._marked_error}
+            self._skip(candidate, marked.REASON_TABLE_UNAVAILABLE, extra={ARB_EXTRA_KEY: info})
+            return False
+        symbol = candidate.tradingsymbol
+        day_open = None
+        if symbol in self._marked_book:
+            try:
+                day_open = self.arb_context.day_open(
+                    instrument_token=int(candidate.instrument_token),
+                    session_date=candidate.session_date or self.session_date,
+                )
+            except Exception as exc:  # noqa: BLE001 - no open means no trade, never a guess
+                info[marked.MARKED_EXTRA_KEY] = {"error": str(exc) or type(exc).__name__}
+                self._skip(candidate, marked.REASON_OPEN_UNKNOWN, extra={ARB_EXTRA_KEY: info})
+                return False
+        check = marked.check_entry(
+            self._marked_book,
+            symbol=symbol,
+            direction=candidate.direction,
+            entry_price=float(candidate.trigger_price),
+            day_open=day_open,
+        )
+        info[marked.MARKED_EXTRA_KEY] = check.plan
+        if not check.ok:
+            self._skip(candidate, str(check.reason), extra={ARB_EXTRA_KEY: info})
+            return False
+        return True
 
     def _arb_size_and_enter(
         self,
@@ -2467,6 +2630,16 @@ class ExecutionEngine:
             "orb_halted": None if self.orb_halt_reason is None else self.orb_halt_reason.value,
             "guc": guc_block,
             "day_total": day_total,
+            "marked_trails": {
+                "enabled": bool(settings.marked_trails_enabled),
+                "drop_below_actual": bool(settings.marked_trails_drop_below_actual),
+                "table_generated": None if self._marked_book is None else self._marked_book.generated,
+                "stocks": None if self._marked_book is None else len(self._marked_book.stocks),
+                "error": self._marked_error,
+                "trailing": sum(
+                    1 for p in all_open if p.extra.get(marked.MARKED_SWITCHED_KEY)
+                ),
+            },
         }
 
     # ------------------------------------------------------------------

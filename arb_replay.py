@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import engine_arb
+import engine_marked_trails as marked
 from engine_arb import ArbSettings, DayLockTracker, DayMtm, FunnelFeatures
 from engine_charges import round_trip_charges
 from engine_lock import LockBar, LockState, advance
@@ -37,6 +38,7 @@ EXIT_LOCK = "lock"            # a stop the lock rule had moved
 EXIT_EOD = "eod"
 EXIT_END_OF_DATA = "end_of_data"
 EXIT_DAY_HALT = "day_halt"    # flattened by the hard day stop or the day lock
+EXIT_MARKED_TRAIL = "marked_trail"  # the marked-stock trail stop after the level touch
 
 FREE_BY_STOP = "stop"
 FREE_BY_CLOSE = "close_1r"
@@ -285,6 +287,7 @@ def replay_day(
     slip_rate: float = 0.0,
     sizing: Optional[RiskCappedSizing] = None,
     free_rule: str = FREE_BY_STOP,
+    marked_book: Optional[marked.MarkedTrailBook] = None,
 ) -> DayReplay:
     """Run one day's candidates, in time order, through the live rules.
 
@@ -295,7 +298,17 @@ def replay_day(
     ``free_rule`` says when an open trade stops using the open-risk budget:
     FREE_BY_STOP is the live engine's rule (its stop is at or beyond entry,
     PR A D6); FREE_BY_CLOSE is the backtest's (a 1-minute close at +1R).
+
+    With ``settings.marked_trails_enabled`` and a ``marked_book``, the live
+    marked-trail rules apply to ORB candidates (engine_marked_trails): an
+    unmarked stock or an entry beyond its level is skipped before the
+    budget (its slot stays empty), and a trade whose completed bar reaches
+    the level before its normal exit switches to its trail (tick-rounded,
+    14:50 open square-off). The day controls then run on the trailed paths
+    and a halt flattens trailed trades like any other. The day open is the
+    09:15 bar's open; no 09:15 bar means no trade.
     """
+    use_marked = bool(settings.marked_trails_enabled) and marked_book is not None
     sizing = sizing or RiskCappedSizing()
     # Stable: candidates with the same timestamp keep the order they came in
     # (the backtest's order for ORB breakouts in one bar is their RVOL rank).
@@ -321,6 +334,12 @@ def replay_day(
                 trade.reason = engine_arb.REASON_ORB_NO_STOP
                 continue
             base = settings.orb_risk_rupees()
+            if use_marked:
+                plan = _marked_plan(cand, bars_by_symbol, marked_book)
+                trade.info["marked_trail"] = plan.plan
+                if not plan.ok:
+                    trade.reason = plan.reason
+                    continue
         elif cand.strategy == STRATEGY_FUNNEL:
             if cand.features is None:
                 trade.reason = "arb_context_unavailable"
@@ -362,7 +381,8 @@ def replay_day(
         )
         trade.base_risk = decision.base_rupees
         trade.half_size = decision.cut
-        trade.info = {"day_mtm": round(mtm, 2), "live_risk": round(live_risk, 2), "losers": losers}
+        trade.info = {**trade.info, "day_mtm": round(mtm, 2), "live_risk": round(live_risk, 2),
+                      "losers": losers}
         if decision.risk_rupees <= 0:
             trade.reason = decision.reason
             continue
@@ -394,6 +414,9 @@ def replay_day(
         if result is None:
             trade.reason = "no_bars"
             continue
+        if use_marked and cand.strategy == STRATEGY_ORB:
+            result = _marked_exit(cand, result, bars_by_symbol.get(cand.symbol, ()),
+                                  trade.info.get("marked_trail"))
         trade.decision = "enter"
         trade.risk_used = risk
         trade.qty = int(size.qty)
@@ -440,6 +463,55 @@ def replay_day(
         net=round(sum(t.net for t in entered), 2),
         r_gross=round(sum(t.r_gross or 0.0 for t in entered), 4),
     )
+
+
+def _marked_plan(
+    cand: ReplayCandidate,
+    bars_by_symbol: Mapping[str, Sequence[ReplayBar]],
+    book: marked.MarkedTrailBook,
+) -> marked.EntryCheck:
+    day_open = next(
+        (bar.open for bar in bars_by_symbol.get(cand.symbol, ()) if bar.hhmm == "09:15"), None
+    )
+    return marked.check_entry(
+        book,
+        symbol=cand.symbol,
+        direction=cand.direction,
+        entry_price=cand.trigger_price,
+        day_open=day_open,
+    )
+
+
+def _marked_exit(
+    cand: ReplayCandidate,
+    normal: ExitResult,
+    bars: Sequence[ReplayBar],
+    plan: Optional[Mapping[str, object]],
+) -> ExitResult:
+    """The trade's exit with its marked trail, or ``normal`` if it never
+    reached its level on a bar that completed before the normal exit."""
+    rule = marked.rule_from_plan(plan)
+    if rule is None:
+        return normal
+    trail = marked.walk_trail(
+        bars,
+        direction=cand.direction,
+        level=float(plan["level"]),  # type: ignore[index]
+        rule=rule,
+        entry_minute=cand.minute,
+        touch_until=normal.minute,
+        touch_inclusive=False,
+        squareoff_hhmm=SQUAREOFF_HHMM,
+        research_eod=False,
+        tick_size=cand.tick_size,
+    )
+    if trail is None:
+        return normal
+    # Stops in force before the touch are the normal ones; the trail's own
+    # stops are not listed (the open-risk budget keeps the last of those).
+    kept = tuple(s for s in normal.stops if s[0] < trail.touched_minute)
+    reason = EXIT_MARKED_TRAIL if trail.reason == "trail" else EXIT_EOD
+    return ExitResult(trail.price, trail.minute, reason, kept or normal.stops[:1], normal.lock)
 
 
 def _book_exit(

@@ -68,6 +68,8 @@ def autostart_tick(now: Optional[datetime] = None) -> Optional[str]:
         orb_only = "" if session_config.arb.funnel_enabled else ", ORB only"
         guc = (f", GUC x{session_config.arb.guc_risk_scale:g}"
                if session_config.is_arb and session_config.arb.guc_enabled else "")
+        guc += (", marked trails"
+                if session_config.is_arb and session_config.arb.marked_trails_enabled else "")
         what = (f"execution engine (ARB, stage {session_config.arb.risk_scale:g}{orb_only}{guc})"
                 if session_config.is_arb else "execution engine")
         outcome = (f"{what} started with live Kite orders (pid {pid})" if ok

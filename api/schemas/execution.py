@@ -46,6 +46,9 @@ class ExecutionStartRequest(BaseModel):
     arb_guc_enabled: Optional[bool] = None
     arb_guc_risk_scale: Optional[float] = None
     arb_guc_ordinary_day_fraction: Optional[float] = None
+    # Marked-stock trails: None = the saved settings (start) / keeps them (save).
+    arb_marked_trails_enabled: Optional[bool] = None
+    arb_marked_trails_drop_below_actual: Optional[bool] = None
 
 
 class ArbStageView(BaseModel):
@@ -73,6 +76,8 @@ class ExecutionSettingsView(BaseModel):
     arb_guc_enabled: bool = False
     arb_guc_risk_scale: float = 1.0
     arb_guc_ordinary_day_fraction: float = 0.5
+    arb_marked_trails_enabled: bool = False
+    arb_marked_trails_drop_below_actual: bool = False
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
     unlocked_scale: float = ARB_UNLOCKED_SCALE
@@ -91,6 +96,9 @@ class ExecutionSettingsRequest(BaseModel):
     arb_guc_enabled: Optional[bool] = None
     arb_guc_risk_scale: Optional[float] = None
     arb_guc_ordinary_day_fraction: Optional[float] = None
+    # Marked-stock trails: None = the saved settings (start) / keeps them (save).
+    arb_marked_trails_enabled: Optional[bool] = None
+    arb_marked_trails_drop_below_actual: Optional[bool] = None
 
 
 class ExecutionStartResponse(BaseModel):
