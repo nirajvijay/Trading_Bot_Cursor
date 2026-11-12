@@ -107,6 +107,7 @@ const REASON_LABELS: Record<string, string> = {
   unattributed: 'Unattributed',
   hard_day_stop: 'ARB hard day stop',
   day_lock: 'ARB day lock',
+  marked_trail_through_market: 'Marked trail: stop through the market, sold at market',
   vwap_reject: 'VWAP reject',
   vwap_unavailable: 'VWAP unavailable',
   vwap_limited: 'VWAP limited',
@@ -138,6 +139,10 @@ const REASON_LABELS: Record<string, string> = {
   arb_day_check_failed: 'Day controls not working',
   arb_day_halted: 'ORB stopped for the day',
   day_halted: 'Day already stopped',
+  arb_marked_unmarked_stock: 'Marked trails: stock not marked',
+  arb_marked_outside_level: 'Marked trails: entry beyond the stock\'s average level',
+  arb_marked_open_unknown: 'Marked trails: day open unknown',
+  arb_marked_table_unavailable: 'Marked trails: rules table unreadable',
   no_bars: 'No bars',
   // Why the live Open P&L fell back to Kite REST.
   ws_disconnected: 'WebSocket disconnected',

@@ -190,10 +190,12 @@ def arb_session_config(
     guc_enabled: bool = False,
     guc_risk_scale: float = 1.0,
     guc_ordinary_day_fraction: float = 0.5,
+    marked_trails_enabled: bool = False,
+    marked_trails_drop_below_actual: bool = False,
 ) -> SessionRiskConfig:
     """An ARB session: only the stage, the capital, whether the funnel
-    trades (False = ORB only) and the GUC sleeve's switch, stage and
-    ordinary-day fraction are chosen at start.
+    trades (False = ORB only), the GUC sleeve's switch, stage and
+    ordinary-day fraction, and the marked-trails switch are chosen at start.
 
     Every other ARB number is the tested setting in engine_arb.ArbSettings;
     they are changed in code, not at start.
@@ -208,5 +210,7 @@ def arb_session_config(
             guc_enabled=bool(guc_enabled),
             guc_risk_scale=float(guc_risk_scale),
             guc_ordinary_day_fraction=float(guc_ordinary_day_fraction),
+            marked_trails_enabled=bool(marked_trails_enabled),
+            marked_trails_drop_below_actual=bool(marked_trails_drop_below_actual),
         ),
     )

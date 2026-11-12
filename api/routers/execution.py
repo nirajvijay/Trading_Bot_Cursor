@@ -123,6 +123,16 @@ def _session_config_from(body: ExecutionStartRequest) -> SessionRiskConfig:
                 if body.arb_guc_ordinary_day_fraction is None
                 else float(body.arb_guc_ordinary_day_fraction)
             ),
+            marked_trails_enabled=(
+                saved.arb_marked_trails_enabled
+                if body.arb_marked_trails_enabled is None
+                else bool(body.arb_marked_trails_enabled)
+            ),
+            marked_trails_drop_below_actual=(
+                saved.arb_marked_trails_drop_below_actual
+                if body.arb_marked_trails_drop_below_actual is None
+                else bool(body.arb_marked_trails_drop_below_actual)
+            ),
         )
     return _caps_from(body.caps)
 
@@ -212,6 +222,8 @@ def _settings_view(settings: execution_settings.ExecutionSettings) -> ExecutionS
         arb_guc_enabled=settings.arb_guc_enabled,
         arb_guc_risk_scale=settings.arb_guc_risk_scale,
         arb_guc_ordinary_day_fraction=settings.arb_guc_ordinary_day_fraction,
+        arb_marked_trails_enabled=settings.arb_marked_trails_enabled,
+        arb_marked_trails_drop_below_actual=settings.arb_marked_trails_drop_below_actual,
         updated_at=settings.updated_at,
         updated_by=settings.updated_by,
         unlocked_scale=ARB_UNLOCKED_SCALE,
@@ -629,6 +641,16 @@ def execution_settings_write(
             saved.arb_guc_ordinary_day_fraction
             if body.arb_guc_ordinary_day_fraction is None
             else float(body.arb_guc_ordinary_day_fraction)
+        ),
+        arb_marked_trails_enabled=(
+            saved.arb_marked_trails_enabled
+            if body.arb_marked_trails_enabled is None
+            else bool(body.arb_marked_trails_enabled)
+        ),
+        arb_marked_trails_drop_below_actual=(
+            saved.arb_marked_trails_drop_below_actual
+            if body.arb_marked_trails_drop_below_actual is None
+            else bool(body.arb_marked_trails_drop_below_actual)
         ),
         updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         updated_by=(ctx.session.username if ctx and ctx.session else None) or "owner",

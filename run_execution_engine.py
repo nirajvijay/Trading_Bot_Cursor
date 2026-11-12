@@ -125,6 +125,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=0.5,
         help="GUC risk fraction on days NIFTY does not gap up enough",
     )
+    parser.add_argument(
+        "--arb-marked-trails",
+        action="store_true",
+        help="ARB trades only the marked stocks, within level, with their trails; off by default",
+    )
+    parser.add_argument(
+        "--arb-marked-trails-drop-below-actual",
+        action="store_true",
+        help="with --arb-marked-trails: also drop HINDUNILVR/HINDZINC (marks below actual)",
+    )
     parser.add_argument("--live-orders", action="store_true")
     parser.add_argument("--tick-seconds", type=float, default=TICK_INTERVAL_SECONDS)
     parser.add_argument(
@@ -147,6 +157,8 @@ def build_config(args: argparse.Namespace) -> SessionRiskConfig:
             guc_enabled=args.arb_guc,
             guc_risk_scale=args.arb_guc_risk_scale,
             guc_ordinary_day_fraction=args.arb_guc_ordinary_day_fraction,
+            marked_trails_enabled=args.arb_marked_trails,
+            marked_trails_drop_below_actual=args.arb_marked_trails_drop_below_actual,
         )
     else:
         config = SessionRiskConfig(

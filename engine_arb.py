@@ -139,6 +139,17 @@ class ArbSettings:
     guc_margin_budget: float = 300000.0
     guc_cutoff: time = time(11, 1)
 
+    # ---- Marked-stock trails (2026-11-12 plan, engine_marked_trails) -------
+    # Off by default: with it off nothing in ORB, the funnel or GUC changes.
+    # On: only stocks in config/marked_trails.json trade (ORB's slot stays
+    # empty for an unmarked top-3 stock), entries must be within the stock's
+    # average day level, and a trade that reaches the level switches to the
+    # stock's trailing stop.
+    marked_trails_enabled: bool = False
+    # Also drop the marks that lose to the normal exits in their own study
+    # (HINDUNILVR, HINDZINC; "below_actual" in the table).
+    marked_trails_drop_below_actual: bool = False
+
     def guc_risk_rupees(self, market_gap: Optional[float]) -> float:
         """Base GUC risk for a trade given the morning's NIFTY gap. An unknown
         gap is an ordinary day."""

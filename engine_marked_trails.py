@@ -61,6 +61,9 @@ REASON_TABLE_UNAVAILABLE = "arb_marked_table_unavailable"
 # position.extra key holding the plan stamped at entry. Written once: a
 # restart or a later table edit never changes an open trade's rule.
 MARKED_EXTRA_KEY = "marked_trail"
+# position.extra key set once the trail has taken over the stop (the touch
+# minute). Until then the first write may loosen; after it, tighten only.
+MARKED_SWITCHED_KEY = "marked_trail_switched"
 
 # Close reason when the trail stop is at or through the market (the research
 # fills those at the next bar's open; Kite would refuse the stop).
