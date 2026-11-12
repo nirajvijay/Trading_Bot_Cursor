@@ -272,16 +272,20 @@ def rule_from_plan(plan: Optional[Mapping[str, Any]]) -> Optional[TrailRule]:
 
 def trail_stop_raw(run: float, level: float, direction: str, rule: TrailRule) -> float:
     """The trail stop for a running high (buy) / low (sell), before rounding."""
-    p = float(rule.trail_pct) / 100.0
+    # Exact decimal arithmetic: 115 * 0.96 must be 110.40, not 110.3999...,
+    # which the tick rounding (away from the market) would turn into 110.35.
+    p = Decimal(str(rule.trail_pct)) / 100
+    run_d = Decimal(str(run))
+    level_d = Decimal(str(level))
     if is_long(direction):
-        stop = float(run) * (1.0 - p)
+        stop = run_d * (1 - p)
         if rule.mode == MODE_LEVEL_FLOOR:
-            stop = max(float(level), stop)
-        return stop
-    stop = float(run) * (1.0 + p)
+            stop = max(level_d, stop)
+        return float(stop)
+    stop = run_d * (1 + p)
     if rule.mode == MODE_LEVEL_CAP:
-        stop = min(float(level) * (1.0 + float(rule.cap_pct) / 100.0), stop)
-    return stop
+        stop = min(level_d * (1 + Decimal(str(rule.cap_pct)) / 100), stop)
+    return float(stop)
 
 
 @dataclass(frozen=True)

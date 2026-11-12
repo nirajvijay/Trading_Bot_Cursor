@@ -156,6 +156,10 @@ def main() -> None:
     for t, v, r in bad[:10]:
         print(f"    {t['k']} {t['day']} {t['sym']} {t['d']} engine {v:+,.2f} research {r:+,.2f}")
     print("  by year:", {k: round(v) for k, v in by_year(mine).items()})
+    for k in ("ORB", "GUC"):
+        rows = [x for x in mine if x[0]["k"] == k]
+        print(f"  {k}: {len(rows)} trades ({sum(1 for x in rows if x[2] is not None)} touched) "
+              f"{sum(v for _, v, _ in rows):+,.0f}")
 
     touched = [(t, v, ex) for t, v, ex in mine if ex is not None]
     halted = [x for x in touched if x[0]["k"] == "ORB" and x[0]["why"] == "day_halt"]
