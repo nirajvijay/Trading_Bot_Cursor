@@ -109,7 +109,9 @@ def run(book: M.MarkedTrailBook, T, halts, *, cut_at_halt: bool, guc_scale: floa
             rows.append((t, t["net"] * sc, None))
             continue
         price, minute = ex.price, ex.minute
-        if cut_at_halt and t["k"] == "ORB" and t["why"] == "day_halt":
+        if cut_at_halt and t["k"] == "ORB" and halts.get(t["day"]):
+            # Any touched ORB trade still trailing when the day halts is
+            # flattened then, whatever its normal exit would have been.
             hm = halts[t["day"]]
             if minute > hm:
                 # Flattened with the sleeve at the halt minute's close.
@@ -162,14 +164,16 @@ def main() -> None:
               f"{sum(v for _, v, _ in rows):+,.0f}")
 
     touched = [(t, v, ex) for t, v, ex in mine if ex is not None]
-    halted = [x for x in touched if x[0]["k"] == "ORB" and x[0]["why"] == "day_halt"]
+    halted = [x for x in touched if x[0]["k"] == "ORB" and halts.get(x[0]["day"])
+              and x[2].minute > halts[x[0]["day"]]]
+    split = collections.Counter(x[0]["why"] for x in halted)
     lock_or_halt = [x for x in touched if x[0]["k"] == "ORB" and x[0]["why"] in ("day_halt", "lock")]
     cut = run(book, T, halts, cut_at_halt=True)
     tot0 = sum(v for _, v, _ in mine)
     tot1 = sum(v for _, v, _ in cut)
     print(f"\nstep 1 trailed trades closed at the halt minute (live rule):")
-    print(f"  touched trades {len(touched)}; ORB touched whose real exit was a day halt: {len(halted)} "
-          f"(research note counted {len(lock_or_halt)} = halts + ordinary lock-stop exits)")
+    print(f"  touched trades {len(touched)}; ORB trades still trailing at their day's halt minute: {len(halted)} "
+          f"(by normal exit: {dict(split)}); research note's filter (why in day_halt/lock) counted {len(lock_or_halt)}")
     print(f"  total {tot0:+,.0f} -> {tot1:+,.0f}  (change {tot1 - tot0:+,.0f})")
     print("  by year:", {k: round(v) for k, v in by_year(cut).items()})
     for sc in (0.5,):

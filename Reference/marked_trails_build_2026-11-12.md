@@ -50,19 +50,25 @@ This uses the same trade table as the research (`orb_marked_no.json` plus the ma
 | | total GUC x1 | GUC x0.5 |
 |---|---|---|
 | research (trails through halts) | +594,936 | +340,172 |
-| trailed ORB trades cut at the day-halt minute | **+580,952 (−13,984)** | +326,188 |
+| touched ORB trades still trailing at the day's halt minute, closed then | **+580,381 (−14,555)** | +325,617 |
 
-- **25** touched ORB trades were really exits on a day halt (`day_halt` = hard day stop or day lock).
-- The research's "63" (58 on this NO table) also counted ordinary `lock` exits. In `arb_replay`, `lock` means a stop the lock rule moved, not the day lock, so those were not halts.
-- The old halt_live.py figure (+575,764, −24k) made the same mix-up and used the older +599,820 set.
+- **11** touched ORB trades were still on their trail when their day halted. By normal exit: 9 `day_halt`, 2 `lock`.
+- The rule: any touched ORB trade on a halt day whose trail exit comes after the halt minute is closed at that minute's close, whatever its normal exit. GUC has no halts in the table.
+- The research note's "63" (58 on this NO table) used the filter `why in (day_halt, lock)`.
+  - That filter mixed real halt exits with ordinary lock-rule stops. In `arb_replay`, `lock` means a stop the lock rule moved, not the day lock.
+  - It also counted trades whose trail had already exited before the halt.
+  - The old halt_live.py figure (+575,764, −24k) used that filter on the older +599,820 set.
+- ORB overlay after the cut is +70,852. The `arb_replay` live run below gives ORB +74,354. The gap is the level check moving to entry (it changes the budget and the halts) plus the live conventions.
 
 ## Live-faithful replay (`scripts/marked_trails_replay.py`)
+**`arb_replay` with the flag on does NOT reproduce +594,936, by design.** The research applied the level filter and the trails after a replay whose budget and halts were computed on normal exits. The exact parity above is therefore through the overlay. Below is the honest live-rule replay.
+
 - **ORB sanity:** the reference replay reproduces `orb_marked_no.json` exactly (718 trades, +72,513, 0 day mismatches).
 - **ORB with the flag on:** 275 trades, **+74,354** (2023 +3.9k, 2024 +28.2k, 2025 +32.2k, 2026 +10.0k).
   - The level check moves to entry, so 451 out-of-level trades no longer use budget or move the halts (565 were unmarked).
   - Exits: 64 trail, 72 eod, 88 stop, 21 lock, 30 day halt. Halts: 27 day locks, 10 hard stops.
 - **GUC with live conventions:** 310 trades (216 touched), **+510,241**, against +509,529 overlay.
-- **Plan total, live-faithful, GUC x1: +584,595**, against +594,936 research and +580,952 overlay with halt cuts.
+- **Plan total, live-faithful, GUC x1: +584,595**, against +594,936 research and +580,381 overlay with halt cuts.
 
 All of these are in-sample. The blind time-split result in the research REPORT (−97k against normal exits; 2026 −62k) still stands. Nothing here tests the rules out of sample.
 
@@ -71,7 +77,8 @@ All of these are in-sample. The blind time-split result in the research REPORT (
    - After the touch, a wide trail can sit below the entry and below the initial stop. Examples: TRENT 4%, BPCL 2.5%, IOC 1.9%, IRFC 1.7%.
    - That is how the research did it. `position_live_risk` then rises, which shrinks room for new ORB trades.
 2. **Trail through the market.** A stop that would already be through the market is sold at market. The research fills these at the next bar's open.
-3. **GUC is not in `arb_replay`.** Its live-faithful number is the overlay with live conventions. GUC has no halt in the research table.
+3. **Day open source.** Live reads the open from the tick-built 09:15 bar in `live_1m_candles`. The research levels and opens came from Kite historical 1-minute data. A read-only spot-check on a recent live day should confirm they agree before the flag is turned on.
+4. **GUC is not in `arb_replay`.** Its live-faithful number is the overlay with live conventions. GUC has no halt in the research table.
 
 ## Tests
 - `tests/test_engine_marked_trails.py` (47 tests): table, entry check, ratchet per mode, resolve, walk conventions, engine entry, empty slot, trail switch, loosening, restart, through-market flatten, modification cap, unmarked side, halt (ORB trailed flattened, GUC keeps trailing), and replay.
