@@ -236,6 +236,22 @@ class PositionView(BaseModel):
     risk_freed: bool = False
     # Closed trades: the result in R before charges.
     r_gross: Optional[float] = None
+    # --- Open rows: percent of the day open (display only; see
+    # api/services/open_trade_peaks.py). None = could not be derived. ---
+    day_open_price: Optional[float] = None
+    entry_pct_from_open: Optional[float] = None
+    now_pct_from_open: Optional[float] = None
+    # "ws" (backed out of the live WebSocket mark) or "1m_close" (last
+    # completed 1-minute bar; lags up to a minute).
+    now_price_source: Optional[str] = None
+    # UP: highest % from open since 09:15; DOWN: lowest (most negative).
+    today_peak_pct: Optional[float] = None
+    # Average open-to-high (UP, positive) or open-to-low (DOWN, negative).
+    usual_peak_2026_pct: Optional[float] = None
+    usual_peak_3y_pct: Optional[float] = None
+    # Room left to the usual peak: positive = room left, negative = past it.
+    gap_to_usual_2026_pct: Optional[float] = None
+    gap_to_usual_3y_pct: Optional[float] = None
 
 
 class PositionsResponse(BaseModel):

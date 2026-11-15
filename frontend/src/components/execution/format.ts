@@ -212,6 +212,13 @@ export function rMultiple(r: number | null | undefined, digits = 2): string {
   return `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(digits)}R`
 }
 
+/** A signed percent, e.g. "+0.07%" or "−1.38%". */
+export function pctSigned(value: number | null | undefined, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const rounded = Number(value.toFixed(digits))
+  return `${rounded > 0 ? '+' : rounded < 0 ? '−' : ''}${Math.abs(rounded).toFixed(digits)}%`
+}
+
 /** Signed basis points, e.g. "+2.4 bps". Positive is worse than assumed. */
 export function bps(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
