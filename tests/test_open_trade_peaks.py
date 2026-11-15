@@ -351,5 +351,89 @@ class OpenTradePeakApiTests(ExecutionApiTestCase):
         self.assertIsNone(response.json()["open"][0]["now_pct_from_open"])
 
 
+class HardeningTests(unittest.TestCase):
+    """Review fixes: nothing non-finite reaches the JSON, the DB read gives up
+    fast, and the held-state set stays the engine's."""
+
+    def test_inf_and_nan_table_cells_are_none(self) -> None:
+        text = (
+            "stock,avg_open_to_high_%,avg_open_to_low_%,avg_high_2026_%,avg_low_2026_%\n"
+            "AAA,inf,-inf,nan,1.0\n"
+        )
+        usual = otp.parse_usual_peaks(io.StringIO(text))["AAA"]
+        self.assertEqual(usual, UsualPeak(high_3y=None, low_3y=None, high_2026=None, low_2026=1.0))
+
+    def test_round_drops_non_finite(self) -> None:
+        self.assertIsNone(otp._round(float("inf")))
+        self.assertIsNone(otp._round(float("nan")))
+        self.assertEqual(otp._round(1.234567), 1.2346)
+
+    def test_non_finite_ws_mark_falls_back_to_the_1m_close(self) -> None:
+        out = _fields("UP", entry_price=100.2, live_pnl=float("inf"), live_pnl_source="ws")
+        self.assertEqual(out["now_price_source"], "1m_close")
+        self.assertAlmostEqual(out["now_pct_from_open"], 0.5)
+        for value in out.values():
+            if isinstance(value, float):
+                self.assertTrue(value == value and abs(value) != float("inf"))
+
+    def test_bars_read_sets_a_short_busy_timeout(self) -> None:
+        import tempfile
+        from unittest import mock
+
+        seen = []
+
+        class Spy:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, *args):
+                seen.append(sql.strip())
+                return self._conn.execute(sql, *args)
+
+            def close(self):
+                self._conn.close()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "live.db"
+            _make_live_db(db, [("AAA", "09:15", 100.0, 100.4, 99.8, 100.2)])
+            real = otp.open_readonly
+            with mock.patch.object(otp, "open_readonly", lambda path: Spy(real(path))):
+                bars = otp.read_day_bars(db, "2026-09-22", ["AAA"])
+        self.assertEqual(bars["AAA"].day_open, 100.0)
+        self.assertEqual(seen[0], f"PRAGMA busy_timeout={otp._BUSY_TIMEOUT_MS}")
+        self.assertLessEqual(otp._BUSY_TIMEOUT_MS, 500)
+
+    def test_held_states_match_the_engine(self) -> None:
+        from engine_reconcile import HOLDING_STATES
+
+        self.assertEqual(set(otp._HELD_STATES), {s.value for s in HOLDING_STATES})
+
+
+class EndpointHardeningTests(OpenTradePeakApiTests):
+    """The endpoint that carries Close stays 200 whatever the columns do."""
+
+    def test_inf_live_mark_still_serialises(self) -> None:
+        self._seed("ABB", "UP")
+        _make_live_db(self.live_db, [("ABB", "09:15", 100.0, 109.0, 99.5, 108.0)])
+        self._marks(float("inf"))
+        response = self.client.get(f"{BASE}/positions?session_date=2026-09-22")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["open"][0]["now_price_source"], "1m_close")
+
+    def test_a_raising_helper_leaves_the_row_without_columns(self) -> None:
+        from unittest import mock
+
+        self._seed("ABB", "UP")
+        self._marks(50.0)
+        with mock.patch.object(
+            otp, "fields_for_open_rows", side_effect=RuntimeError("boom")
+        ):
+            response = self.client.get(f"{BASE}/positions?session_date=2026-09-22")
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["open"][0]
+        self.assertIsNone(row["now_pct_from_open"])
+        self.assertAlmostEqual(row["live_pnl"], 50.0)
+
+
 if __name__ == "__main__":
     unittest.main()

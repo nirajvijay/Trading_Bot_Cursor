@@ -9,6 +9,7 @@ command queue. The API never talks to the running engine process directly.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -66,6 +67,8 @@ from engine_trailing import (
     TRAIL_ENABLED_KEY,
     current_risk_rupees,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/execution", tags=["execution"])
 
@@ -387,14 +390,19 @@ def _with_open_trade_peaks(views: List[PositionView], day: str) -> List[Position
     read the 1m bars or the usual-peak table leaves those columns empty."""
     if not views:
         return views
-    fields = open_trade_peaks.fields_for_open_rows(
-        (v.model_dump() for v in views),
-        live_db=config.live_db_path(),
-        session_date=day,
-    )
-    return [
-        v.model_copy(update=fields[v.trade_id]) if v.trade_id in fields else v for v in views
-    ]
+    try:
+        fields = open_trade_peaks.fields_for_open_rows(
+            (v.model_dump() for v in views),
+            live_db=config.live_db_path(),
+            session_date=day,
+        )
+        return [
+            v.model_copy(update=fields[v.trade_id]) if v.trade_id in fields else v
+            for v in views
+        ]
+    except Exception as exc:  # noqa: BLE001 - display columns must never fail the desk
+        logger.warning("open-trade peak columns skipped: %s", exc)
+        return views
 
 
 @router.get(

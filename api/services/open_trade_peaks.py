@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import sqlite3
 from dataclasses import dataclass
 from functools import lru_cache
@@ -51,6 +52,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional
 
 from api.db import open_readonly
+from api.services.desk_pnl import HOLDING_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,14 @@ NOW_SOURCE_WS = "ws"
 NOW_SOURCE_1M_CLOSE = "1m_close"
 
 # States whose entry_price is a real fill (pending/submitted hold the trigger).
-_HELD_STATES = {"entered", "protected", "trailing", "exit_submitted"}
+# Same set the desk P&L uses (mirrors engine_reconcile.HOLDING_STATES).
+_HELD_STATES = HOLDING_STATES
+
+# The live DB read must never hold up /execution/positions (it carries the
+# Close button and is polled every second). WAL readers almost never wait, but
+# if they do (WAL recovery, a checkpoint) give up fast and show dashes instead
+# of sqlite's default 5 s wait.
+_BUSY_TIMEOUT_MS = 200
 
 
 @dataclass(frozen=True)
@@ -102,7 +111,7 @@ def _opt_float(value: object) -> Optional[float]:
         out = float(str(value).strip())
     except (TypeError, ValueError):
         return None
-    return out if out == out else None  # NaN -> None
+    return out if math.isfinite(out) else None  # NaN / inf -> None
 
 
 def parse_usual_peaks(lines: Iterable[str]) -> Dict[str, UsualPeak]:
@@ -187,7 +196,7 @@ def now_price_from_mark(
         return None
     per_share = float(live_pnl) / int(qty)
     price = float(entry_price) + per_share if _is_up(direction) else float(entry_price) - per_share
-    return price if price > 0 else None
+    return price if math.isfinite(price) and price > 0 else None
 
 
 def today_peak_pct(
@@ -207,7 +216,15 @@ def today_peak_pct(
 
 
 def _round(value: Optional[float]) -> Optional[float]:
-    return round(value, 4) if value is not None else None
+    """4 dp, and None for anything non-finite: the JSON response is encoded
+    with allow_nan=False, so one inf/NaN here would 500 the whole endpoint."""
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(out, 4) if math.isfinite(out) else None
 
 
 def open_trade_fields(
@@ -252,13 +269,13 @@ def open_trade_fields(
     usual_3y = signed_usual_peak(direction, usual, period="3y") if usual else None
 
     return {
-        "day_open_price": day_open,
+        "day_open_price": _round(day_open),
         "entry_pct_from_open": _round(entry_pct),
         "now_pct_from_open": _round(now_pct),
         "now_price_source": now_source,
         "today_peak_pct": _round(peak_pct),
-        "usual_peak_2026_pct": usual_2026,
-        "usual_peak_3y_pct": usual_3y,
+        "usual_peak_2026_pct": _round(usual_2026),
+        "usual_peak_3y_pct": _round(usual_3y),
         "gap_to_usual_2026_pct": _round(gap_to_usual(direction, now_pct, usual_2026)),
         "gap_to_usual_3y_pct": _round(gap_to_usual(direction, now_pct, usual_3y)),
     }
@@ -287,6 +304,7 @@ def read_day_bars(
         return {}
     placeholders = ",".join("?" for _ in wanted)
     try:
+        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         rows = conn.execute(
             f"""
             SELECT tradingsymbol, candle_time, open, high, low, close
