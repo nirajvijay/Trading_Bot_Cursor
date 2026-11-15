@@ -623,6 +623,21 @@ export interface ExecutionPosition {
   risk_freed?: boolean
   /** Closed trades: the result in R before charges. */
   r_gross?: number | null
+  // --- Open rows: percent of the day open (display only). null = not derivable. ---
+  /** The 09:15 1-minute bar's open. */
+  day_open_price?: number | null
+  entry_pct_from_open?: number | null
+  now_pct_from_open?: number | null
+  /** "ws" = from the live WebSocket mark; "1m_close" = last 1-minute close (lags). */
+  now_price_source?: 'ws' | '1m_close' | null
+  /** Long: highest % from open since 09:15; short: lowest (most negative). */
+  today_peak_pct?: number | null
+  /** Average open-to-high (long, positive) or open-to-low (short, negative). */
+  usual_peak_2026_pct?: number | null
+  usual_peak_3y_pct?: number | null
+  /** Room left to the usual peak: positive = room left, negative = past it. */
+  gap_to_usual_2026_pct?: number | null
+  gap_to_usual_3y_pct?: number | null
 }
 
 export interface ExecutionPositions {

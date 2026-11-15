@@ -35,7 +35,7 @@ from api.schemas.execution import (
     SessionCaps,
 )
 import arb_metrics
-from api.services import execution_settings
+from api.services import execution_settings, open_trade_peaks
 from api.services.desk_pnl import DeskPnl, DeskRow, build_desk_pnl
 from api.services.execution_engine_runner import (
     engine_is_running,
@@ -382,6 +382,21 @@ def _to_view(
     )
 
 
+def _with_open_trade_peaks(views: List[PositionView], day: str) -> List[PositionView]:
+    """Open rows plus their %-from-open columns. Display only; a failure to
+    read the 1m bars or the usual-peak table leaves those columns empty."""
+    if not views:
+        return views
+    fields = open_trade_peaks.fields_for_open_rows(
+        (v.model_dump() for v in views),
+        live_db=config.live_db_path(),
+        session_date=day,
+    )
+    return [
+        v.model_copy(update=fields[v.trade_id]) if v.trade_id in fields else v for v in views
+    ]
+
+
 @router.get(
     "/preflight",
     response_model=PreflightResponse,
@@ -525,6 +540,8 @@ def execution_positions(
             closed_rows.append(view)
         else:
             rejected_rows.append(view)
+
+    open_rows = _with_open_trade_peaks(open_rows, day)
 
     return PositionsResponse(
         session_date=day,

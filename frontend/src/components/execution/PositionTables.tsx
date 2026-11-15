@@ -7,6 +7,7 @@ import {
   isUnprotected,
   mismatchTitle,
   num,
+  pctSigned,
   pnlClass,
   reasonLabel,
   rMultiple,
@@ -23,14 +24,17 @@ function Th({
   align = 'left',
   divider,
   edge,
+  title,
 }: {
   children?: React.ReactNode
   align?: 'left' | 'right'
   divider?: boolean
   edge?: boolean
+  title?: string
 }) {
   return (
     <th
+      title={title}
       className={`${edge ? 'px-3.5' : 'px-3'} py-2 label-caps whitespace-nowrap border-b border-outline-variant ${
         align === 'right' ? 'text-right' : 'text-left'
       } ${divider ? 'border-l' : ''}`}
@@ -256,6 +260,33 @@ function RiskNowCell({ row }: { row: ExecutionPosition }) {
   )
 }
 
+/** A %-from-the-day-open cell. Grey when the price behind it is not live. */
+function PctCell({
+  value,
+  divider,
+  muted,
+  colour,
+  title,
+}: {
+  value: number | null | undefined
+  divider?: boolean
+  muted?: boolean
+  /** Green when the number favours the trade: a positive gap, or a move from
+   *  the open in the trade's direction (down is good for a short). */
+  colour?: 'gap' | 'UP' | 'DOWN' | string
+  title?: string
+}) {
+  const favour = value == null ? value : colour === 'DOWN' ? -value : value
+  const tone = muted ? 'text-on-surface-variant' : colour ? pnlClass(favour) : ''
+  return (
+    <td title={title} className={`${NUM} whitespace-nowrap ${divider ? DIVIDER : ''} ${tone}`}>
+      {pctSigned(value)}
+    </td>
+  )
+}
+
+const NO_OPEN = 'No 09:15 bar stored for this stock today, so no day open: nothing is guessed.'
+
 function OpenRows({
   rows,
   markStale,
@@ -290,12 +321,45 @@ function OpenRows({
             Ongoing P&L (live)
           </Th>
           <Th align="right">Stock Day Total</Th>
+          <Th align="right" divider title="Entry fill as % from the day's open (09:15 bar)">
+            Entry %
+          </Th>
+          <Th align="right" title="Live price as % from the day's open">
+            Now %
+          </Th>
+          <Th
+            align="right"
+            title="Since 09:15: long = highest % from open so far today, short = lowest"
+          >
+            Today's peak %
+          </Th>
+          <Th
+            align="right"
+            title="2026 average open-to-high (long) or open-to-low (short), % of open"
+          >
+            Usual peak 2026
+          </Th>
+          <Th align="right" title="3-year average open-to-high (long) or open-to-low (short)">
+            Usual peak 3y
+          </Th>
+          <Th
+            align="right"
+            title="Room left to the 2026 usual peak: + = room left, − = already past it"
+          >
+            Gap 2026
+          </Th>
+          <Th
+            align="right"
+            title="Room left to the 3-year usual peak: + = room left, − = already past it"
+          >
+            Gap 3y
+          </Th>
           <Th divider>State</Th>
           <Th edge />
         </tr>
       </thead>
       <tbody>
-        {rows.length === 0 && <Empty cols={11}>No open positions.</Empty>}
+        {rows.length === 0 && <Empty cols={18}>No open positions.</Empty>}
         {rows.map((row) => {
           const stuck = isStuckPendingEntry(row.state, row.updated_at)
           const alarm = isUnprotected(row.state) || stuck
@@ -352,6 +416,40 @@ function OpenRows({
               >
                 {inr(row.stock_day_total)}
               </td>
+              <PctCell
+                value={row.entry_pct_from_open}
+                divider
+                title={
+                  row.day_open_price == null
+                    ? NO_OPEN
+                    : `Day open ${num(row.day_open_price)}, entry ${num(row.entry_price)}`
+                }
+              />
+              <PctCell
+                value={row.now_pct_from_open}
+                colour={row.direction}
+                muted={markStale || row.now_price_source === '1m_close'}
+                title={
+                  row.now_price_source === '1m_close'
+                    ? 'Last completed 1-minute close: the live mark is not on the WebSocket, so this lags up to a minute'
+                    : row.day_open_price == null
+                      ? NO_OPEN
+                      : undefined
+                }
+              />
+              <PctCell value={row.today_peak_pct} colour={row.direction} />
+              <PctCell value={row.usual_peak_2026_pct} muted />
+              <PctCell value={row.usual_peak_3y_pct} muted />
+              <PctCell
+                value={row.gap_to_usual_2026_pct}
+                colour="gap"
+                muted={markStale || row.now_price_source === '1m_close'}
+              />
+              <PctCell
+                value={row.gap_to_usual_3y_pct}
+                colour="gap"
+                muted={markStale || row.now_price_source === '1m_close'}
+              />
               <td className={`${CELL} whitespace-nowrap ${DIVIDER}`}>
                 <div className="flex items-center gap-[7px]">
                   <span
